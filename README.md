@@ -33,7 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/antonellof/gitgui/main/scripts/inst
 Pin a version or install elsewhere:
 
 ```bash
-GITGUI_VERSION=0.1.1 GITGUI_INSTALL_DIR=~/.local/bin bash scripts/install.sh
+GITGUI_VERSION=0.1.2 GITGUI_INSTALL_DIR=~/.local/bin bash scripts/install.sh
 ```
 
 **Build from source directly** (Rust 1.95+):
@@ -191,7 +191,7 @@ Release binaries are built by `.github/workflows/release.yml` on tag push (`v*`)
 - Fetch, pull, push (via your `git` CLI and credential helpers)
 - Agent control socket: `gitgui ls`, `gitgui action '{"cmd":"status"}'` (see [skill/SKILL.md](skill/SKILL.md))
 
-Status: **v0.1.1**. Phases 0 to 5 of the roadmap are done. See [Roadmap](#roadmap) and [docs/PLAN.md](docs/PLAN.md) for open issues.
+Status: **v0.1.2**. Phases 0 to 5 of the roadmap are done. See [Roadmap](#roadmap) and [docs/PLAN.md](docs/PLAN.md) for open issues.
 
 ## Architecture
 
