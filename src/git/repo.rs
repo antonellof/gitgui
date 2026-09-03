@@ -210,6 +210,16 @@ impl Repo {
         Ok(Repo { repo, workdir })
     }
 
+    /// Create a new repository at `path` (`git init`).
+    pub fn init(path: &Path) -> Result<Repo> {
+        let repo = Repository::init(path).map_err(GitError::Git)?;
+        let workdir = repo
+            .workdir()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| path.to_path_buf());
+        Ok(Repo { repo, workdir })
+    }
+
     pub fn workdir(&self) -> &Path {
         &self.workdir
     }
@@ -925,7 +935,8 @@ impl Repo {
 
     /// Check out a local branch, or a remote branch by creating a local
     /// tracking branch of the same short name first.
-    pub fn checkout(&self, name: &str) -> Result<String> {
+    /// When `force` is true, local changes that block checkout are discarded.
+    pub fn checkout(&self, name: &str, force: bool) -> Result<String> {
         let local = if self.repo.find_branch(name, git2::BranchType::Local).is_ok() {
             name.to_owned()
         } else {
@@ -946,7 +957,11 @@ impl Repo {
         let refname = format!("refs/heads/{local}");
         let obj = self.repo.revparse_single(&refname)?;
         let mut cb = git2::build::CheckoutBuilder::new();
-        cb.safe();
+        if force {
+            cb.force();
+        } else {
+            cb.safe();
+        }
         self.repo.checkout_tree(&obj, Some(&mut cb))?;
         self.repo.set_head(&refname)?;
         Ok(local)
@@ -956,9 +971,15 @@ impl Repo {
         let commit = self.repo.find_commit(from)?;
         self.repo.branch(name, &commit, false)?;
         if checkout {
-            self.checkout(name)?;
+            self.checkout(name, false)?;
         }
         Ok(())
+    }
+
+    /// Stash the working tree, then check out `branch`.
+    pub fn stash_and_checkout(&mut self, message: &str, branch: &str) -> Result<String> {
+        self.stash_push(message)?;
+        self.checkout(branch, false)
     }
 
     pub fn delete_branch(&self, name: &str) -> Result<()> {
@@ -1127,6 +1148,17 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let err = Repo::open(&dir).err().expect("should fail");
         assert!(matches!(err, GitError::NotARepository(_)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn init_creates_repo() {
+        let dir = std::env::temp_dir().join(format!("gitgui-init-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let r = Repo::init(&dir).expect("init");
+        assert!(dir.join(".git").exists());
+        assert!(Repo::open(&dir).is_ok());
+        let _ = r;
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1483,7 +1515,7 @@ mod tests {
         let r = Repo::open(&t.dir).unwrap();
         r.create_branch("old", c1, false).unwrap();
         assert_eq!(std::fs::read_to_string(t.dir.join("a.txt")).unwrap(), "2\n");
-        assert_eq!(r.checkout("old").unwrap(), "old");
+        assert_eq!(r.checkout("old", false).unwrap(), "old");
         assert_eq!(std::fs::read_to_string(t.dir.join("a.txt")).unwrap(), "1\n");
         assert_eq!(r.head_info().unwrap().branch_name.as_deref(), Some("old"));
         assert!(
@@ -1498,7 +1530,7 @@ mod tests {
             .map(|(b, _)| b.name().unwrap().unwrap().to_owned())
             .find(|n| n != "old")
             .unwrap();
-        r.checkout(&main).unwrap();
+        r.checkout(&main, false).unwrap();
         r.delete_branch("old").unwrap();
         assert!(t.repo.find_branch("old", git2::BranchType::Local).is_err());
         // Remote branch checkout creates a local tracking branch.
@@ -1509,7 +1541,7 @@ mod tests {
         t.repo
             .reference("refs/remotes/origin/feature", c.id(), false, "")
             .unwrap();
-        assert_eq!(r.checkout("origin/feature").unwrap(), "feature");
+        assert_eq!(r.checkout("origin/feature", false).unwrap(), "feature");
         let b = t
             .repo
             .find_branch("feature", git2::BranchType::Local)

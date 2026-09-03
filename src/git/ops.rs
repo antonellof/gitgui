@@ -45,6 +45,13 @@ pub enum Command {
         amend: bool,
     },
     Checkout(String),
+    /// Discard local changes and check out the branch.
+    ForceCheckout(String),
+    /// Stash, then check out the branch.
+    StashAndCheckout {
+        branch: String,
+        message: String,
+    },
     CreateBranch {
         name: String,
         from: Oid,
@@ -59,6 +66,13 @@ pub enum Command {
     Fetch,
     Pull,
     Push,
+    PublishGithub {
+        name: String,
+        description: String,
+        private: bool,
+    },
+    /// Run `git init` in the opened directory.
+    InitRepo,
     Quit,
 }
 
@@ -76,7 +90,9 @@ impl Command {
             Command::Unstage(_) | Command::UnstageAll | Command::UnstageHunk { .. } => "unstage",
             Command::Discard(_) => "discard",
             Command::Commit { .. } | Command::CommitAndPush { .. } => "commit",
-            Command::Checkout(_) => "checkout",
+            Command::Checkout(_) | Command::ForceCheckout(_) | Command::StashAndCheckout { .. } => {
+                "checkout"
+            }
             Command::CreateBranch { .. } => "new branch",
             Command::DeleteBranch(_) => "delete branch",
             Command::StashPush { .. } => "stash",
@@ -85,6 +101,8 @@ impl Command {
             Command::Fetch => "fetch",
             Command::Pull => "pull",
             Command::Push => "push",
+            Command::PublishGithub { .. } => "publish",
+            Command::InitRepo => "init",
         }
     }
 }
@@ -104,6 +122,8 @@ pub enum Reply {
     /// A network operation started (label) so the UI can open the log.
     NetStart(&'static str),
     Error(String),
+    /// Opened path is not inside a git repository yet.
+    NoRepo(PathBuf),
 }
 
 pub struct Worker {
@@ -112,15 +132,31 @@ pub struct Worker {
 
 /// Start the worker. Every reply is handed to `reply`, which the runtime
 /// uses to forward into its own event channel.
-pub fn spawn(path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Result<Worker, GitError> {
-    let mut repo = Repo::open(&path)?;
-    let workdir = repo.workdir().to_path_buf();
+pub fn spawn(path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Worker {
     let (tx, rx) = mpsc::channel::<Command>();
     std::thread::Builder::new()
         .name("git".into())
         .spawn(move || {
+            let mut repo: Option<Repo> = match Repo::open(&path) {
+                Ok(r) => Some(r),
+                Err(GitError::NotARepository(_)) => {
+                    reply(Reply::NoRepo(path.clone()));
+                    None
+                }
+                Err(e) => {
+                    reply(Reply::Error(e.to_string()));
+                    None
+                }
+            };
+            let workdir = repo
+                .as_ref()
+                .map(|r| r.workdir().to_path_buf())
+                .unwrap_or_else(|| path.clone());
             let mut limit = COMMIT_LIMIT;
-            let (mut stamp, mut work_fp) = refresh_tracking(&repo);
+            let (mut stamp, mut work_fp) = repo
+                .as_ref()
+                .map(refresh_tracking)
+                .unwrap_or_default();
             let send_snapshot = |repo: &mut Repo, limit: usize| -> Option<Arc<RepoSnapshot>> {
                 match repo.snapshot(limit) {
                     Ok(s) => {
@@ -133,29 +169,67 @@ pub fn spawn(path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Result<Wo
                     }
                 }
             };
-            send_snapshot(&mut repo, limit);
+            if let Some(r) = repo.as_mut() {
+                send_snapshot(r, limit);
+            }
             loop {
                 match rx.recv_timeout(POLL_INTERVAL) {
                     Ok(Command::Quit) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    Ok(Command::Refresh) => {
-                        send_snapshot(&mut repo, limit);
-                        (stamp, work_fp) = refresh_tracking(&repo);
+                    Ok(Command::InitRepo) => {
+                        if repo.is_some() {
+                            reply(Reply::Op {
+                                label: "init",
+                                result: Ok("already a git repository".into()),
+                            });
+                            continue;
+                        }
+                        match Repo::init(&path) {
+                            Ok(r) => {
+                                repo = Some(r);
+                                limit = COMMIT_LIMIT;
+                                (stamp, work_fp) =
+                                    refresh_tracking(repo.as_ref().expect("just opened"));
+                                send_snapshot(repo.as_mut().expect("just opened"), limit);
+                                reply(Reply::Op {
+                                    label: "init",
+                                    result: Ok("initialized git repository".into()),
+                                });
+                            }
+                            Err(e) => {
+                                reply(Reply::Op {
+                                    label: "init",
+                                    result: Err(e.to_string()),
+                                });
+                            }
+                        }
                     }
-                    Ok(Command::LoadMore(n)) => {
+                    Ok(Command::Refresh) if repo.is_some() => {
+                        let r = repo.as_mut().expect("checked");
+                        send_snapshot(r, limit);
+                        (stamp, work_fp) = refresh_tracking(r);
+                    }
+                    Ok(Command::LoadMore(n)) if repo.is_some() => {
                         limit = n;
-                        send_snapshot(&mut repo, limit);
-                        (stamp, work_fp) = refresh_tracking(&repo);
+                        let r = repo.as_mut().expect("checked");
+                        send_snapshot(r, limit);
+                        (stamp, work_fp) = refresh_tracking(r);
                     }
-                    Ok(Command::LoadDiff(target)) => {
-                        reply(Reply::Diff(repo.diff(&target)));
+                    Ok(Command::LoadDiff(target)) if repo.is_some() => {
+                        reply(Reply::Diff(
+                            repo.as_ref().expect("checked").diff(&target),
+                        ));
                     }
-                    Ok(Command::LoadCommitFiles(oid)) => {
-                        reply(Reply::CommitFiles(oid, repo.commit_files(oid)));
+                    Ok(Command::LoadCommitFiles(oid)) if repo.is_some() => {
+                        reply(Reply::CommitFiles(
+                            oid,
+                            repo.as_ref().expect("checked").commit_files(oid),
+                        ));
                     }
                     Ok(Command::Focus(_)) => {}
-                    Ok(Command::CommitAndPush { message, amend }) => {
+                    Ok(Command::CommitAndPush { message, amend }) if repo.is_some() => {
+                        let r = repo.as_mut().expect("checked");
                         let commit_result = write_op(
-                            &mut repo,
+                            r,
                             Command::Commit {
                                 message,
                                 amend,
@@ -175,10 +249,10 @@ pub fn spawn(path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Result<Wo
                                 result: push_result,
                             });
                         }
-                        send_snapshot(&mut repo, limit);
-                        (stamp, work_fp) = refresh_tracking(&repo);
+                        send_snapshot(r, limit);
+                        (stamp, work_fp) = refresh_tracking(r);
                     }
-                    Ok(cmd @ (Command::Fetch | Command::Pull | Command::Push)) => {
+                    Ok(cmd @ (Command::Fetch | Command::Pull | Command::Push)) if repo.is_some() => {
                         let label = cmd.label();
                         reply(Reply::NetStart(label));
                         let args: &[&str] = match cmd {
@@ -188,29 +262,51 @@ pub fn spawn(path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Result<Wo
                         };
                         let result = run_git_cli(&workdir, args, &reply);
                         reply(Reply::Op { label, result });
-                        send_snapshot(&mut repo, limit);
-                        (stamp, work_fp) = refresh_tracking(&repo);
+                        let r = repo.as_mut().expect("checked");
+                        send_snapshot(r, limit);
+                        (stamp, work_fp) = refresh_tracking(r);
                     }
-                    Ok(cmd) => {
+                    Ok(Command::PublishGithub {
+                        name,
+                        description,
+                        private,
+                    }) if repo.is_some() => {
+                        reply(Reply::NetStart("publish"));
+                        let args = gh_repo_create_args(&name, &description, private);
+                        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+                        let result = run_gh_cli(&workdir, &arg_refs, &reply);
+                        reply(Reply::Op {
+                            label: "publish",
+                            result,
+                        });
+                        let r = repo.as_mut().expect("checked");
+                        send_snapshot(r, limit);
+                        (stamp, work_fp) = refresh_tracking(r);
+                    }
+                    Ok(cmd) if repo.is_some() => {
+                        let r = repo.as_mut().expect("checked");
                         let label = cmd.label();
-                        let result = write_op(&mut repo, cmd).map_err(|e| e.to_string());
+                        let result = write_op(r, cmd).map_err(|e| e.to_string());
                         reply(Reply::Op { label, result });
-                        send_snapshot(&mut repo, limit);
-                        (stamp, work_fp) = refresh_tracking(&repo);
+                        send_snapshot(r, limit);
+                        (stamp, work_fp) = refresh_tracking(r);
                     }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        let (new_stamp, new_fp) = refresh_tracking(&repo);
+                    Ok(_) => reply(Reply::Error("not a git repository".into())),
+                    Err(mpsc::RecvTimeoutError::Timeout) if repo.is_some() => {
+                        let r = repo.as_mut().expect("checked");
+                        let (new_stamp, new_fp) = refresh_tracking(r);
                         if new_stamp != stamp || new_fp != work_fp {
                             stamp = new_stamp;
                             work_fp = new_fp;
-                            send_snapshot(&mut repo, limit);
+                            send_snapshot(r, limit);
                         }
                     }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
             }
         })
         .expect("spawn git worker");
-    Ok(Worker { tx })
+    Worker { tx }
 }
 
 fn write_op(repo: &mut Repo, cmd: Command) -> Result<String, GitError> {
@@ -255,8 +351,16 @@ fn write_op(repo: &mut Repo, cmd: Command) -> Result<String, GitError> {
             )
         }
         Command::Checkout(name) => {
-            let local = repo.checkout(&name)?;
+            let local = repo.checkout(&name, false)?;
             format!("checked out {local}")
+        }
+        Command::ForceCheckout(name) => {
+            let local = repo.checkout(&name, true)?;
+            format!("checked out {local} (discarded local changes)")
+        }
+        Command::StashAndCheckout { branch, message } => {
+            let local = repo.stash_and_checkout(&message, &branch)?;
+            format!("stashed and checked out {local}")
         }
         Command::CreateBranch {
             name,
@@ -352,6 +456,92 @@ fn run_git_cli(
     }
 }
 
+/// Build `gh repo create` arguments for publishing a local repo.
+pub fn gh_repo_create_args(name: &str, description: &str, private: bool) -> Vec<String> {
+    let mut args = vec![
+        "repo".into(),
+        "create".into(),
+        name.trim().to_owned(),
+        if private {
+            "--private".into()
+        } else {
+            "--public".into()
+        },
+        "--source=.".into(),
+        "--remote=origin".into(),
+        "--push".into(),
+    ];
+    let desc = description.trim();
+    if !desc.is_empty() {
+        args.push("--description".into());
+        args.push(desc.to_owned());
+    }
+    args
+}
+
+/// Run `gh <args>` in the working directory, streaming output lines.
+fn run_gh_cli(
+    workdir: &Path,
+    args: &[&str],
+    reply: &(impl Fn(Reply) + Send + 'static),
+) -> Result<String, String> {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command as Proc, Stdio};
+    let mut child = Proc::new("gh")
+        .args(args)
+        .current_dir(workdir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("cannot run gh: {e} (install GitHub CLI and run gh auth login)"))?;
+    reply(Reply::NetLine(format!("$ gh {}", args.join(" "))));
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let (tx, rx) = mpsc::channel::<String>();
+    let tx2 = tx.clone();
+    let h1 = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
+            let _ = tx.send(line);
+        }
+    });
+    let h2 = std::thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            match reader.read_until(b'\n', &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    for part in buf.split(|&b| b == b'\r' || b == b'\n') {
+                        let s = String::from_utf8_lossy(part).trim_end().to_owned();
+                        if !s.is_empty() {
+                            let _ = tx2.send(s);
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let mut last = String::new();
+    for line in rx {
+        last = line.clone();
+        reply(Reply::NetLine(line));
+    }
+    let _ = h1.join();
+    let _ = h2.join();
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok("published to GitHub".into())
+    } else {
+        Err(if last.is_empty() {
+            format!("gh {} failed ({status})", args.join(" "))
+        } else {
+            last
+        })
+    }
+}
+
 /// Modification times of the watched paths. Cheap enough to run every 2 s.
 fn stamp(paths: &[PathBuf]) -> Vec<Option<SystemTime>> {
     paths.iter().map(|p| mtime(p)).collect()
@@ -381,8 +571,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let w = spawn(t.dir.clone(), move |r| {
             let _ = tx.send(r);
-        })
-        .unwrap();
+        });
         match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
             Reply::Snapshot(s) => assert_eq!(s.commits.len(), 1),
             other => panic!("unexpected {other:?}"),
@@ -445,8 +634,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let w = spawn(t.dir.clone(), move |r| {
             let _ = tx.send(r);
-        })
-        .unwrap();
+        });
         let _ = rx.recv_timeout(Duration::from_secs(5));
         w.tx.send(Command::StageAll).unwrap();
         while !matches!(
@@ -490,8 +678,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let w = spawn(t.dir.clone(), move |r| {
             let _ = tx.send(r);
-        })
-        .unwrap();
+        });
         match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
             Reply::Snapshot(s) => assert!(s.unstaged.is_empty()),
             other => panic!("unexpected {other:?}"),
@@ -515,10 +702,35 @@ mod tests {
     }
 
     #[test]
-    fn worker_fails_outside_repo() {
+    fn worker_no_repo_sends_norepo() {
         let dir = std::env::temp_dir().join(format!("gitgui-ops-norepo-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(spawn(dir.clone(), |_| {}).is_err());
+        let (tx, rx) = mpsc::channel();
+        let w = spawn(dir.clone(), move |r| {
+            let _ = tx.send(r);
+        });
+        match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+            Reply::NoRepo(p) => assert_eq!(p, dir),
+            other => panic!("unexpected {other:?}"),
+        }
+        w.tx.send(Command::InitRepo).unwrap();
+        match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+            Reply::Snapshot(s) => assert!(s.commits.is_empty()),
+            other => panic!("expected snapshot after init, got {other:?}"),
+        }
+        w.tx.send(Command::Quit).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gh_repo_create_args_include_visibility_and_push() {
+        let public = gh_repo_create_args("my-app", "hello", false);
+        assert!(public.contains(&"my-app".to_string()));
+        assert!(public.contains(&"--public".to_string()));
+        assert!(public.contains(&"--push".to_string()));
+        assert!(public.contains(&"--description".to_string()));
+        let private = gh_repo_create_args("user/my-app", "", true);
+        assert!(private.contains(&"--private".to_string()));
+        assert!(!private.contains(&"--description".to_string()));
     }
 }

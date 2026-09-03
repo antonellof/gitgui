@@ -1,6 +1,7 @@
 //! Top-level application state and layout (docs/SPEC.md section 4).
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -9,7 +10,7 @@ use git2::Oid;
 use crate::git::ops::{Command, Reply};
 use crate::git::repo::{DiffTarget, DiffText, FileStatus, RepoSnapshot};
 use crate::ui::theme::Theme;
-use crate::ui::{changes, diff, log, sidebar};
+use crate::ui::{branch_picker, changes, diff, icons, log, sidebar, toolbar};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selection {
@@ -46,6 +47,20 @@ pub enum Modal {
         message: String,
     },
     DropStash(usize),
+    /// Pick a branch to switch to (click current branch in the status bar).
+    BranchPicker {
+        filter: String,
+    },
+    /// Uncommitted changes block checkout; ask how to proceed.
+    CheckoutConfirm {
+        target: String,
+    },
+    /// Create a GitHub repo with gh and push (no origin yet).
+    PublishGithub {
+        name: String,
+        description: String,
+        private: bool,
+    },
 }
 
 pub struct NetLog {
@@ -93,10 +108,16 @@ pub struct App {
     /// Where the Commit button was laid out last pass (tests click it).
     pub commit_button_rect: Option<egui::Rect>,
     pub commit_push_button_rect: Option<egui::Rect>,
+    /// Set when the user clicks Quit or presses `q`.
+    pub quit: bool,
+    /// Opened directory is not a git repository yet.
+    pub no_repo: bool,
+    /// Path the user opened (may become a repo after init).
+    pub repo_path: PathBuf,
 }
 
 impl App {
-    pub fn new(theme: Theme, transport: &'static str, scale: f32) -> Self {
+    pub fn new(theme: Theme, transport: &'static str, scale: f32, repo_path: PathBuf) -> Self {
         Self {
             theme,
             snapshot: Arc::new(RepoSnapshot::default()),
@@ -135,7 +156,14 @@ impl App {
             busy: 0,
             commit_button_rect: None,
             commit_push_button_rect: None,
+            quit: false,
+            no_repo: false,
+            repo_path,
         }
+    }
+
+    pub fn request_quit(&mut self) {
+        self.quit = true;
     }
 
     pub fn toast(&mut self, text: impl Into<String>, error: bool) {
@@ -155,7 +183,13 @@ impl App {
 
     pub fn apply(&mut self, reply: Reply) {
         match reply {
+            Reply::NoRepo(path) => {
+                self.no_repo = true;
+                self.repo_path = path;
+                self.have_snapshot = false;
+            }
             Reply::Snapshot(s) => {
+                self.no_repo = false;
                 let first = !self.have_snapshot;
                 self.snapshot = s;
                 self.have_snapshot = true;
@@ -241,7 +275,7 @@ impl App {
                     }
                     Err(e) => self.toast(format!("{label} failed: {e}"), true),
                 }
-                if self.net.running && matches!(label, "fetch" | "pull" | "push") {
+                if self.net.running && matches!(label, "fetch" | "pull" | "push" | "publish") {
                     self.net.running = false;
                 }
             }
@@ -263,8 +297,16 @@ impl App {
 
     /// Queue a write or network command.
     pub fn run(&mut self, cmd: Command) {
+        if self.no_repo && !matches!(cmd, Command::InitRepo) {
+            self.toast("not a git repository", true);
+            return;
+        }
         self.busy += 1;
         self.pending.push(cmd);
+    }
+
+    pub fn init_repo(&mut self) {
+        self.run(Command::InitRepo);
     }
 
     /// The file the detail pane currently shows, as (path, staged?).
@@ -318,6 +360,65 @@ impl App {
             message: msg,
             amend: self.amend,
         });
+    }
+
+    pub fn open_branch_picker(&mut self) {
+        if self.busy > 0 {
+            return;
+        }
+        self.modal = Some(Modal::BranchPicker {
+            filter: String::new(),
+        });
+    }
+
+    pub fn open_publish_github(&mut self) {
+        if self.busy > 0 || branch_picker::has_origin(&self.snapshot) {
+            return;
+        }
+        self.modal = Some(Modal::PublishGithub {
+            name: branch_picker::default_github_repo_name(&self.snapshot),
+            description: String::new(),
+            private: false,
+        });
+    }
+
+    fn valid_github_repo_name(name: &str) -> bool {
+        let n = name.trim();
+        !n.is_empty()
+            && !n.contains(' ')
+            && n.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '/' || c == '.')
+    }
+
+    pub fn try_switch_branch(&mut self, target: String) {
+        if self.busy > 0 {
+            return;
+        }
+        let current = self
+            .snapshot
+            .head
+            .as_ref()
+            .and_then(|h| h.branch_name.clone());
+        if current.as_deref() == Some(target.as_str()) {
+            self.modal = None;
+            return;
+        }
+        if self.snapshot.is_dirty() {
+            self.modal = Some(Modal::CheckoutConfirm { target });
+        } else {
+            self.modal = None;
+            self.run(Command::Checkout(target));
+        }
+    }
+
+    fn stash_message_for_switch(&self, target: &str) -> String {
+        let cur = self
+            .snapshot
+            .head
+            .as_ref()
+            .and_then(|h| h.branch_name.as_deref())
+            .unwrap_or("HEAD");
+        format!("WIP on {cur} before switching to {target}")
     }
 
     fn worktree_has(&self, t: &DiffTarget) -> bool {
@@ -566,11 +667,21 @@ impl App {
 
     pub fn ui(&mut self, root: &mut egui::Ui) {
         let ctx = root.ctx().clone();
-        self.handle_keys(&ctx);
+        if !self.no_repo {
+            self.handle_keys(&ctx);
+        } else {
+            self.handle_keys_no_repo(&ctx);
+        }
         self.toasts
             .retain(|t| t.at.elapsed().as_secs_f32() < if t.error { 8.0 } else { 3.0 });
         if !self.toasts.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+
+        if self.no_repo {
+            self.show_no_repo(root);
+            self.show_toasts(&ctx);
+            return;
         }
 
         egui::Panel::left("sidebar")
@@ -579,7 +690,10 @@ impl App {
             .show(root, |ui| {
                 sidebar::show(self, ui);
             });
-        egui::Panel::bottom("status").show(root, |ui| self.status_bar(ui));
+        egui::Panel::bottom("status")
+            .default_size(28.0)
+            .resizable(false)
+            .show(root, |ui| self.status_bar(ui));
         if self.net.open {
             egui::Panel::bottom("netlog")
                 .default_size(140.0)
@@ -605,9 +719,64 @@ impl App {
         self.show_modal(&ctx);
     }
 
+    fn show_no_repo(&mut self, root: &mut egui::Ui) {
+        egui::Panel::bottom("status")
+            .default_size(28.0)
+            .resizable(false)
+            .show(root, |ui| self.status_bar_no_repo(ui));
+        egui::CentralPanel::default().show(root, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(ui.available_height() * 0.28);
+                ui.heading("Not a git repository");
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(self.repo_path.display().to_string()).monospace(),
+                );
+                ui.add_space(16.0);
+                ui.label("Initialize a repository here to start using gitgui.");
+                ui.add_space(12.0);
+                let busy = self.busy > 0;
+                if ui
+                    .add_enabled(!busy, egui::Button::new("Initialize git repository"))
+                    .on_hover_text("Runs git init in this folder")
+                    .clicked()
+                {
+                    self.init_repo();
+                }
+            });
+        });
+    }
+
+    fn status_bar_no_repo(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            let path = self.repo_path.to_string_lossy();
+            let shown = match std::env::var("HOME") {
+                Ok(h) if path.starts_with(&h) => format!("~{}", &path[h.len()..]),
+                _ => path.to_string(),
+            };
+            ui.label(shown.trim_end_matches('/').to_owned());
+            ui.separator();
+            ui.weak("no git repository");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                toolbar::show(self, ui);
+            });
+        });
+    }
+
+    fn handle_keys_no_repo(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| plain(i, egui::Key::Q)) {
+            self.request_quit();
+        }
+    }
+
     fn net_log(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.strong(format!("git {}", self.net.label));
+            ui.strong(if self.net.label == "publish" {
+                format!("gh {}", self.net.label)
+            } else {
+                format!("git {}", self.net.label)
+            });
             if self.net.running {
                 ui.spinner();
                 ui.ctx()
@@ -636,6 +805,9 @@ impl App {
         };
         let mut close = false;
         let mut cmd: Option<Command> = None;
+        let mut switch_branch: Option<String> = None;
+        let mut open_new_branch = false;
+        let mut open_publish = false;
         let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
         let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
         // Dim the background and swallow clicks outside the dialog.
@@ -654,6 +826,9 @@ impl App {
             Modal::DeleteBranch(_) => "Delete branch",
             Modal::StashPush { .. } => "Stash changes",
             Modal::DropStash(_) => "Drop stash",
+            Modal::BranchPicker { .. } => "Switch branch",
+            Modal::CheckoutConfirm { .. } => "Uncommitted changes",
+            Modal::PublishGithub { .. } => "Publish to GitHub",
         };
         egui::Window::new(title)
             .collapsible(false)
@@ -661,7 +836,11 @@ impl App {
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.set_min_width(360.0);
+                ui.set_min_width(if matches!(modal, Modal::BranchPicker { .. }) {
+                    460.0
+                } else {
+                    360.0
+                });
                 match modal {
                     Modal::Discard(paths) => {
                         ui.label(format!(
@@ -774,10 +953,165 @@ impl App {
                             }
                         });
                     }
+                    Modal::BranchPicker { mut filter } => {
+                        if !close {
+                            let busy = self.busy > 0;
+                            let snapshot = self.snapshot.clone();
+                            let theme = self.theme.clone();
+                            match branch_picker::show(ui, &snapshot, &theme, &mut filter, busy)
+                            {
+                                Some(branch_picker::BranchPickerAction::Select(name)) => {
+                                    switch_branch = Some(name);
+                                    close = true;
+                                }
+                                Some(branch_picker::BranchPickerAction::CreateNew) => {
+                                    open_new_branch = true;
+                                    close = true;
+                                }
+                                Some(branch_picker::BranchPickerAction::PublishGithub) => {
+                                    open_publish = true;
+                                    close = true;
+                                }
+                                None => {}
+                            }
+                        }
+                        if esc {
+                            close = true;
+                        }
+                        if !close {
+                            self.modal = Some(Modal::BranchPicker { filter });
+                        }
+                    }
+                    Modal::CheckoutConfirm { target } => {
+                        let s = &self.snapshot;
+                        ui.label(format!("Switch to `{target}`?"));
+                        ui.add_space(4.0);
+                        ui.label("Your local changes would be overwritten or must be moved first:");
+                        ui.weak(format!(
+                            "{} unstaged, {} staged, {} conflicted",
+                            s.unstaged.len(),
+                            s.staged.len(),
+                            s.conflicted.len()
+                        ));
+                        ui.add_space(4.0);
+                        let stash_msg = self.stash_message_for_switch(&target);
+                        ui.horizontal(|ui| {
+                            if ui.button("Stash and switch").clicked() || enter {
+                                cmd = Some(Command::StashAndCheckout {
+                                    branch: target.clone(),
+                                    message: stash_msg,
+                                });
+                                close = true;
+                            }
+                            if ui.button("Discard and switch").clicked() {
+                                cmd = Some(Command::ForceCheckout(target.clone()));
+                                close = true;
+                            }
+                            if ui.button("Cancel").clicked() || esc {
+                                close = true;
+                            }
+                        });
+                    }
+                    Modal::PublishGithub {
+                        mut name,
+                        mut description,
+                        mut private,
+                    } => {
+                        ui.label("Create a GitHub repository and push the current branch.");
+                        ui.weak("Uses GitHub CLI (gh). Run gh auth login first.");
+                        ui.add_space(4.0);
+                        ui.label("Repository name");
+                        let name_resp = ui.add(
+                            egui::TextEdit::singleline(&mut name)
+                                .hint_text("my-repo or owner/my-repo")
+                                .desired_width(f32::INFINITY),
+                        );
+                        if !name_resp.has_focus() && !ctx.egui_wants_keyboard_input() {
+                            name_resp.request_focus();
+                        }
+                        ui.label("Description (optional)");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut description)
+                                .hint_text("Short description")
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.radio_value(&mut private, false, "Public");
+                            ui.radio_value(&mut private, true, "Private");
+                        });
+                        let valid = Self::valid_github_repo_name(&name);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(valid, egui::Button::new("Create and push"))
+                                .clicked()
+                                || (enter && valid)
+                            {
+                                cmd = Some(Command::PublishGithub {
+                                    name: name.trim().to_owned(),
+                                    description: description.trim().to_owned(),
+                                    private,
+                                });
+                                close = true;
+                            }
+                            if ui.button("Cancel").clicked() || esc {
+                                close = true;
+                            }
+                        });
+                        if !close {
+                            self.modal = Some(Modal::PublishGithub {
+                                name,
+                                description,
+                                private,
+                            });
+                        }
+                    }
+                }
+                if !close {
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if ui.button("Close").on_hover_text("Escape").clicked() {
+                                    close = true;
+                                }
+                            },
+                        );
+                    });
                 }
             });
         if let Some(c) = cmd {
             self.run(c);
+        }
+        if let Some(target) = switch_branch {
+            self.try_switch_branch(target);
+            return;
+        }
+        if open_new_branch {
+            let s = &self.snapshot;
+            let from = s
+                .head
+                .as_ref()
+                .and_then(|h| h.oid)
+                .or_else(|| s.commits.first().map(|c| c.oid))
+                .unwrap_or(git2::Oid::ZERO_SHA1.to_owned());
+            let from_label = s
+                .head
+                .as_ref()
+                .and_then(|h| h.branch_name.clone())
+                .unwrap_or_else(|| "HEAD".into());
+            self.modal = Some(Modal::NewBranch {
+                name: String::new(),
+                from,
+                from_label,
+                checkout: true,
+            });
+            return;
+        }
+        if open_publish {
+            self.open_publish_github();
+            return;
         }
         if close {
             self.modal = None;
@@ -786,9 +1120,13 @@ impl App {
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
+        let open_picker = std::cell::Cell::new(false);
+        let snapshot = self.snapshot.clone();
+        let busy = self.busy;
+        let modal_open = self.modal.is_some();
         ui.horizontal(|ui| {
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-            let s = &self.snapshot;
+            let s = &snapshot;
             let path = s.path.to_string_lossy();
             let shown = match std::env::var("HOME") {
                 Ok(h) if path.starts_with(&h) => format!("~{}", &path[h.len()..]),
@@ -796,21 +1134,44 @@ impl App {
             };
             ui.label(shown.trim_end_matches('/').to_owned());
             ui.separator();
-            match &s.head {
-                Some(h) => {
-                    let name = h.branch_name.clone().unwrap_or_else(|| {
-                        h.oid.map(|o| format!("detached {}", crate::git::repo::short_id(o))).unwrap_or_else(|| "no HEAD".into())
-                    });
-                    ui.strong(name);
-                    if let Some(b) = s.branches.iter().find(|b| b.is_head) {
-                        if b.ahead > 0 || b.behind > 0 {
-                            ui.weak(format!("{}↑ {}↓", b.ahead, b.behind));
-                        }
+            let can_pick_branch = busy == 0 && !modal_open;
+            if let Some(h) = &s.head {
+                let name = h.branch_name.clone().unwrap_or_else(|| {
+                    h.oid
+                        .map(|o| format!("detached {}", crate::git::repo::short_id(o)))
+                        .unwrap_or_else(|| "no HEAD".into())
+                });
+                let branch_color = ui.visuals().text_color();
+                let mut picked = false;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    if ui
+                        .add(
+                            egui::Label::new(egui::RichText::new(name).strong())
+                                .sense(egui::Sense::click()),
+                        )
+                        .on_hover_text("Switch branch")
+                        .clicked()
+                    {
+                        picked = true;
+                    }
+                    if icons::chevron_down(ui, branch_color)
+                        .on_hover_text("Switch branch")
+                        .clicked()
+                    {
+                        picked = true;
+                    }
+                });
+                if picked && can_pick_branch {
+                    open_picker.set(true);
+                }
+                if let Some(b) = s.branches.iter().find(|b| b.is_head) {
+                    if b.ahead > 0 || b.behind > 0 {
+                        ui.weak(format!("{}↑ {}↓", b.ahead, b.behind));
                     }
                 }
-                None => {
-                    ui.weak("loading");
-                }
+            } else {
+                ui.weak("loading");
             }
             ui.separator();
             ui.weak(format!("{} unstaged, {} staged", s.unstaged.len(), s.staged.len()));
@@ -823,9 +1184,12 @@ impl App {
                     ui.weak(format!("{:.1} ms {} x{}", self.frame_ms, self.transport, self.scale));
                     ui.separator();
                 }
-                ui.label(key_hints_label(&self.theme, ui.visuals().weak_text_color()));
+                toolbar::show(self, ui);
             });
         });
+        if open_picker.get() {
+            self.open_branch_picker();
+        }
     }
 
     fn show_toasts(&self, ctx: &egui::Context) {
@@ -878,52 +1242,6 @@ fn shifted(i: &egui::InputState, key: egui::Key) -> bool {
 
 fn ctrl(i: &egui::InputState, key: egui::Key) -> bool {
     key_press(i, key).is_some_and(|m| m.ctrl)
-}
-
-/// Status bar keybinding hints: bright monospace keys, muted descriptions.
-fn key_hints_label(theme: &Theme, desc_color: egui::Color32) -> egui::text::LayoutJob {
-    use egui::text::{LayoutJob, TextFormat};
-    use egui::{FontFamily, FontId};
-
-    let key_format = TextFormat {
-        font_id: FontId::new(12.0, FontFamily::Monospace),
-        color: theme.hunk_fg,
-        ..Default::default()
-    };
-    let desc_format = TextFormat {
-        font_id: FontId::default(),
-        color: desc_color,
-        ..Default::default()
-    };
-    let sep_format = desc_format.clone();
-
-    let hints = [
-        ("j/k", "move"),
-        ("s/u", "stage/unstage"),
-        ("a/A", "all"),
-        ("S", "stash"),
-        ("c", "commit"),
-        ("r", "refresh"),
-        ("f/p/P", "fetch/pull/push"),
-        ("/", "filter"),
-        ("q", "quit"),
-    ];
-
-    let mut job = LayoutJob::default();
-    for (i, (keys, desc)) in hints.iter().enumerate() {
-        if i > 0 {
-            job.append("  ", 0.0, sep_format.clone());
-        }
-        job.append(keys, 0.0, key_format.clone());
-        job.append(" ", 0.0, sep_format.clone());
-        job.append(desc, 0.0, desc_format.clone());
-    }
-    job.append("  ", 0.0, sep_format.clone());
-    job.append("^Enter", 0.0, key_format.clone());
-    job.append(" commit  ", 0.0, sep_format.clone());
-    job.append("^⇧Enter", 0.0, key_format.clone());
-    job.append(" commit+push", 0.0, desc_format.clone());
-    job
 }
 
 /// Human readable age like "3m", "2h", "5d", "3mo", "2y".
