@@ -68,9 +68,17 @@ impl fmt::Display for Capabilities {
         writeln!(f, "pixel mouse    : {}", self.pixel_mouse)?;
         writeln!(f, "cell size      : {}x{} px", self.cell_w, self.cell_h)?;
         writeln!(f, "text area      : {}x{} px", self.px_w, self.px_h)?;
-        writeln!(f, "grid           : {} cols x {} rows", self.cols, self.rows)?;
+        writeln!(
+            f,
+            "grid           : {} cols x {} rows",
+            self.cols, self.rows
+        )?;
         let (fw, fh) = self.frame_size();
-        writeln!(f, "frame          : {fw}x{fh} px, scale {}", self.pixels_per_point())?;
+        writeln!(
+            f,
+            "frame          : {fw}x{fh} px, scale {}",
+            self.pixels_per_point()
+        )?;
         match self.background {
             Some([r, g, b]) => writeln!(f, "background     : #{r:02x}{g:02x}{b:02x}")?,
             None => writeln!(f, "background     : unknown")?,
@@ -111,18 +119,23 @@ pub fn parse_replies(buf: &[u8], caps: &mut Capabilities) -> bool {
             i += 1 + 1 + end + skip;
         } else if rest.starts_with(b"_G") {
             // APC G ... ST
-            let Some(end) = find(rest, b"\x1b\\") else { break };
+            let Some(end) = find(rest, b"\x1b\\") else {
+                break;
+            };
             parse_graphics_reply(&rest[2..end], caps);
             i += 1 + end + 2;
         } else if rest.first() == Some(&b'[') {
             // CSI params final
             let body = &rest[1..];
-            let Some(fin) = body.iter().position(|b| (0x40..=0x7e).contains(b)) else { break };
+            let Some(fin) = body.iter().position(|b| (0x40..=0x7e).contains(b)) else {
+                break;
+            };
             let params = &body[..fin];
             match body[fin] {
                 b'u' => {
                     if let Some(p) = params.strip_prefix(b"?") {
-                        caps.kitty_keyboard = std::str::from_utf8(p).ok().and_then(|s| s.parse().ok());
+                        caps.kitty_keyboard =
+                            std::str::from_utf8(p).ok().and_then(|s| s.parse().ok());
                     }
                 }
                 b't' => {
@@ -153,8 +166,14 @@ pub fn parse_replies(buf: &[u8], caps: &mut Capabilities) -> bool {
                     // DECRPM: CSI ? Pd ; Ps $ y   (Ps 0 = not recognised)
                     let inner = &params[1..params.len() - 1];
                     let mut it = inner.split(|&c| c == b';');
-                    let mode = it.next().and_then(|s| std::str::from_utf8(s).ok()).and_then(|s| s.parse::<u32>().ok());
-                    let state = it.next().and_then(|s| std::str::from_utf8(s).ok()).and_then(|s| s.parse::<u32>().ok());
+                    let mode = it
+                        .next()
+                        .and_then(|s| std::str::from_utf8(s).ok())
+                        .and_then(|s| s.parse::<u32>().ok());
+                    let state = it
+                        .next()
+                        .and_then(|s| std::str::from_utf8(s).ok())
+                        .and_then(|s| s.parse::<u32>().ok());
                     if mode == Some(1016) {
                         caps.pixel_mouse = matches!(state, Some(1..=4));
                     }
@@ -180,15 +199,21 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 /// `11;rgb:rrrr/gggg/bbbb` (16 bit per channel) or `11;rgb:rr/gg/bb`.
 fn parse_osc_reply(body: &[u8], caps: &mut Capabilities) {
     let text = String::from_utf8_lossy(body);
-    let Some(rest) = text.strip_prefix("11;") else { return };
-    let Some(rgb) = rest.strip_prefix("rgb:") else { return };
+    let Some(rest) = text.strip_prefix("11;") else {
+        return;
+    };
+    let Some(rgb) = rest.strip_prefix("rgb:") else {
+        return;
+    };
     let parts: Vec<&str> = rgb.split('/').collect();
     if parts.len() != 3 {
         return;
     }
     let mut out = [0u8; 3];
     for (i, p) in parts.iter().enumerate() {
-        let Ok(v) = u32::from_str_radix(p, 16) else { return };
+        let Ok(v) = u32::from_str_radix(p, 16) else {
+            return;
+        };
         out[i] = match p.len() {
             1 => (v * 17) as u8,
             2 => v as u8,
@@ -201,7 +226,9 @@ fn parse_osc_reply(body: &[u8], caps: &mut Capabilities) {
 
 fn parse_graphics_reply(body: &[u8], caps: &mut Capabilities) {
     let text = String::from_utf8_lossy(body);
-    let Some((ctl, msg)) = text.split_once(';') else { return };
+    let Some((ctl, msg)) = text.split_once(';') else {
+        return;
+    };
     let id: Option<u32> = ctl
         .split(',')
         .find_map(|kv| kv.strip_prefix("i="))
@@ -216,7 +243,8 @@ fn parse_graphics_reply(body: &[u8], caps: &mut Capabilities) {
 
 /// Fill the environment-derived fields.
 pub fn env_hints(caps: &mut Capabilities) {
-    caps.ssh = std::env::var_os("SSH_TTY").is_some() || std::env::var_os("SSH_CONNECTION").is_some();
+    caps.ssh =
+        std::env::var_os("SSH_TTY").is_some() || std::env::var_os("SSH_CONNECTION").is_some();
     caps.term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
     caps.multiplexer = if std::env::var_os("TMUX").is_some() {
         Some("tmux".into())
@@ -235,7 +263,12 @@ pub fn winsize() -> Option<(u32, u32, u32, u32)> {
     if rc != 0 {
         return None;
     }
-    Some((ws.ws_row as u32, ws.ws_col as u32, ws.ws_xpixel as u32, ws.ws_ypixel as u32))
+    Some((
+        ws.ws_row as u32,
+        ws.ws_col as u32,
+        ws.ws_xpixel as u32,
+        ws.ws_ypixel as u32,
+    ))
 }
 
 /// Refresh grid and cell size after SIGWINCH using the ioctl. Keeps the
@@ -375,13 +408,19 @@ mod tests {
     #[test]
     fn osc11_background() {
         let mut caps = Capabilities::default();
-        assert!(parse_replies(b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\\x1b[?c", &mut caps));
+        assert!(parse_replies(
+            b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\\x1b[?c",
+            &mut caps
+        ));
         assert_eq!(caps.background, Some([0x1e, 0x1e, 0x2e]));
         let mut caps = Capabilities::default();
         assert!(parse_replies(b"\x1b]11;rgb:ff/ff/ff\x07\x1b[?c", &mut caps));
         assert_eq!(caps.background, Some([0xff, 0xff, 0xff]));
         let mut caps = Capabilities::default();
-        assert!(parse_replies(b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\\x1b[?c", &mut caps));
+        assert!(parse_replies(
+            b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\\x1b[?c",
+            &mut caps
+        ));
         assert_eq!(caps.background, None, "foreground reply is ignored");
     }
 
@@ -400,7 +439,14 @@ mod tests {
     #[test]
     fn scale_buckets() {
         let mut c = Capabilities::default();
-        for (h, want) in [(16, 1.0), (19, 1.0), (20, 1.5), (24, 1.5), (28, 2.0), (34, 2.0)] {
+        for (h, want) in [
+            (16, 1.0),
+            (19, 1.0),
+            (20, 1.5),
+            (24, 1.5),
+            (28, 2.0),
+            (34, 2.0),
+        ] {
             c.cell_h = h;
             assert_eq!(c.pixels_per_point(), want, "cell_h {h}");
         }

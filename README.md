@@ -77,7 +77,7 @@ gitgui never binds `Cmd+*` or `Ctrl+Shift+*`; those stay with your terminal and 
 - [x] Phase 2: input. Kitty keyboard, SGR pixel mouse, paste, focus, resize.
 - [x] Phase 3: read-only git. Sidebar, commit graph, commit detail, diff view.
 - [x] Phase 4: writes. Stage and unstage by file and hunk, commit, amend, branches, stash, fetch, pull, push.
-- [ ] Phase 5: integration. Split panes in cmux and Ghostty, agent control socket, install script, release builds.
+- [ ] Phase 5: integration. Split panes in cmux and Ghostty, agent control socket, install script, release builds. Not started.
 
 ## Development
 

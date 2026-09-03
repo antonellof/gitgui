@@ -81,9 +81,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         .max()
         .unwrap_or(0);
     let wrap = app.wrap;
-    let mut area = egui::ScrollArea::vertical().id_salt("diff_scroll").auto_shrink([false, false]);
+    let mut area = egui::ScrollArea::vertical()
+        .id_salt("diff_scroll")
+        .auto_shrink([false, false]);
     if !wrap {
-        area = egui::ScrollArea::both().id_salt("diff_scroll").auto_shrink([false, false]);
+        area = egui::ScrollArea::both()
+            .id_salt("diff_scroll")
+            .auto_shrink([false, false]);
     }
     let text_color = ui.visuals().text_color();
     let strong = ui.visuals().strong_text_color();
@@ -96,24 +100,43 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let busy = app.busy > 0;
     area.show_rows(ui, row_h, rows.len(), |ui, range| {
         let view_w = ui.available_width();
-        let content_w = if wrap { view_w } else { view_w.max(gutter + longest as f32 * char_w + 16.0) };
+        let content_w = if wrap {
+            view_w
+        } else {
+            view_w.max(gutter + longest as f32 * char_w + 16.0)
+        };
         for i in range {
             let (rect, _resp) = ui.allocate_exact_size(vec2(content_w, row_h), Sense::hover());
             let p = ui.painter();
             match &rows[i] {
                 Row::Hunk(hunk_index, header) => {
                     p.rect_filled(rect, 0.0, theme.hunk_bg);
-                    p.text(pos2(rect.min.x + 6.0, rect.center().y), egui::Align2::LEFT_CENTER, *header, font.clone(), theme.hunk_fg);
+                    p.text(
+                        pos2(rect.min.x + 6.0, rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        *header,
+                        font.clone(),
+                        theme.hunk_fg,
+                    );
                     if let Some((path, stage)) = &hunk_action {
                         let label = if *stage { "Stage hunk" } else { "Unstage hunk" };
                         let bw = 100.0;
-                        let brect = Rect::from_min_size(pos2(rect.min.x + view_w - bw - 8.0, rect.min.y + 1.0), vec2(bw, row_h - 2.0));
+                        let brect = Rect::from_min_size(
+                            pos2(rect.min.x + view_w - bw - 8.0, rect.min.y + 1.0),
+                            vec2(bw, row_h - 2.0),
+                        );
                         let clicked = ui.put(brect, egui::Button::new(label).small()).clicked();
                         if clicked && !busy {
                             let cmd = if *stage {
-                                Command::StageHunk { path: path.clone(), hunk_index: *hunk_index }
+                                Command::StageHunk {
+                                    path: path.clone(),
+                                    hunk_index: *hunk_index,
+                                }
                             } else {
-                                Command::UnstageHunk { path: path.clone(), hunk_index: *hunk_index }
+                                Command::UnstageHunk {
+                                    path: path.clone(),
+                                    hunk_index: *hunk_index,
+                                }
                             };
                             PENDING.with(|p| *p.borrow_mut() = Some(cmd));
                         }
@@ -131,7 +154,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     let old = l.old_no.map(|n| n.to_string()).unwrap_or_default();
                     let new = l.new_no.map(|n| n.to_string()).unwrap_or_default();
                     let no_x = rect.min.x + 4.0;
-                    p.text(pos2(no_x + char_w * digits as f32, rect.center().y), egui::Align2::RIGHT_CENTER, old, font.clone(), theme.line_no);
+                    p.text(
+                        pos2(no_x + char_w * digits as f32, rect.center().y),
+                        egui::Align2::RIGHT_CENTER,
+                        old,
+                        font.clone(),
+                        theme.line_no,
+                    );
                     p.text(
                         pos2(no_x + char_w * (digits as f32 * 2.0 + 1.0), rect.center().y),
                         egui::Align2::RIGHT_CENTER,
@@ -140,14 +169,25 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         theme.line_no,
                     );
                     let sign_x = rect.min.x + gutter - char_w * 1.5;
-                    p.text(pos2(sign_x, rect.center().y), egui::Align2::CENTER_CENTER, l.origin.to_string(), font.clone(), if l.origin == ' ' { text_color } else { strong });
-                    let text_rect = Rect::from_min_max(pos2(rect.min.x + gutter, rect.min.y), rect.max);
+                    p.text(
+                        pos2(sign_x, rect.center().y),
+                        egui::Align2::CENTER_CENTER,
+                        l.origin.to_string(),
+                        font.clone(),
+                        if l.origin == ' ' { text_color } else { strong },
+                    );
+                    let text_rect =
+                        Rect::from_min_max(pos2(rect.min.x + gutter, rect.min.y), rect.max);
                     let galley = if wrap {
                         p.layout(l.text.clone(), font.clone(), fg, text_rect.width())
                     } else {
                         p.layout_no_wrap(l.text.clone(), font.clone(), fg)
                     };
-                    p.with_clip_rect(text_rect).galley(pos2(text_rect.min.x, rect.center().y - galley.size().y / 2.0), galley, fg);
+                    p.with_clip_rect(text_rect).galley(
+                        pos2(text_rect.min.x, rect.center().y - galley.size().y / 2.0),
+                        galley,
+                        fg,
+                    );
                 }
             }
         }

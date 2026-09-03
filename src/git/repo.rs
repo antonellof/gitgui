@@ -199,8 +199,12 @@ pub struct Repo {
 impl Repo {
     /// Discover the repository containing `path`.
     pub fn open(path: &Path) -> Result<Repo> {
-        let repo = Repository::discover(path).map_err(|_| GitError::NotARepository(path.to_path_buf()))?;
-        let workdir = repo.workdir().map(|p| p.to_path_buf()).unwrap_or_else(|| repo.path().to_path_buf());
+        let repo =
+            Repository::discover(path).map_err(|_| GitError::NotARepository(path.to_path_buf()))?;
+        let workdir = repo
+            .workdir()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| repo.path().to_path_buf());
         Ok(Repo { repo, workdir })
     }
 
@@ -211,7 +215,14 @@ impl Repo {
     /// Paths whose mtime signals repository or working tree changes.
     pub fn watch_paths(&self) -> Vec<PathBuf> {
         let g = self.repo.path().to_path_buf();
-        vec![g.join("HEAD"), g.join("index"), g.join("refs"), g.join("packed-refs"), g.join("refs/heads"), self.workdir.clone()]
+        vec![
+            g.join("HEAD"),
+            g.join("index"),
+            g.join("refs"),
+            g.join("packed-refs"),
+            g.join("refs/heads"),
+            self.workdir.clone(),
+        ]
     }
 
     pub fn snapshot(&mut self, commit_limit: usize) -> Result<Arc<RepoSnapshot>> {
@@ -220,17 +231,33 @@ impl Repo {
         let tags = self.tags(&mut labels)?;
         if let Some(h) = &head {
             if let (Some(oid), true) = (h.oid, h.detached) {
-                labels.push((oid, RefLabel { name: "HEAD".into(), kind: RefKind::Head }));
+                labels.push((
+                    oid,
+                    RefLabel {
+                        name: "HEAD".into(),
+                        kind: RefKind::Head,
+                    },
+                ));
             }
         }
         let stashes = self.stashes()?;
-        let remotes = self.repo.remotes().map(|r| r.iter().flatten().flatten().map(|s| s.to_owned()).collect()).unwrap_or_default();
+        let remotes = self
+            .repo
+            .remotes()
+            .map(|r| r.iter().flatten().flatten().map(|s| s.to_owned()).collect())
+            .unwrap_or_default();
         let (commits, truncated) = self.log(&branches, &head, &labels, commit_limit)?;
         let graph = graph::layout(&commits);
         let (unstaged, staged, conflicted) = self.status()?;
         let cfg = self.repo.config().ok();
-        let user_name = cfg.as_ref().and_then(|c| c.get_string("user.name").ok()).unwrap_or_default();
-        let user_email = cfg.as_ref().and_then(|c| c.get_string("user.email").ok()).unwrap_or_default();
+        let user_name = cfg
+            .as_ref()
+            .and_then(|c| c.get_string("user.name").ok())
+            .unwrap_or_default();
+        let user_email = cfg
+            .as_ref()
+            .and_then(|c| c.get_string("user.email").ok())
+            .unwrap_or_default();
         Ok(Arc::new(RepoSnapshot {
             path: self.workdir.clone(),
             head,
@@ -255,7 +282,11 @@ impl Repo {
         let detached = self.repo.head_detached().unwrap_or(false);
         match head {
             Some(r) => Some(HeadInfo {
-                branch_name: if detached { None } else { r.shorthand().ok().map(|s| s.to_owned()) },
+                branch_name: if detached {
+                    None
+                } else {
+                    r.shorthand().ok().map(|s| s.to_owned())
+                },
                 oid: r.target(),
                 detached,
             }),
@@ -263,8 +294,16 @@ impl Repo {
                 // Unborn branch: HEAD points to a ref that does not exist yet.
                 let name = std::fs::read_to_string(self.repo.path().join("HEAD"))
                     .ok()
-                    .and_then(|s| s.trim().strip_prefix("ref: refs/heads/").map(|b| b.to_owned()));
-                Some(HeadInfo { branch_name: name, oid: None, detached: false })
+                    .and_then(|s| {
+                        s.trim()
+                            .strip_prefix("ref: refs/heads/")
+                            .map(|b| b.to_owned())
+                    });
+                Some(HeadInfo {
+                    branch_name: name,
+                    oid: None,
+                    detached: false,
+                })
             }
         }
     }
@@ -276,8 +315,12 @@ impl Repo {
         let head_name = head.as_ref().and_then(|h| h.branch_name.clone());
         for item in self.repo.branches(None)? {
             let (branch, kind) = item?;
-            let Some(name) = branch.name()?.map(|s| s.to_owned()) else { continue };
-            let Some(oid) = branch.get().target() else { continue };
+            let Some(name) = branch.name()?.map(|s| s.to_owned()) else {
+                continue;
+            };
+            let Some(oid) = branch.get().target() else {
+                continue;
+            };
             let is_remote = kind == git2::BranchType::Remote;
             if is_remote && name.ends_with("/HEAD") {
                 continue;
@@ -302,12 +345,28 @@ impl Repo {
                 oid,
                 RefLabel {
                     name: name.clone(),
-                    kind: if is_remote { RefKind::RemoteBranch } else { RefKind::LocalBranch },
+                    kind: if is_remote {
+                        RefKind::RemoteBranch
+                    } else {
+                        RefKind::LocalBranch
+                    },
                 },
             ));
-            out.push(Branch { name, oid, is_remote, upstream, ahead, behind, is_head });
+            out.push(Branch {
+                name,
+                oid,
+                is_remote,
+                upstream,
+                ahead,
+                behind,
+                is_head,
+            });
         }
-        out.sort_by(|a, b| a.is_remote.cmp(&b.is_remote).then_with(|| a.name.cmp(&b.name)));
+        out.sort_by(|a, b| {
+            a.is_remote
+                .cmp(&b.is_remote)
+                .then_with(|| a.name.cmp(&b.name))
+        });
         Ok((out, labels))
     }
 
@@ -324,8 +383,17 @@ impl Repo {
                 .and_then(|o| o.peel(git2::ObjectType::Commit).ok())
                 .map(|c| c.id())
                 .unwrap_or(oid);
-            labels.push((target, RefLabel { name: short.clone(), kind: RefKind::Tag }));
-            out.push(Tag { name: short, oid: target });
+            labels.push((
+                target,
+                RefLabel {
+                    name: short.clone(),
+                    kind: RefKind::Tag,
+                },
+            ));
+            out.push(Tag {
+                name: short,
+                oid: target,
+            });
             true
         })?;
         out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -335,7 +403,11 @@ impl Repo {
     fn stashes(&mut self) -> Result<Vec<Stash>> {
         let mut out = Vec::new();
         self.repo.stash_foreach(|index, message, oid| {
-            out.push(Stash { index, message: message.to_owned(), oid: *oid });
+            out.push(Stash {
+                index,
+                message: message.to_owned(),
+                oid: *oid,
+            });
             true
         })?;
         Ok(out)
@@ -372,7 +444,11 @@ impl Repo {
                 break;
             }
             let c = self.repo.find_commit(oid)?;
-            let refs = labels.iter().filter(|(o, _)| *o == oid).map(|(_, l)| l.clone()).collect();
+            let refs = labels
+                .iter()
+                .filter(|(o, _)| *o == oid)
+                .map(|(_, l)| l.clone())
+                .collect();
             let author = c.author();
             rows.push(CommitRow {
                 oid,
@@ -404,10 +480,19 @@ impl Repo {
             let s = e.status();
             let path = e.path().unwrap_or("").to_owned();
             if s.is_conflicted() {
-                conflicted.push(FileStatus { path, old_path: None, kind: FileKind::Conflicted });
+                conflicted.push(FileStatus {
+                    path,
+                    old_path: None,
+                    kind: FileKind::Conflicted,
+                });
                 continue;
             }
-            if s.is_index_new() || s.is_index_modified() || s.is_index_deleted() || s.is_index_renamed() || s.is_index_typechange() {
+            if s.is_index_new()
+                || s.is_index_modified()
+                || s.is_index_deleted()
+                || s.is_index_renamed()
+                || s.is_index_typechange()
+            {
                 let kind = if s.is_index_new() {
                     FileKind::Added
                 } else if s.is_index_deleted() {
@@ -422,15 +507,31 @@ impl Repo {
                 let (path, old_path) = e
                     .head_to_index()
                     .map(|d| {
-                        let new = d.new_file().path().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone());
-                        let old = d.old_file().path().map(|p| p.to_string_lossy().into_owned());
+                        let new = d
+                            .new_file()
+                            .path()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.clone());
+                        let old = d
+                            .old_file()
+                            .path()
+                            .map(|p| p.to_string_lossy().into_owned());
                         let old = old.filter(|o| kind == FileKind::Renamed && *o != new);
                         (new, old)
                     })
                     .unwrap_or((path.clone(), None));
-                staged.push(FileStatus { path, old_path, kind });
+                staged.push(FileStatus {
+                    path,
+                    old_path,
+                    kind,
+                });
             }
-            if s.is_wt_new() || s.is_wt_modified() || s.is_wt_deleted() || s.is_wt_renamed() || s.is_wt_typechange() {
+            if s.is_wt_new()
+                || s.is_wt_modified()
+                || s.is_wt_deleted()
+                || s.is_wt_renamed()
+                || s.is_wt_typechange()
+            {
                 let kind = if s.is_wt_new() {
                     FileKind::Untracked
                 } else if s.is_wt_deleted() {
@@ -445,13 +546,24 @@ impl Repo {
                 let (path, old_path) = e
                     .index_to_workdir()
                     .map(|d| {
-                        let new = d.new_file().path().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone());
-                        let old = d.old_file().path().map(|p| p.to_string_lossy().into_owned());
+                        let new = d
+                            .new_file()
+                            .path()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.clone());
+                        let old = d
+                            .old_file()
+                            .path()
+                            .map(|p| p.to_string_lossy().into_owned());
                         let old = old.filter(|o| kind == FileKind::Renamed && *o != new);
                         (new, old)
                     })
                     .unwrap_or((path.clone(), None));
-                unstaged.push(FileStatus { path, old_path, kind });
+                unstaged.push(FileStatus {
+                    path,
+                    old_path,
+                    kind,
+                });
             }
         }
         let by_path = |a: &FileStatus, b: &FileStatus| a.path.cmp(&b.path);
@@ -467,14 +579,23 @@ impl Repo {
         let tree = commit.tree()?;
         let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
         let mut opts = git2::DiffOptions::new();
-        let mut diff = self.repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
+        let mut diff =
+            self.repo
+                .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
         let mut find = git2::DiffFindOptions::new();
         find.renames(true);
         diff.find_similar(Some(&mut find))?;
         let mut out = Vec::new();
         for d in diff.deltas() {
-            let new = d.new_file().path().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-            let old = d.old_file().path().map(|p| p.to_string_lossy().into_owned());
+            let new = d
+                .new_file()
+                .path()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let old = d
+                .old_file()
+                .path()
+                .map(|p| p.to_string_lossy().into_owned());
             let kind = match d.status() {
                 git2::Delta::Added => FileKind::Added,
                 git2::Delta::Deleted => FileKind::Deleted,
@@ -482,7 +603,11 @@ impl Repo {
                 git2::Delta::Typechange => FileKind::TypeChange,
                 _ => FileKind::Modified,
             };
-            out.push(FileStatus { path: new.clone(), old_path: old.filter(|o| kind == FileKind::Renamed && *o != new), kind });
+            out.push(FileStatus {
+                path: new.clone(),
+                old_path: old.filter(|o| kind == FileKind::Renamed && *o != new),
+                kind,
+            });
         }
         Ok(out)
     }
@@ -491,22 +616,35 @@ impl Repo {
     pub fn diff(&self, target: &DiffTarget) -> Result<DiffText> {
         let path = target.path();
         let mut opts = git2::DiffOptions::new();
-        opts.pathspec(path).include_untracked(true).recurse_untracked_dirs(true).show_untracked_content(true).context_lines(3);
+        opts.pathspec(path)
+            .include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .show_untracked_content(true)
+            .context_lines(3);
         let diff = match target {
-            DiffTarget::WorkdirUnstaged(_) => self.repo.diff_index_to_workdir(None, Some(&mut opts))?,
+            DiffTarget::WorkdirUnstaged(_) => {
+                self.repo.diff_index_to_workdir(None, Some(&mut opts))?
+            }
             DiffTarget::Staged(_) => {
                 let head_tree = self.repo.head().ok().and_then(|h| h.peel_to_tree().ok());
                 let index = self.repo.index()?;
-                self.repo.diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut opts))?
+                self.repo
+                    .diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut opts))?
             }
             DiffTarget::Commit(oid, _) => {
                 let commit = self.repo.find_commit(*oid)?;
                 let tree = commit.tree()?;
                 let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
-                self.repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?
+                self.repo
+                    .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?
             }
         };
-        let mut out = DiffText { target: target.clone(), binary: false, too_large: false, hunks: Vec::new() };
+        let mut out = DiffText {
+            target: target.clone(),
+            binary: false,
+            too_large: false,
+            hunks: Vec::new(),
+        };
         let n = diff.deltas().len();
         for idx in 0..n {
             let delta = diff.get_delta(idx).expect("delta index in range");
@@ -519,7 +657,9 @@ impl Repo {
                 out.binary = true;
                 continue;
             }
-            let Some(patch) = git2::Patch::from_diff(&diff, idx)? else { continue };
+            let Some(patch) = git2::Patch::from_diff(&diff, idx)? else {
+                continue;
+            };
             for h in 0..patch.num_hunks() {
                 let (hunk, count) = patch.hunk(h)?;
                 let mut lines = Vec::with_capacity(count);
@@ -533,7 +673,12 @@ impl Repo {
                     while text.ends_with('\n') || text.ends_with('\r') {
                         text.pop();
                     }
-                    lines.push(DiffLine { origin, old_no: line.old_lineno(), new_no: line.new_lineno(), text });
+                    lines.push(DiffLine {
+                        origin,
+                        old_no: line.old_lineno(),
+                        new_no: line.new_lineno(),
+                        text,
+                    });
                 }
                 let header = String::from_utf8_lossy(hunk.header()).trim_end().to_owned();
                 out.hunks.push(Hunk { header, lines });
@@ -577,9 +722,15 @@ impl Repo {
 
     /// Reset index entries to HEAD (or drop them when there is no HEAD yet).
     pub fn unstage(&self, paths: &[String]) -> Result<()> {
-        match self.repo.head().ok().and_then(|h| h.peel(git2::ObjectType::Commit).ok()) {
+        match self
+            .repo
+            .head()
+            .ok()
+            .and_then(|h| h.peel(git2::ObjectType::Commit).ok())
+        {
             Some(head) => {
-                self.repo.reset_default(Some(&head), paths.iter().map(|s| s.as_str()))?;
+                self.repo
+                    .reset_default(Some(&head), paths.iter().map(|s| s.as_str()))?;
             }
             None => {
                 let mut index = self.repo.index()?;
@@ -614,9 +765,11 @@ impl Repo {
             } else {
                 let full = self.workdir.join(p);
                 if full.is_dir() {
-                    std::fs::remove_dir_all(&full).map_err(|e| git2::Error::from_str(&e.to_string()))?;
+                    std::fs::remove_dir_all(&full)
+                        .map_err(|e| git2::Error::from_str(&e.to_string()))?;
                 } else if full.exists() {
-                    std::fs::remove_file(&full).map_err(|e| git2::Error::from_str(&e.to_string()))?;
+                    std::fs::remove_file(&full)
+                        .map_err(|e| git2::Error::from_str(&e.to_string()))?;
                 }
             }
         }
@@ -634,7 +787,10 @@ impl Repo {
     /// Stage only hunk `hunk_index` of the unstaged diff for `path`.
     pub fn stage_hunk(&self, path: &str, hunk_index: usize) -> Result<()> {
         let mut opts = git2::DiffOptions::new();
-        opts.pathspec(path).include_untracked(true).show_untracked_content(true).context_lines(3);
+        opts.pathspec(path)
+            .include_untracked(true)
+            .show_untracked_content(true)
+            .context_lines(3);
         let diff = self.repo.diff_index_to_workdir(None, Some(&mut opts))?;
         self.apply_hunk_to_index(&diff, hunk_index)
     }
@@ -645,7 +801,9 @@ impl Repo {
         opts.pathspec(path).context_lines(3);
         let head_tree = self.repo.head().ok().and_then(|h| h.peel_to_tree().ok());
         let index = self.repo.index()?;
-        let diff = self.repo.diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut opts))?;
+        let diff =
+            self.repo
+                .diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut opts))?;
         let mut text = Vec::new();
         for i in 0..diff.deltas().len() {
             if let Some(mut patch) = git2::Patch::from_diff(&diff, i)? {
@@ -665,14 +823,19 @@ impl Repo {
             seen += 1;
             keep
         });
-        self.repo.apply(diff, git2::ApplyLocation::Index, Some(&mut opts))?;
+        self.repo
+            .apply(diff, git2::ApplyLocation::Index, Some(&mut opts))?;
         Ok(())
     }
 
     /// True when `commit.gpgsign` is set, in which case commits go through
     /// the git CLI so the user's signing setup is used.
     pub fn gpgsign(&self) -> bool {
-        self.repo.config().ok().and_then(|c| c.get_bool("commit.gpgsign").ok()).unwrap_or(false)
+        self.repo
+            .config()
+            .ok()
+            .and_then(|c| c.get_bool("commit.gpgsign").ok())
+            .unwrap_or(false)
     }
 
     pub fn commit(&self, message: &str, amend: bool) -> Result<Oid> {
@@ -685,11 +848,20 @@ impl Repo {
         let tree = self.repo.find_tree(tree_id)?;
         if amend {
             let head = self.repo.head()?.peel_to_commit()?;
-            return Ok(head.amend(Some("HEAD"), None, Some(&sig), None, Some(message), Some(&tree))?);
+            return Ok(head.amend(
+                Some("HEAD"),
+                None,
+                Some(&sig),
+                None,
+                Some(message),
+                Some(&tree),
+            )?);
         }
         let parent = self.repo.head().ok().and_then(|h| h.peel_to_commit().ok());
         let parents: Vec<&git2::Commit> = parent.iter().collect();
-        Ok(self.repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)?)
+        Ok(self
+            .repo
+            .commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)?)
     }
 
     fn commit_via_cli(&self, message: &str, amend: bool) -> Result<Oid> {
@@ -711,7 +883,14 @@ impl Repo {
 
     /// Message of the HEAD commit, for amend.
     pub fn head_message(&self) -> Option<String> {
-        self.repo.head().ok()?.peel_to_commit().ok()?.message().ok().map(|m| m.to_owned())
+        self.repo
+            .head()
+            .ok()?
+            .peel_to_commit()
+            .ok()?
+            .message()
+            .ok()
+            .map(|m| m.to_owned())
     }
 
     /// Check out a local branch, or a remote branch by creating a local
@@ -721,7 +900,11 @@ impl Repo {
             name.to_owned()
         } else {
             let remote = self.repo.find_branch(name, git2::BranchType::Remote)?;
-            let short = name.split_once('/').map(|(_, b)| b).unwrap_or(name).to_owned();
+            let short = name
+                .split_once('/')
+                .map(|(_, b)| b)
+                .unwrap_or(name)
+                .to_owned();
             let target = remote.get().peel_to_commit()?;
             let mut b = match self.repo.find_branch(&short, git2::BranchType::Local) {
                 Ok(b) => b,
@@ -760,8 +943,13 @@ impl Repo {
 
     pub fn stash_push(&mut self, message: &str) -> Result<()> {
         let sig = self.repo.signature()?;
-        let msg = if message.trim().is_empty() { "gitgui stash" } else { message };
-        self.repo.stash_save(&sig, msg, Some(git2::StashFlags::INCLUDE_UNTRACKED))?;
+        let msg = if message.trim().is_empty() {
+            "gitgui stash"
+        } else {
+            message
+        };
+        self.repo
+            .stash_save(&sig, msg, Some(git2::StashFlags::INCLUDE_UNTRACKED))?;
         Ok(())
     }
 
@@ -810,7 +998,9 @@ fn reverse_hunk_header(body: &[u8]) -> Vec<u8> {
     // @@ -a,b +c,d @@ rest
     let s = String::from_utf8_lossy(body);
     let mut parts = s.splitn(4, ' ');
-    let (Some(_), Some(old), Some(new), rest) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+    let (Some(_), Some(old), Some(new), rest) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
         return body.to_vec();
     };
     let old = old.strip_prefix('-').unwrap_or(old);
@@ -825,7 +1015,6 @@ fn reverse_hunk_header(body: &[u8]) -> Vec<u8> {
     }
     out.into_bytes()
 }
-
 
 pub fn short_id(oid: Oid) -> String {
     let s = oid.to_string();
@@ -878,7 +1067,9 @@ pub mod testutil {
             let sig = git2::Signature::now("Test User", "test@example.com").unwrap();
             let parent = self.repo.head().ok().and_then(|h| h.peel_to_commit().ok());
             let parents: Vec<&git2::Commit> = parent.iter().collect();
-            self.repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents).unwrap()
+            self.repo
+                .commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
+                .unwrap()
         }
 
         pub fn commit_file(&self, rel: &str, content: &str, message: &str) -> git2::Oid {
@@ -925,7 +1116,11 @@ mod tests {
         let t = TempRepo::new();
         t.commit_file("a.txt", "one\n", "init");
         t.commit_file("del.txt", "x\n", "add del");
-        t.commit_file("ren.txt", "same content for rename detection\nline2\nline3\n", "add ren");
+        t.commit_file(
+            "ren.txt",
+            "same content for rename detection\nline2\nline3\n",
+            "add ren",
+        );
         // staged modification of a.txt
         t.write("a.txt", "one\ntwo\n");
         t.add("a.txt");
@@ -950,9 +1145,15 @@ mod tests {
         let find = |v: &[FileStatus], p: &str| v.iter().find(|f| f.path == p).cloned();
         assert_eq!(find(&s.staged, "a.txt").unwrap().kind, FileKind::Modified);
         assert_eq!(find(&s.unstaged, "a.txt").unwrap().kind, FileKind::Modified);
-        assert_eq!(find(&s.unstaged, "new.txt").unwrap().kind, FileKind::Untracked);
+        assert_eq!(
+            find(&s.unstaged, "new.txt").unwrap().kind,
+            FileKind::Untracked
+        );
         assert_eq!(find(&s.staged, "added.txt").unwrap().kind, FileKind::Added);
-        assert_eq!(find(&s.unstaged, "del.txt").unwrap().kind, FileKind::Deleted);
+        assert_eq!(
+            find(&s.unstaged, "del.txt").unwrap().kind,
+            FileKind::Deleted
+        );
         let ren = find(&s.staged, "ren2.txt").unwrap();
         assert_eq!(ren.kind, FileKind::Renamed);
         assert_eq!(ren.old_path.as_deref(), Some("ren.txt"));
@@ -973,26 +1174,48 @@ mod tests {
 
         let staged = r.diff(&DiffTarget::Staged("f.txt".into())).unwrap();
         assert_eq!(staged.hunks.len(), 1);
-        let lines: Vec<(char, &str)> = staged.hunks[0].lines.iter().map(|l| (l.origin, l.text.as_str())).collect();
+        let lines: Vec<(char, &str)> = staged.hunks[0]
+            .lines
+            .iter()
+            .map(|l| (l.origin, l.text.as_str()))
+            .collect();
         assert_eq!(lines, vec![(' ', "a"), ('-', "b"), ('+', "B"), (' ', "c")]);
         assert_eq!(staged.hunks[0].lines[1].old_no, Some(2));
         assert_eq!(staged.hunks[0].lines[2].new_no, Some(2));
         assert!(staged.hunks[0].header.starts_with("@@ -1,3 +1,3 @@"));
 
-        let unstaged = r.diff(&DiffTarget::WorkdirUnstaged("f.txt".into())).unwrap();
-        let lines: Vec<(char, &str)> = unstaged.hunks[0].lines.iter().map(|l| (l.origin, l.text.as_str())).collect();
+        let unstaged = r
+            .diff(&DiffTarget::WorkdirUnstaged("f.txt".into()))
+            .unwrap();
+        let lines: Vec<(char, &str)> = unstaged.hunks[0]
+            .lines
+            .iter()
+            .map(|l| (l.origin, l.text.as_str()))
+            .collect();
         assert_eq!(lines, vec![(' ', "a"), (' ', "B"), (' ', "c"), ('+', "d")]);
 
         let commit = r.diff(&DiffTarget::Commit(c1, "f.txt".into())).unwrap();
-        assert_eq!(commit.hunks[0].lines.iter().filter(|l| l.origin == '+').count(), 3);
+        assert_eq!(
+            commit.hunks[0]
+                .lines
+                .iter()
+                .filter(|l| l.origin == '+')
+                .count(),
+            3
+        );
         let files = r.commit_files(c1).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].kind, FileKind::Added);
 
         // untracked file diff shows its content as additions
         t.write("u.txt", "x\ny\n");
-        let u = r.diff(&DiffTarget::WorkdirUnstaged("u.txt".into())).unwrap();
-        assert_eq!(u.hunks[0].lines.iter().filter(|l| l.origin == '+').count(), 2);
+        let u = r
+            .diff(&DiffTarget::WorkdirUnstaged("u.txt".into()))
+            .unwrap();
+        assert_eq!(
+            u.hunks[0].lines.iter().filter(|l| l.origin == '+').count(),
+            2
+        );
     }
 
     #[test]
@@ -1000,16 +1223,32 @@ mod tests {
         let t = TempRepo::new();
         let c1 = t.commit_file("a", "1", "one");
         let c2 = t.commit_file("a", "2", "two");
-        t.repo.tag_lightweight("v1", &t.repo.find_object(c1, None).unwrap(), false).unwrap();
-        t.repo.branch("feature", &t.repo.find_commit(c2).unwrap(), false).unwrap();
+        t.repo
+            .tag_lightweight("v1", &t.repo.find_object(c1, None).unwrap(), false)
+            .unwrap();
+        t.repo
+            .branch("feature", &t.repo.find_commit(c2).unwrap(), false)
+            .unwrap();
         let mut r = Repo::open(&t.dir).unwrap();
         let s = r.snapshot(100).unwrap();
         let names: Vec<&str> = s.branches.iter().map(|b| b.name.as_str()).collect();
         assert!(names.contains(&"feature"));
-        assert_eq!(s.tags, vec![Tag { name: "v1".into(), oid: c1 }]);
+        assert_eq!(
+            s.tags,
+            vec![Tag {
+                name: "v1".into(),
+                oid: c1
+            }]
+        );
         let top = &s.commits[0];
-        assert!(top.refs.iter().any(|l| l.name == "feature" && l.kind == RefKind::LocalBranch));
-        assert!(s.commits[1].refs.iter().any(|l| l.name == "v1" && l.kind == RefKind::Tag));
+        assert!(top
+            .refs
+            .iter()
+            .any(|l| l.name == "feature" && l.kind == RefKind::LocalBranch));
+        assert!(s.commits[1]
+            .refs
+            .iter()
+            .any(|l| l.name == "v1" && l.kind == RefKind::Tag));
         assert_eq!(top.short.len(), 7);
     }
 
@@ -1036,12 +1275,16 @@ mod tests {
         t.write("dir/sub.txt", "s\n");
         std::fs::remove_file(t.dir.join("gone.txt")).unwrap();
 
-        r.stage(&["a.txt".into(), "dir".into(), "gone.txt".into()]).unwrap();
+        r.stage(&["a.txt".into(), "dir".into(), "gone.txt".into()])
+            .unwrap();
         let (unstaged, staged, _) = r.status().unwrap();
         let names = |v: &[FileStatus]| v.iter().map(|f| f.path.clone()).collect::<Vec<_>>();
         assert_eq!(names(&staged), vec!["a.txt", "dir/sub.txt", "gone.txt"]);
         assert_eq!(names(&unstaged), vec!["new.txt"]);
-        assert_eq!(staged.iter().find(|f| f.path == "gone.txt").unwrap().kind, FileKind::Deleted);
+        assert_eq!(
+            staged.iter().find(|f| f.path == "gone.txt").unwrap().kind,
+            FileKind::Deleted
+        );
 
         r.unstage(&["a.txt".into(), "dir/sub.txt".into()]).unwrap();
         let (unstaged, staged, _) = r.status().unwrap();
@@ -1067,8 +1310,12 @@ mod tests {
         t.write("a.txt", "changed\n");
         t.write("junk.txt", "x\n");
         t.write("junkdir/f.txt", "x\n");
-        r.discard(&["a.txt".into(), "junk.txt".into(), "junkdir".into()]).unwrap();
-        assert_eq!(std::fs::read_to_string(t.dir.join("a.txt")).unwrap(), "orig\n");
+        r.discard(&["a.txt".into(), "junk.txt".into(), "junkdir".into()])
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(t.dir.join("a.txt")).unwrap(),
+            "orig\n"
+        );
         assert!(!t.dir.join("junk.txt").exists());
         assert!(!t.dir.join("junkdir").exists());
         let (unstaged, staged, _) = r.status().unwrap();
@@ -1090,34 +1337,65 @@ mod tests {
         t.commit_file("f.txt", &base, "init");
         let r = Repo::open(&t.dir).unwrap();
         // Change line 2 and line 28: two separate hunks.
-        let modified = base.replace("line 2\n", "LINE 2\n").replace("line 28\n", "LINE 28\n");
+        let modified = base
+            .replace("line 2\n", "LINE 2\n")
+            .replace("line 28\n", "LINE 28\n");
         t.write("f.txt", &modified);
-        let d = r.diff(&DiffTarget::WorkdirUnstaged("f.txt".into())).unwrap();
+        let d = r
+            .diff(&DiffTarget::WorkdirUnstaged("f.txt".into()))
+            .unwrap();
         assert_eq!(d.hunks.len(), 2);
 
         r.stage_hunk("f.txt", 1).unwrap();
         let staged = r.diff(&DiffTarget::Staged("f.txt".into())).unwrap();
         assert_eq!(staged.hunks.len(), 1);
-        assert!(staged.hunks[0].lines.iter().any(|l| l.origin == '+' && l.text == "LINE 28"));
-        let unstaged = r.diff(&DiffTarget::WorkdirUnstaged("f.txt".into())).unwrap();
+        assert!(staged.hunks[0]
+            .lines
+            .iter()
+            .any(|l| l.origin == '+' && l.text == "LINE 28"));
+        let unstaged = r
+            .diff(&DiffTarget::WorkdirUnstaged("f.txt".into()))
+            .unwrap();
         assert_eq!(unstaged.hunks.len(), 1);
-        assert!(unstaged.hunks[0].lines.iter().any(|l| l.origin == '+' && l.text == "LINE 2"));
+        assert!(unstaged.hunks[0]
+            .lines
+            .iter()
+            .any(|l| l.origin == '+' && l.text == "LINE 2"));
 
         // Stage the other hunk too, then unstage only the first one.
         r.stage_hunk("f.txt", 0).unwrap();
-        assert_eq!(r.diff(&DiffTarget::Staged("f.txt".into())).unwrap().hunks.len(), 2);
-        assert!(r.diff(&DiffTarget::WorkdirUnstaged("f.txt".into())).unwrap().hunks.is_empty());
+        assert_eq!(
+            r.diff(&DiffTarget::Staged("f.txt".into()))
+                .unwrap()
+                .hunks
+                .len(),
+            2
+        );
+        assert!(r
+            .diff(&DiffTarget::WorkdirUnstaged("f.txt".into()))
+            .unwrap()
+            .hunks
+            .is_empty());
         r.unstage_hunk("f.txt", 0).unwrap();
         let staged = r.diff(&DiffTarget::Staged("f.txt".into())).unwrap();
         assert_eq!(staged.hunks.len(), 1);
         assert!(staged.hunks[0].lines.iter().any(|l| l.text == "LINE 28"));
-        let unstaged = r.diff(&DiffTarget::WorkdirUnstaged("f.txt".into())).unwrap();
+        let unstaged = r
+            .diff(&DiffTarget::WorkdirUnstaged("f.txt".into()))
+            .unwrap();
         assert_eq!(unstaged.hunks.len(), 1);
         assert!(unstaged.hunks[0].lines.iter().any(|l| l.text == "LINE 2"));
         // Unstage the remaining hunk: index equals HEAD again, worktree unchanged.
         r.unstage_hunk("f.txt", 0).unwrap();
-        assert!(r.diff(&DiffTarget::Staged("f.txt".into())).unwrap().hunks.is_empty());
-        assert_eq!(std::fs::read_to_string(t.dir.join("f.txt")).unwrap(), modified);
+        assert!(r
+            .diff(&DiffTarget::Staged("f.txt".into()))
+            .unwrap()
+            .hunks
+            .is_empty());
+        assert_eq!(
+            std::fs::read_to_string(t.dir.join("f.txt")).unwrap(),
+            modified
+        );
     }
 
     #[test]
@@ -1167,17 +1445,34 @@ mod tests {
         assert_eq!(r.checkout("old").unwrap(), "old");
         assert_eq!(std::fs::read_to_string(t.dir.join("a.txt")).unwrap(), "1\n");
         assert_eq!(r.head_info().unwrap().branch_name.as_deref(), Some("old"));
-        assert!(r.delete_branch("old").is_err(), "cannot delete current branch");
-        let main = t.repo.branches(Some(git2::BranchType::Local)).unwrap().flatten().map(|(b, _)| b.name().unwrap().unwrap().to_owned()).find(|n| n != "old").unwrap();
+        assert!(
+            r.delete_branch("old").is_err(),
+            "cannot delete current branch"
+        );
+        let main = t
+            .repo
+            .branches(Some(git2::BranchType::Local))
+            .unwrap()
+            .flatten()
+            .map(|(b, _)| b.name().unwrap().unwrap().to_owned())
+            .find(|n| n != "old")
+            .unwrap();
         r.checkout(&main).unwrap();
         r.delete_branch("old").unwrap();
         assert!(t.repo.find_branch("old", git2::BranchType::Local).is_err());
         // Remote branch checkout creates a local tracking branch.
-        t.repo.remote("origin", "https://example.invalid/repo.git").unwrap();
+        t.repo
+            .remote("origin", "https://example.invalid/repo.git")
+            .unwrap();
         let c = t.repo.head().unwrap().peel_to_commit().unwrap();
-        t.repo.reference("refs/remotes/origin/feature", c.id(), false, "").unwrap();
+        t.repo
+            .reference("refs/remotes/origin/feature", c.id(), false, "")
+            .unwrap();
         assert_eq!(r.checkout("origin/feature").unwrap(), "feature");
-        let b = t.repo.find_branch("feature", git2::BranchType::Local).unwrap();
+        let b = t
+            .repo
+            .find_branch("feature", git2::BranchType::Local)
+            .unwrap();
         assert!(b.upstream().is_ok());
     }
 
@@ -1195,7 +1490,10 @@ mod tests {
         assert_eq!(s.stashes.len(), 1);
         assert!(s.stashes[0].message.contains("wip"));
         r.stash_pop(0).unwrap();
-        assert_eq!(std::fs::read_to_string(t.dir.join("a.txt")).unwrap(), "dirty\n");
+        assert_eq!(
+            std::fs::read_to_string(t.dir.join("a.txt")).unwrap(),
+            "dirty\n"
+        );
         assert!(t.dir.join("u.txt").exists());
         r.stash_push("again").unwrap();
         r.stash_drop(0).unwrap();

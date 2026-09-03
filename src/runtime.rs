@@ -56,18 +56,37 @@ fn setup_context(font_size: f32, theme: &Theme) -> egui::Context {
     ctx.all_styles_mut(|style| {
         use egui::{FontFamily, FontId, TextStyle};
         style.text_styles = [
-            (TextStyle::Small, FontId::new(body - 3.0, FontFamily::Proportional)),
+            (
+                TextStyle::Small,
+                FontId::new(body - 3.0, FontFamily::Proportional),
+            ),
             (TextStyle::Body, FontId::new(body, FontFamily::Proportional)),
-            (TextStyle::Button, FontId::new(body, FontFamily::Proportional)),
-            (TextStyle::Heading, FontId::new(body + 5.0, FontFamily::Proportional)),
-            (TextStyle::Monospace, FontId::new(body - 0.5, FontFamily::Monospace)),
+            (
+                TextStyle::Button,
+                FontId::new(body, FontFamily::Proportional),
+            ),
+            (
+                TextStyle::Heading,
+                FontId::new(body + 5.0, FontFamily::Proportional),
+            ),
+            (
+                TextStyle::Monospace,
+                FontId::new(body - 0.5, FontFamily::Monospace),
+            ),
         ]
         .into();
     });
     ctx
 }
 
-fn raw_input(w: u32, h: u32, ppp: f32, time: f64, focused: bool, events: Vec<egui::Event>) -> egui::RawInput {
+fn raw_input(
+    w: u32,
+    h: u32,
+    ppp: f32,
+    time: f64,
+    focused: bool,
+    events: Vec<egui::Event>,
+) -> egui::RawInput {
     let mut input = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             egui::pos2(0.0, 0.0),
@@ -120,7 +139,15 @@ fn render_pass(
     let bg = app.theme.background;
     fb.clear([bg.r(), bg.g(), bg.b(), 255]);
     let (w, h) = (fb.width() as usize, fb.height() as usize);
-    raster.paint(&mut Target { w, h, rgba: fb.pixels_mut() }, out.pixels_per_point, &prims);
+    raster.paint(
+        &mut Target {
+            w,
+            h,
+            rgba: fb.pixels_mut(),
+        },
+        out.pixels_per_point,
+        &prims,
+    );
     raster.apply_free(&textures);
     // Dropping an unapplied delta panics in debug builds; we applied it.
     textures.clear();
@@ -147,7 +174,11 @@ fn render_pass(
 /// `OSC 52 ; c ; <base64> ST`: write to the terminal clipboard.
 pub fn encode_osc52_copy(out: &mut Vec<u8>, text: &str) {
     out.extend_from_slice(b"\x1b]52;c;");
-    out.extend_from_slice(base64::engine::general_purpose::STANDARD.encode(text.as_bytes()).as_bytes());
+    out.extend_from_slice(
+        base64::engine::general_purpose::STANDARD
+            .encode(text.as_bytes())
+            .as_bytes(),
+    );
     out.extend_from_slice(b"\x1b\\");
 }
 
@@ -181,7 +212,9 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
         for cmd in cmds {
             match cmd {
                 Command::LoadDiff(target) => app.apply(Reply::Diff(repo.diff(&target))),
-                Command::LoadCommitFiles(oid) => app.apply(Reply::CommitFiles(oid, repo.commit_files(oid))),
+                Command::LoadCommitFiles(oid) => {
+                    app.apply(Reply::CommitFiles(oid, repo.commit_files(oid)))
+                }
                 _ => {}
             }
         }
@@ -191,7 +224,8 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
         let input = raw_input(size.0, size.1, ppp, pass as f64 / 60.0, true, Vec::new());
         render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
     }
-    fb.save_png(path).with_context(|| format!("writing {}", path.display()))?;
+    fb.save_png(path)
+        .with_context(|| format!("writing {}", path.display()))?;
     eprintln!(
         "headless {}x{} scale {ppp}: git {git_ms:.1} ms ({} commits), ui {:.2} ms, tessellate {:.2} ms, raster {:.2} ms -> {}",
         size.0,
@@ -207,7 +241,10 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
 
 /// Spawn the stdin reader thread. It blocks in `poll` + `read` and ships
 /// raw byte chunks over the channel until stdin closes.
-fn spawn_stdin_thread<T: Send + 'static>(tx: mpsc::Sender<T>, wrap: impl Fn(Vec<u8>) -> T + Send + 'static) {
+fn spawn_stdin_thread<T: Send + 'static>(
+    tx: mpsc::Sender<T>,
+    wrap: impl Fn(Vec<u8>) -> T + Send + 'static,
+) {
     std::thread::Builder::new()
         .name("stdin".into())
         .spawn(move || {
@@ -247,7 +284,11 @@ fn probe_or_exit(no_shm: bool) -> anyhow::Result<Result<Probed, i32>> {
         eprintln!("gitgui: this terminal did not answer the kitty graphics probe. Supported: Ghostty, cmux, kitty, WezTerm.");
         return Ok(Err(3));
     }
-    let transport = if caps.shm && !no_shm { kitty::Transport::Shm } else { kitty::Transport::Direct };
+    let transport = if caps.shm && !no_shm {
+        kitty::Transport::Shm
+    } else {
+        kitty::Transport::Direct
+    };
     Ok(Ok(Probed { caps, transport }))
 }
 
@@ -301,7 +342,8 @@ pub fn run_dump_input() -> anyhow::Result<i32> {
             line.clear();
             line.extend_from_slice(format!("  {ev:?}\r\n").as_bytes());
             term::write_all(&line)?;
-            if matches!(ev, Event::Key { key: Key::Char('c'), mods, pressed: true, .. } if mods.ctrl) {
+            if matches!(ev, Event::Key { key: Key::Char('c'), mods, pressed: true, .. } if mods.ctrl)
+            {
                 quit = true;
             }
         }
@@ -314,7 +356,10 @@ pub fn run_dump_input() -> anyhow::Result<i32> {
 }
 
 pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
-    let Probed { mut caps, transport } = match probe_or_exit(opts.no_shm)? {
+    let Probed {
+        mut caps,
+        transport,
+    } = match probe_or_exit(opts.no_shm)? {
         Ok(p) => p,
         Err(code) => return Ok(code),
     };
@@ -345,7 +390,9 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
     let session = term::Session::enter()?;
     let (w, h) = caps.frame_size();
     let theme = Theme::from_background(caps.background);
-    let font_size = opts.font_size.unwrap_or_else(|| font_size_for_cell(caps.cell_h, ppp));
+    let font_size = opts
+        .font_size
+        .unwrap_or_else(|| font_size_for_cell(caps.cell_h, ppp));
     let ctx = setup_context(font_size, &theme);
     let mut app = App::new(theme, transport_name, ppp);
     let mut raster = Rasterizer::new();
@@ -394,11 +441,20 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                         ctx.all_styles_mut(|style| {
                             use egui::{FontFamily, FontId, TextStyle};
                             style.text_styles = [
-                                (TextStyle::Small, FontId::new(fs - 3.0, FontFamily::Proportional)),
+                                (
+                                    TextStyle::Small,
+                                    FontId::new(fs - 3.0, FontFamily::Proportional),
+                                ),
                                 (TextStyle::Body, FontId::new(fs, FontFamily::Proportional)),
                                 (TextStyle::Button, FontId::new(fs, FontFamily::Proportional)),
-                                (TextStyle::Heading, FontId::new(fs + 5.0, FontFamily::Proportional)),
-                                (TextStyle::Monospace, FontId::new(fs - 0.5, FontFamily::Monospace)),
+                                (
+                                    TextStyle::Heading,
+                                    FontId::new(fs + 5.0, FontFamily::Proportional),
+                                ),
+                                (
+                                    TextStyle::Monospace,
+                                    FontId::new(fs - 0.5, FontFamily::Monospace),
+                                ),
                             ]
                             .into();
                         });
@@ -425,7 +481,14 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
             } else {
                 mapper.flush(&mut pending);
                 let events = std::mem::take(&mut pending);
-                let input = raw_input(fb.width(), fb.height(), ppp, start.elapsed().as_secs_f64(), focused, events);
+                let input = raw_input(
+                    fb.width(),
+                    fb.height(),
+                    ppp,
+                    start.elapsed().as_secs_f64(),
+                    focused,
+                    events,
+                );
                 let pass = render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
                 let t_send = Instant::now();
                 out.clear();
@@ -436,12 +499,27 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                     match transport {
                         kitty::Transport::Shm => {
                             let name = enc.next_shm_name();
-                            kitty::Shm::create_and_fill(&name, fb.pixels()).context("shm create")?;
-                            enc.encode_frame(&mut out, fb.width(), fb.height(), caps.cols, caps.rows, fb.pixels(), Some(&name));
+                            kitty::Shm::create_and_fill(&name, fb.pixels())
+                                .context("shm create")?;
+                            enc.encode_frame(
+                                &mut out,
+                                fb.width(),
+                                fb.height(),
+                                caps.cols,
+                                caps.rows,
+                                fb.pixels(),
+                                Some(&name),
+                            );
                         }
-                        kitty::Transport::Direct => {
-                            enc.encode_frame(&mut out, fb.width(), fb.height(), caps.cols, caps.rows, fb.pixels(), None)
-                        }
+                        kitty::Transport::Direct => enc.encode_frame(
+                            &mut out,
+                            fb.width(),
+                            fb.height(),
+                            caps.cols,
+                            caps.rows,
+                            fb.pixels(),
+                            None,
+                        ),
                     }
                     fb.mark_sent();
                 }
@@ -454,14 +532,20 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                     let _ = worker.tx.send(cmd);
                 }
                 last_frame = Instant::now();
-                next_deadline = last_frame + pass.repaint_delay.min(Duration::from_secs(3600)).max(min_interval);
+                next_deadline = last_frame
+                    + pass
+                        .repaint_delay
+                        .min(Duration::from_secs(3600))
+                        .max(min_interval);
             }
         }
 
         // Wait for input, the repaint deadline, or the escape timeout. The
         // cap keeps signal flags (SIGTERM, SIGHUP, SIGWINCH) honored within
         // half a second even when nothing else happens.
-        let mut wait = next_deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(500));
+        let mut wait = next_deadline
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_millis(500));
         if parser.has_pending() {
             wait = wait.min(ESC_TIMEOUT.saturating_sub(last_byte.elapsed()));
         }
@@ -497,9 +581,19 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
         let mut quit = false;
         for ev in &events {
             match ev {
-                Event::Key { key: Key::Char('c'), mods, pressed: true, .. } if mods.ctrl => quit = true,
-                Event::Key { key: Key::Char('q'), mods, pressed: true, .. }
-                    if *mods == crate::term::input::Mods::NONE && !ctx.egui_wants_keyboard_input() =>
+                Event::Key {
+                    key: Key::Char('c'),
+                    mods,
+                    pressed: true,
+                    ..
+                } if mods.ctrl => quit = true,
+                Event::Key {
+                    key: Key::Char('q'),
+                    mods,
+                    pressed: true,
+                    ..
+                } if *mods == crate::term::input::Mods::NONE
+                    && !ctx.egui_wants_keyboard_input() =>
                 {
                     quit = true
                 }
@@ -600,8 +694,12 @@ mod tests {
                 let cmds = std::mem::take(&mut self.app.pending);
                 for cmd in cmds {
                     match cmd {
-                        Command::LoadDiff(target) => self.app.apply(Reply::Diff(self.repo.diff(&target))),
-                        Command::LoadCommitFiles(oid) => self.app.apply(Reply::CommitFiles(oid, self.repo.commit_files(oid))),
+                        Command::LoadDiff(target) => {
+                            self.app.apply(Reply::Diff(self.repo.diff(&target)))
+                        }
+                        Command::LoadCommitFiles(oid) => self
+                            .app
+                            .apply(Reply::CommitFiles(oid, self.repo.commit_files(oid))),
                         Command::Stage(p) => {
                             self.repo.stage(&p).unwrap();
                             self.finish("stage");
@@ -634,14 +732,25 @@ mod tests {
         }
 
         fn finish(&mut self, label: &'static str) {
-            self.app.apply(Reply::Op { label, result: Ok("ok".into()) });
-            self.app.apply(Reply::Snapshot(self.repo.snapshot(100).unwrap()));
+            self.app.apply(Reply::Op {
+                label,
+                result: Ok("ok".into()),
+            });
+            self.app
+                .apply(Reply::Snapshot(self.repo.snapshot(100).unwrap()));
         }
 
         fn frame(&mut self, events: Vec<egui::Event>) {
             self.time += 1.0 / 60.0;
             let input = raw_input(900, 700, 1.0, self.time, true, events);
-            render_pass(&self.ctx, &mut self.app, &mut self.raster, &mut self.fb, input, &mut self.t);
+            render_pass(
+                &self.ctx,
+                &mut self.app,
+                &mut self.raster,
+                &mut self.fb,
+                input,
+                &mut self.t,
+            );
         }
 
         fn key(&mut self, bytes: &[u8]) {
@@ -658,10 +767,28 @@ mod tests {
             use crate::term::input::{Mods, MouseButton};
             let (x, y) = (pos.x as i32, pos.y as i32);
             let mut events = Vec::new();
-            self.mapper.map(&Event::MouseButton { button: MouseButton::Left, pressed: true, x, y, mods: Mods::NONE }, &mut events);
+            self.mapper.map(
+                &Event::MouseButton {
+                    button: MouseButton::Left,
+                    pressed: true,
+                    x,
+                    y,
+                    mods: Mods::NONE,
+                },
+                &mut events,
+            );
             self.frame(events);
             let mut events = Vec::new();
-            self.mapper.map(&Event::MouseButton { button: MouseButton::Left, pressed: false, x, y, mods: Mods::NONE }, &mut events);
+            self.mapper.map(
+                &Event::MouseButton {
+                    button: MouseButton::Left,
+                    pressed: false,
+                    x,
+                    y,
+                    mods: Mods::NONE,
+                },
+                &mut events,
+            );
             self.frame(events);
             self.frame(Vec::new());
         }
@@ -702,7 +829,9 @@ mod tests {
         h.key(b"q");
         assert_eq!(h.app.commit_msg, "fix thingsq");
         h.key(b"\x1b[13;5u");
-        assert!(h.app.pending.iter().any(|c| matches!(c, Command::Commit { message, amend: false } if message == "fix thingsq")));
+        assert!(h.app.pending.iter().any(
+            |c| matches!(c, Command::Commit { message, amend: false } if message == "fix thingsq")
+        ));
         h.settle();
         assert_eq!(h.app.snapshot.commits.len(), 2);
         assert_eq!(h.app.snapshot.commits[0].summary, "fix thingsq");
@@ -726,7 +855,11 @@ mod tests {
         h.frame(Vec::new());
         let rect = h.app.commit_button_rect.expect("commit button laid out");
         h.click(rect.center());
-        assert!(h.app.pending.iter().any(|c| matches!(c, Command::Commit { .. })));
+        assert!(h
+            .app
+            .pending
+            .iter()
+            .any(|c| matches!(c, Command::Commit { .. })));
         h.settle();
         assert_eq!(h.app.snapshot.commits[0].summary, "via button");
 
@@ -743,10 +876,17 @@ mod tests {
         h.app.modal = Some(crate::ui::app::Modal::Discard(vec!["a.txt".into()]));
         h.frame(Vec::new());
         h.key(b"\r");
-        assert!(h.app.pending.iter().any(|c| matches!(c, Command::Discard(p) if p == &["a.txt".to_string()])));
+        assert!(h
+            .app
+            .pending
+            .iter()
+            .any(|c| matches!(c, Command::Discard(p) if p == &["a.txt".to_string()])));
         h.settle();
         assert!(!h.app.snapshot.is_dirty());
-        assert_eq!(std::fs::read_to_string(t.dir.join("a.txt")).unwrap(), "changed\n");
+        assert_eq!(
+            std::fs::read_to_string(t.dir.join("a.txt")).unwrap(),
+            "changed\n"
+        );
     }
 
     #[test]
@@ -771,10 +911,26 @@ mod tests {
         }
         let bg = app.theme.background;
         let clear = [bg.r(), bg.g(), bg.b(), 255];
-        let clear_count = fb.pixels().as_chunks::<4>().0.iter().filter(|p| **p == clear).count();
+        let clear_count = fb
+            .pixels()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| **p == clear)
+            .count();
         assert!(clear_count < 400 * 300, "frame is blank");
-        let bright = fb.pixels().as_chunks::<4>().0.iter().take(400 * 40).filter(|p| p[0] > 100).count();
-        assert!(bright > 20, "no text pixels found in the heading band, got {bright}");
+        let bright = fb
+            .pixels()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .take(400 * 40)
+            .filter(|p| p[0] > 100)
+            .count();
+        assert!(
+            bright > 20,
+            "no text pixels found in the heading band, got {bright}"
+        );
         assert_eq!(fb.pixel(399, 299)[3], 255);
     }
 
@@ -793,11 +949,17 @@ mod tests {
         assert_eq!(app.selection, crate::ui::app::Selection::Commit(0));
         let cmds = std::mem::take(&mut app.pending);
         assert!(matches!(cmds[0], Command::LoadCommitFiles(_)));
-        let Command::LoadCommitFiles(oid) = cmds[0].clone() else { unreachable!() };
+        let Command::LoadCommitFiles(oid) = cmds[0].clone() else {
+            unreachable!()
+        };
         app.apply(Reply::CommitFiles(oid, repo.commit_files(oid)));
         let cmds = std::mem::take(&mut app.pending);
-        assert!(matches!(&cmds[0], Command::LoadDiff(crate::git::repo::DiffTarget::Commit(_, p)) if p == "hello.txt"));
-        let Command::LoadDiff(target) = cmds[0].clone() else { unreachable!() };
+        assert!(
+            matches!(&cmds[0], Command::LoadDiff(crate::git::repo::DiffTarget::Commit(_, p)) if p == "hello.txt")
+        );
+        let Command::LoadDiff(target) = cmds[0].clone() else {
+            unreachable!()
+        };
         app.apply(Reply::Diff(repo.diff(&target)));
         assert_eq!(app.diff.as_ref().unwrap().hunks[0].lines.len(), 2);
         let mut raster = Rasterizer::new();
@@ -810,7 +972,13 @@ mod tests {
         // The diff pane paints added-line backgrounds somewhere in the frame.
         let add = app.theme.add_bg;
         let add_px = [add.r(), add.g(), add.b(), 255];
-        let n = fb.pixels().as_chunks::<4>().0.iter().filter(|p| **p == add_px).count();
+        let n = fb
+            .pixels()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| **p == add_px)
+            .count();
         assert!(n > 100, "expected added-line background pixels, got {n}");
     }
 }

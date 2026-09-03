@@ -27,13 +27,28 @@ pub enum Command {
     StageAll,
     UnstageAll,
     Discard(Vec<String>),
-    StageHunk { path: String, hunk_index: usize },
-    UnstageHunk { path: String, hunk_index: usize },
-    Commit { message: String, amend: bool },
+    StageHunk {
+        path: String,
+        hunk_index: usize,
+    },
+    UnstageHunk {
+        path: String,
+        hunk_index: usize,
+    },
+    Commit {
+        message: String,
+        amend: bool,
+    },
     Checkout(String),
-    CreateBranch { name: String, from: Oid, checkout: bool },
+    CreateBranch {
+        name: String,
+        from: Oid,
+        checkout: bool,
+    },
     DeleteBranch(String),
-    StashPush { message: String },
+    StashPush {
+        message: String,
+    },
     StashPop(usize),
     StashDrop(usize),
     Fetch,
@@ -46,7 +61,12 @@ impl Command {
     /// Short label for toasts and the status bar.
     pub fn label(&self) -> &'static str {
         match self {
-            Command::Refresh | Command::LoadMore(_) | Command::LoadDiff(_) | Command::LoadCommitFiles(_) | Command::Focus(_) | Command::Quit => "",
+            Command::Refresh
+            | Command::LoadMore(_)
+            | Command::LoadDiff(_)
+            | Command::LoadCommitFiles(_)
+            | Command::Focus(_)
+            | Command::Quit => "",
             Command::Stage(_) | Command::StageAll | Command::StageHunk { .. } => "stage",
             Command::Unstage(_) | Command::UnstageAll | Command::UnstageHunk { .. } => "unstage",
             Command::Discard(_) => "discard",
@@ -70,7 +90,10 @@ pub enum Reply {
     Diff(Result<DiffText, GitError>),
     CommitFiles(Oid, Result<Vec<FileStatus>, GitError>),
     /// A write or network operation finished.
-    Op { label: &'static str, result: Result<String, String> },
+    Op {
+        label: &'static str,
+        result: Result<String, String>,
+    },
     /// One line of git CLI output while a network operation runs.
     NetLine(String),
     /// A network operation started (label) so the UI can open the log.
@@ -196,13 +219,21 @@ fn write_op(repo: &mut Repo, cmd: Command) -> Result<String, GitError> {
         }
         Command::Commit { message, amend } => {
             let oid = repo.commit(&message, amend)?;
-            format!("{} {}", if amend { "amended" } else { "committed" }, super::repo::short_id(oid))
+            format!(
+                "{} {}",
+                if amend { "amended" } else { "committed" },
+                super::repo::short_id(oid)
+            )
         }
         Command::Checkout(name) => {
             let local = repo.checkout(&name)?;
             format!("checked out {local}")
         }
-        Command::CreateBranch { name, from, checkout } => {
+        Command::CreateBranch {
+            name,
+            from,
+            checkout,
+        } => {
             repo.create_branch(&name, from, checkout)?;
             format!("created branch {name}")
         }
@@ -228,7 +259,11 @@ fn write_op(repo: &mut Repo, cmd: Command) -> Result<String, GitError> {
 
 /// Run `git <args>` in the working directory, streaming output lines.
 /// Never prompts: GIT_TERMINAL_PROMPT=0 makes credential failures fail fast.
-fn run_git_cli(workdir: &Path, args: &[&str], reply: &(impl Fn(Reply) + Send + 'static)) -> Result<String, String> {
+fn run_git_cli(
+    workdir: &Path,
+    args: &[&str],
+    reply: &(impl Fn(Reply) + Send + 'static),
+) -> Result<String, String> {
     use std::io::{BufRead, BufReader};
     use std::process::{Command as Proc, Stdio};
     let mut child = Proc::new("git")
@@ -280,7 +315,11 @@ fn run_git_cli(workdir: &Path, args: &[&str], reply: &(impl Fn(Reply) + Send + '
     if status.success() {
         Ok(format!("{} done", args[0]))
     } else {
-        Err(if last.is_empty() { format!("git {} failed ({status})", args[0]) } else { last })
+        Err(if last.is_empty() {
+            format!("git {} failed ({status})", args[0])
+        } else {
+            last
+        })
     }
 }
 
@@ -312,14 +351,23 @@ mod tests {
             Reply::Snapshot(s) => assert_eq!(s.commits.len(), 1),
             other => panic!("unexpected {other:?}"),
         }
-        w.tx.send(Command::LoadDiff(DiffTarget::WorkdirUnstaged("a.txt".into()))).unwrap();
+        w.tx.send(Command::LoadDiff(DiffTarget::WorkdirUnstaged(
+            "a.txt".into(),
+        )))
+        .unwrap();
         match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
-            Reply::Diff(Ok(d)) => assert_eq!(d.hunks[0].lines.iter().filter(|l| l.origin == '+').count(), 1),
+            Reply::Diff(Ok(d)) => assert_eq!(
+                d.hunks[0].lines.iter().filter(|l| l.origin == '+').count(),
+                1
+            ),
             other => panic!("unexpected {other:?}"),
         }
         w.tx.send(Command::StageAll).unwrap();
         match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
-            Reply::Op { label: "stage", result: Ok(_) } => {}
+            Reply::Op {
+                label: "stage",
+                result: Ok(_),
+            } => {}
             other => panic!("unexpected {other:?}"),
         }
         match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
@@ -338,7 +386,10 @@ mod tests {
             match rx.recv_timeout(Duration::from_secs(20)).unwrap() {
                 Reply::NetStart("push") => saw_start = true,
                 Reply::NetLine(l) => saw_line |= l.starts_with("$ git push"),
-                Reply::Op { label: "push", result } => {
+                Reply::Op {
+                    label: "push",
+                    result,
+                } => {
                     assert!(result.is_err());
                     break;
                 }

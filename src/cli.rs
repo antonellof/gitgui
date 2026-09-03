@@ -40,7 +40,10 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
     };
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
-        let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value\n{USAGE}"));
+        let mut value = |name: &str| {
+            it.next()
+                .ok_or_else(|| format!("{name} needs a value\n{USAGE}"))
+        };
         match arg.as_str() {
             "--probe" => cli.probe = true,
             "--dump-input" => cli.dump_input = true,
@@ -51,7 +54,9 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
             "--repo" => cli.path = Some(PathBuf::from(value("--repo")?)),
             "--size" => {
                 let v = value("--size")?;
-                let (w, h) = v.split_once('x').ok_or_else(|| format!("--size expects WxH, got {v:?}"))?;
+                let (w, h) = v
+                    .split_once('x')
+                    .ok_or_else(|| format!("--size expects WxH, got {v:?}"))?;
                 cli.size = (
                     w.parse().map_err(|_| format!("bad width {w:?}"))?,
                     h.parse().map_err(|_| format!("bad height {h:?}"))?,
@@ -70,7 +75,9 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                 cli.font_size = Some(v.parse().map_err(|_| format!("bad font size {v:?}"))?);
             }
             "-h" | "--help" => return Err(USAGE.to_owned()),
-            other if other.starts_with('-') => return Err(format!("unknown argument {other:?}\n{USAGE}")),
+            other if other.starts_with('-') => {
+                return Err(format!("unknown argument {other:?}\n{USAGE}"))
+            }
             other => cli.path = Some(PathBuf::from(other)),
         }
     }
@@ -87,7 +94,15 @@ mod tests {
 
     #[test]
     fn parses_headless_and_size() {
-        let c = p(&["--headless-frame", "/tmp/x.png", "--size", "800x600", "--scale", "2"]).unwrap();
+        let c = p(&[
+            "--headless-frame",
+            "/tmp/x.png",
+            "--size",
+            "800x600",
+            "--scale",
+            "2",
+        ])
+        .unwrap();
         assert_eq!(c.headless.unwrap().to_str().unwrap(), "/tmp/x.png");
         assert_eq!(c.size, (800, 600));
         assert_eq!(c.scale, Some(2.0));

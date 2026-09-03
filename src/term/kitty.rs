@@ -46,7 +46,15 @@ pub fn encode_shm_probe(out: &mut Vec<u8>, shm_name: &str) {
 /// terminal scales the image to the grid regardless of how it maps image
 /// pixels to screen pixels (Ghostty and cmux treat them as logical points
 /// on HiDPI displays, which would otherwise show the frame at 2x).
-pub fn encode_shm_place(out: &mut Vec<u8>, w: u32, h: u32, id: u32, shm_name: &str, cols: u32, rows: u32) {
+pub fn encode_shm_place(
+    out: &mut Vec<u8>,
+    w: u32,
+    h: u32,
+    id: u32,
+    shm_name: &str,
+    cols: u32,
+    rows: u32,
+) {
     let mut ctl = String::new();
     let _ = write!(
         ctl,
@@ -60,7 +68,15 @@ pub fn encode_shm_place(out: &mut Vec<u8>, w: u32, h: u32, id: u32, shm_name: &s
 
 /// Transmit and display a frame inline: zlib compressed, base64 encoded, split
 /// into chunks of at most [`DIRECT_CHUNK`] characters.
-pub fn encode_direct_place(out: &mut Vec<u8>, w: u32, h: u32, id: u32, rgba: &[u8], cols: u32, rows: u32) {
+pub fn encode_direct_place(
+    out: &mut Vec<u8>,
+    w: u32,
+    h: u32,
+    id: u32,
+    rgba: &[u8],
+    cols: u32,
+    rows: u32,
+) {
     debug_assert_eq!(rgba.len(), (w as usize) * (h as usize) * 4);
     let mut enc = flate2::write::ZlibEncoder::new(
         Vec::with_capacity(rgba.len() / 4),
@@ -152,7 +168,16 @@ impl FrameEncoder {
     /// object named `shm_name`; on the direct transport they are read from
     /// `rgba`.
     #[allow(clippy::too_many_arguments)]
-    pub fn encode_frame(&mut self, out: &mut Vec<u8>, w: u32, h: u32, cols: u32, rows: u32, rgba: &[u8], shm_name: Option<&str>) {
+    pub fn encode_frame(
+        &mut self,
+        out: &mut Vec<u8>,
+        w: u32,
+        h: u32,
+        cols: u32,
+        rows: u32,
+        rgba: &[u8],
+        shm_name: Option<&str>,
+    ) {
         let id = self.next_id();
         out.extend_from_slice(b"\x1b[?2026h");
         out.extend_from_slice(b"\x1b[1;1H");
@@ -192,7 +217,8 @@ impl Shm {
     /// Create the object, write `data` into it, unmap and close. Errors map to
     /// `std::io::Error` from `errno`.
     pub fn create_and_fill(name: &str, data: &[u8]) -> std::io::Result<Self> {
-        let cname = std::ffi::CString::new(name).map_err(|_| std::io::Error::other("nul in shm name"))?;
+        let cname =
+            std::ffi::CString::new(name).map_err(|_| std::io::Error::other("nul in shm name"))?;
         // SAFETY: cname is a valid NUL terminated string; flags are plain ints.
         let fd = unsafe {
             libc::shm_open(
@@ -327,7 +353,9 @@ mod tests {
         let s = String::from_utf8(seqs[0].clone()).unwrap();
         let (ctl, payload) = s.split_once(';').unwrap();
         assert_eq!(ctl, "a=T,t=d,o=z,f=32,s=2,v=2,c=1,r=1,i=1,p=1,C=1,q=2,m=0");
-        let z = base64::engine::general_purpose::STANDARD.decode(payload).unwrap();
+        let z = base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .unwrap();
         let mut dec = flate2::read::ZlibDecoder::new(&z[..]);
         let mut back = Vec::new();
         std::io::Read::read_to_end(&mut dec, &mut back).unwrap();
@@ -349,7 +377,11 @@ mod tests {
         let mut out = Vec::new();
         encode_direct_place(&mut out, 64, 64, 2, &rgba, 8, 4);
         let seqs = split_apcs(&out);
-        assert!(seqs.len() >= 2, "expected several chunks, got {}", seqs.len());
+        assert!(
+            seqs.len() >= 2,
+            "expected several chunks, got {}",
+            seqs.len()
+        );
         let first = String::from_utf8(seqs[0].clone()).unwrap();
         assert!(first.starts_with("a=T,t=d,o=z,f=32,s=64,v=64,c=8,r=4,i=2,p=2,C=1,q=2,m=1;"));
         let mut payload = String::new();
@@ -363,7 +395,9 @@ mod tests {
             }
             payload.push_str(chunk);
         }
-        let z = base64::engine::general_purpose::STANDARD.decode(payload).unwrap();
+        let z = base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .unwrap();
         let mut dec = flate2::read::ZlibDecoder::new(&z[..]);
         let mut back = Vec::new();
         std::io::Read::read_to_end(&mut dec, &mut back).unwrap();
@@ -421,7 +455,16 @@ mod tests {
         let cname = std::ffi::CString::new(name.clone()).unwrap();
         let fd = unsafe { libc::shm_open(cname.as_ptr(), libc::O_RDONLY, 0 as libc::c_uint) };
         assert!(fd >= 0);
-        let ptr = unsafe { libc::mmap(std::ptr::null_mut(), 8, libc::PROT_READ, libc::MAP_SHARED, fd, 0) };
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                8,
+                libc::PROT_READ,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            )
+        };
         assert_ne!(ptr, libc::MAP_FAILED);
         let back = unsafe { std::slice::from_raw_parts(ptr as *const u8, 8).to_vec() };
         unsafe {

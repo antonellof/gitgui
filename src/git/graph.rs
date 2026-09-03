@@ -66,13 +66,20 @@ pub fn layout(commits: &[CommitRow]) -> GraphLayout {
                 let l = first_free(&mut active);
                 let color = next_color;
                 next_color = (next_color + 1) % PALETTE_SIZE;
-                active[l] = Some(Lane { expects: c.oid, color });
+                active[l] = Some(Lane {
+                    expects: c.oid,
+                    color,
+                });
                 (l, color)
             }
         };
         // Other lanes that expected this commit merge into it; they end here.
         for &other in matches.iter().skip(1) {
-            edges.push(Edge { from_lane: other, to_lane: lane, kind: EdgeKind::Merge });
+            edges.push(Edge {
+                from_lane: other,
+                to_lane: lane,
+                kind: EdgeKind::Merge,
+            });
             active[other] = None;
         }
         // Lanes that pass straight through this row.
@@ -87,16 +94,33 @@ pub fn layout(commits: &[CommitRow]) -> GraphLayout {
         if c.parents.is_empty() {
             active[lane] = None;
         } else {
-            active[lane] = Some(Lane { expects: c.parents[0], color });
+            active[lane] = Some(Lane {
+                expects: c.parents[0],
+                color,
+            });
             for p in &c.parents[1..] {
-                if let Some(l) = active.iter().position(|x| x.as_ref().is_some_and(|x| x.expects == *p)) {
-                    edges.push(Edge { from_lane: lane, to_lane: l, kind: EdgeKind::Fork });
+                if let Some(l) = active
+                    .iter()
+                    .position(|x| x.as_ref().is_some_and(|x| x.expects == *p))
+                {
+                    edges.push(Edge {
+                        from_lane: lane,
+                        to_lane: l,
+                        kind: EdgeKind::Fork,
+                    });
                 } else {
                     let l = first_free(&mut active);
                     let pc = next_color;
                     next_color = (next_color + 1) % PALETTE_SIZE;
-                    active[l] = Some(Lane { expects: *p, color: pc });
-                    edges.push(Edge { from_lane: lane, to_lane: l, kind: EdgeKind::Fork });
+                    active[l] = Some(Lane {
+                        expects: *p,
+                        color: pc,
+                    });
+                    edges.push(Edge {
+                        from_lane: lane,
+                        to_lane: l,
+                        kind: EdgeKind::Fork,
+                    });
                 }
             }
         }
@@ -105,7 +129,14 @@ pub fn layout(commits: &[CommitRow]) -> GraphLayout {
         }
         let width = width_before.max(active.len()).max(lane + 1);
         max_lanes = max_lanes.max(width);
-        rows.push(RowLayout { lane, color, edges, through, width, is_merge: c.parents.len() > 1 });
+        rows.push(RowLayout {
+            lane,
+            color,
+            edges,
+            through,
+            width,
+            is_merge: c.parents.len() > 1,
+        });
     }
     GraphLayout { rows, max_lanes }
 }
@@ -160,7 +191,14 @@ mod tests {
         assert_eq!(g.max_lanes, 2);
         assert_eq!(g.rows[0].lane, 0);
         assert!(g.rows[0].is_merge);
-        assert_eq!(g.rows[0].edges, vec![Edge { from_lane: 0, to_lane: 1, kind: EdgeKind::Fork }]);
+        assert_eq!(
+            g.rows[0].edges,
+            vec![Edge {
+                from_lane: 0,
+                to_lane: 1,
+                kind: EdgeKind::Fork
+            }]
+        );
         assert_eq!(g.rows[1].lane, 0);
         assert_eq!(g.rows[1].through, vec![(1, 1)]);
         // commit 2 sits in lane 1; its first parent keeps lane 1 open until
@@ -170,21 +208,45 @@ mod tests {
         assert_eq!(g.rows[2].through, vec![(0, 0)]);
         // root: lane 0, lane 1 merged into it
         assert_eq!(g.rows[3].lane, 0);
-        assert_eq!(g.rows[3].edges, vec![Edge { from_lane: 1, to_lane: 0, kind: EdgeKind::Merge }]);
+        assert_eq!(
+            g.rows[3].edges,
+            vec![Edge {
+                from_lane: 1,
+                to_lane: 0,
+                kind: EdgeKind::Merge
+            }]
+        );
         assert_eq!(g.rows[3].width, 2);
     }
 
     #[test]
     fn octopus_merge() {
         // 5 = merge(4, 3, 2), all -> 1
-        let commits = vec![row(5, &[4, 3, 2]), row(4, &[1]), row(3, &[1]), row(2, &[1]), row(1, &[])];
+        let commits = vec![
+            row(5, &[4, 3, 2]),
+            row(4, &[1]),
+            row(3, &[1]),
+            row(2, &[1]),
+            row(1, &[]),
+        ];
         let g = layout(&commits);
         assert_eq!(g.max_lanes, 3);
         assert_eq!(g.rows[0].edges.len(), 2);
-        assert!(g.rows[0].edges.iter().all(|e| e.kind == EdgeKind::Fork && e.from_lane == 0));
-        assert_eq!(g.rows[4].edges.iter().filter(|e| e.kind == EdgeKind::Merge).count(), 2);
+        assert!(g.rows[0]
+            .edges
+            .iter()
+            .all(|e| e.kind == EdgeKind::Fork && e.from_lane == 0));
+        assert_eq!(
+            g.rows[4]
+                .edges
+                .iter()
+                .filter(|e| e.kind == EdgeKind::Merge)
+                .count(),
+            2
+        );
         // Lanes get distinct colors.
-        let colors: std::collections::HashSet<usize> = g.rows[1..4].iter().map(|r| r.color).collect();
+        let colors: std::collections::HashSet<usize> =
+            g.rows[1..4].iter().map(|r| r.color).collect();
         assert_eq!(colors.len(), 3);
     }
 
@@ -204,11 +266,24 @@ mod tests {
     #[test]
     fn branch_started_later_keeps_lane_open() {
         // 5 -> 4 -> 2 -> 1 in lane 0; 3 -> 1 appears in the middle on lane 1.
-        let commits = vec![row(5, &[4]), row(4, &[2]), row(3, &[1]), row(2, &[1]), row(1, &[])];
+        let commits = vec![
+            row(5, &[4]),
+            row(4, &[2]),
+            row(3, &[1]),
+            row(2, &[1]),
+            row(1, &[]),
+        ];
         let g = layout(&commits);
         assert_eq!(g.rows[2].lane, 1);
         assert_eq!(g.rows[3].lane, 0);
         assert_eq!(g.rows[3].through, vec![(1, g.rows[2].color)]);
-        assert_eq!(g.rows[4].edges, vec![Edge { from_lane: 1, to_lane: 0, kind: EdgeKind::Merge }]);
+        assert_eq!(
+            g.rows[4].edges,
+            vec![Edge {
+                from_lane: 1,
+                to_lane: 0,
+                kind: EdgeKind::Merge
+            }]
+        );
     }
 }

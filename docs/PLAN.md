@@ -85,7 +85,25 @@ watched mtime changed.
   cell height changes the scale and font size follow. Window resizes while a
   frame is in flight are coalesced by the identical-frame skip.
 
+## Next steps (resume here)
+
+1. Phase 5: `split.rs` (cmux CLI has `new-split`, `send`, `read-screen`;
+   detect cmux via `CMUX_*` env, TERM_PROGRAM says ghostty), `agent.rs`
+   unix socket JSON-lines API, `skill/SKILL.md`, install script, release
+   workflow, README demo recording.
+2. Detail column: when the detail pane is short (about 225 pt or less) the
+   staged list overlaps the commit box (nested `Panel::bottom` does not clip
+   the content above it). Fix by allocating explicit heights; the attempt in
+   this session hid the commit box, so start from the committed layout.
+3. Fonts: load the terminal's font family (Ghostty `font-family`) via a
+   system font lookup; currently egui's bundled fonts at the terminal's size.
+4. Manual verification still owed on a real screen: commit via the Commit
+   button, Stage hunk button, branch context menus, fetch/pull/push log.
+   All are covered by headless harness tests in `runtime.rs`.
+
 ## Open issues
+
+- Detail column overlaps in short panes (see next steps).
 
 - SSH manual check not done: Remote Login is off on the dev Mac. The direct
   transport was verified with `--no-shm` instead.
