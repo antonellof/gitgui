@@ -10,7 +10,7 @@ this file tracks where we are, what was decided, and what is open.
 |---|---|---|---|
 | 0 terminal plumbing | done | 22bef03 | probe, raw mode, kitty graphics shm + direct, restore on exit and panic |
 | 1 rendering | done | 475c593 | rasterizer, framebuffer, egui demo, headless PNG |
-| 2 input | done | see git log | parser with byte tests, stdin thread, egui mapping, `--dump-input` |
+| 2 input | done | eecddce | parser with byte tests, stdin thread, egui mapping, `--dump-input` |
 | 3 read-only git | next | | git2 pinned at 0.21.0, add the dependency when starting |
 | 4 writes | | | |
 | 5 integration | | | |
