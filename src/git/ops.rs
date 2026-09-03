@@ -39,6 +39,11 @@ pub enum Command {
         message: String,
         amend: bool,
     },
+    /// Commit, then run `git push` on success.
+    CommitAndPush {
+        message: String,
+        amend: bool,
+    },
     Checkout(String),
     CreateBranch {
         name: String,
@@ -70,7 +75,7 @@ impl Command {
             Command::Stage(_) | Command::StageAll | Command::StageHunk { .. } => "stage",
             Command::Unstage(_) | Command::UnstageAll | Command::UnstageHunk { .. } => "unstage",
             Command::Discard(_) => "discard",
-            Command::Commit { .. } => "commit",
+            Command::Commit { .. } | Command::CommitAndPush { .. } => "commit",
             Command::Checkout(_) => "checkout",
             Command::CreateBranch { .. } => "new branch",
             Command::DeleteBranch(_) => "delete branch",
@@ -148,6 +153,31 @@ pub fn spawn(path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Result<Wo
                         reply(Reply::CommitFiles(oid, repo.commit_files(oid)));
                     }
                     Ok(Command::Focus(f)) => focused = f,
+                    Ok(Command::CommitAndPush { message, amend }) => {
+                        let commit_result = write_op(
+                            &mut repo,
+                            Command::Commit {
+                                message,
+                                amend,
+                            },
+                        )
+                        .map_err(|e| e.to_string());
+                        let commit_ok = commit_result.is_ok();
+                        reply(Reply::Op {
+                            label: "commit",
+                            result: commit_result,
+                        });
+                        if commit_ok {
+                            reply(Reply::NetStart("push"));
+                            let push_result = run_git_cli(&workdir, &["push"], &reply);
+                            reply(Reply::Op {
+                                label: "push",
+                                result: push_result,
+                            });
+                        }
+                        send_snapshot(&mut repo, limit);
+                        stamp = self::stamp(&repo.watch_paths());
+                    }
                     Ok(cmd @ (Command::Fetch | Command::Pull | Command::Push)) => {
                         let label = cmd.label();
                         reply(Reply::NetStart(label));
@@ -398,6 +428,50 @@ mod tests {
             }
         }
         assert!(saw_start && saw_line);
+        w.tx.send(Command::Quit).unwrap();
+    }
+
+    #[test]
+    fn commit_and_push_commits_then_pushes() {
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "x\n", "init");
+        t.write("a.txt", "x\ny\n");
+        let (tx, rx) = mpsc::channel();
+        let w = spawn(t.dir.clone(), move |r| {
+            let _ = tx.send(r);
+        })
+        .unwrap();
+        let _ = rx.recv_timeout(Duration::from_secs(5));
+        w.tx.send(Command::StageAll).unwrap();
+        while !matches!(
+            rx.recv_timeout(Duration::from_secs(5)),
+            Ok(Reply::Snapshot(_))
+        ) {}
+        w.tx
+            .send(Command::CommitAndPush {
+                message: "second".into(),
+                amend: false,
+            })
+            .unwrap();
+        let mut saw_commit = false;
+        let mut saw_push_start = false;
+        loop {
+            match rx.recv_timeout(Duration::from_secs(20)).unwrap() {
+                Reply::Op {
+                    label: "commit",
+                    result: Ok(_),
+                } => saw_commit = true,
+                Reply::NetStart("push") => saw_push_start = true,
+                Reply::Op {
+                    label: "push",
+                    result: _,
+                } => break,
+                Reply::Snapshot(s) if saw_commit && s.commits[0].summary == "second" => {}
+                Reply::NetLine(_) | Reply::Snapshot(_) => {}
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert!(saw_commit && saw_push_start);
         w.tx.send(Command::Quit).unwrap();
     }
 

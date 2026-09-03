@@ -92,6 +92,7 @@ pub struct App {
     pub busy: usize,
     /// Where the Commit button was laid out last pass (tests click it).
     pub commit_button_rect: Option<egui::Rect>,
+    pub commit_push_button_rect: Option<egui::Rect>,
 }
 
 impl App {
@@ -133,6 +134,7 @@ impl App {
             amend_loaded: false,
             busy: 0,
             commit_button_rect: None,
+            commit_push_button_rect: None,
         }
     }
 
@@ -297,6 +299,22 @@ impl App {
             return;
         }
         self.run(Command::Commit {
+            message: msg,
+            amend: self.amend,
+        });
+    }
+
+    pub fn commit_and_push_now(&mut self) {
+        let msg = self.commit_msg.trim().to_owned();
+        if msg.is_empty() {
+            self.toast("commit message is empty", true);
+            return;
+        }
+        if self.snapshot.staged.is_empty() && !self.amend {
+            self.toast("nothing staged", true);
+            return;
+        }
+        self.run(Command::CommitAndPush {
             message: msg,
             amend: self.amend,
         });

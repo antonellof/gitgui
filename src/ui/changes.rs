@@ -161,6 +161,20 @@ fn show_commit_box(app: &mut App, ui: &mut egui::Ui, s: &crate::git::repo::RepoS
         if commit.clicked() {
             app.commit_now();
         }
+        let commit_push = ui
+            .add_enabled(
+                can_commit,
+                egui::Button::new(if app.amend {
+                    "Amend & Push"
+                } else {
+                    "Commit & Push"
+                }),
+            )
+            .on_hover_text("commit then git push");
+        app.commit_push_button_rect = Some(commit_push.rect);
+        if commit_push.clicked() {
+            app.commit_and_push_now();
+        }
         let before = app.amend;
         ui.checkbox(&mut app.amend, "amend");
         if app.amend && !before && app.commit_msg.trim().is_empty() {
