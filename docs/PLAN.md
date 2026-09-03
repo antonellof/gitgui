@@ -12,7 +12,7 @@ this file tracks where we are, what was decided, and what is open.
 | 1 rendering | done | 475c593 | rasterizer, framebuffer, egui demo, headless PNG |
 | 2 input | done | eecddce | parser with byte tests, stdin thread, egui mapping, `--dump-input` |
 | 3 read-only git | done | 9b7de3d | git2 0.21.0, snapshot + graph + diff, worker thread, real UI |
-| 4 writes | done | see git log | stage/unstage files and hunks, commit, amend, checkout, branches, stash, discard, fetch/pull/push via git CLI |
+| 4 writes | done | b4de578 | stage/unstage files and hunks, commit, amend, checkout, branches, stash, discard, fetch/pull/push via git CLI |
 | 5 integration | next | | |
 
 ## Measurements
