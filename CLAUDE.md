@@ -55,9 +55,11 @@ Toolchain at kickoff: rustc 1.98.0, cargo 1.98.0 (2026-08). Both crates below ar
   - `FullOutput` fields: `platform_output`, `textures_delta`, `shapes: Vec<ClippedShape>`, `pixels_per_point`, `viewport_output`.
   - `ctx.tessellate(shapes, pixels_per_point) -> Vec<ClippedPrimitive>`.
   - `epaint::ImageData` has a single variant `Color(Arc<ColorImage>)`. There is no `Font` variant; the font atlas arrives as premultiplied RGBA `ColorImage` (`pixels: Vec<Color32>`, `as_raw()` for bytes). `ImageDelta { image, options, pos: Option<[usize; 2]> }`.
-  - Dropping a `TexturesDelta` without applying it panics in debug builds; call `clear()` if you must drop one.
+  - `TexturesDelta` lives at `epaint::textures::TexturesDelta`. `set` is `HashMap<TextureId, SmallVec<[ImageDelta; 1]>>` (apply each delta in order), `free` is `HashSet<TextureId>`.
+  - Dropping a `TexturesDelta` without applying it panics in debug builds, even after you applied it by reference: call `clear()` once done.
+  - Panels: `SidePanel` and `TopBottomPanel` are gone. Use `egui::Panel::left("id").default_size(220.0).show(ui, ...)`, `Panel::bottom(...)`, and `CentralPanel::default().show(ui, ...)`. All take the root `&mut Ui` that `run_ui` hands to the closure, not a `Context`.
 - `git2 = "=0.21.0"` with `default-features = false` (builds libgit2 from source, no system dependency). Added when Phase 3 starts.
-- `png = "0.17"` compiles fine; added with `--headless-frame` in Phase 1.
+- `png = "0.17"`, used by `--headless-frame`.
 
 ## Commands
 

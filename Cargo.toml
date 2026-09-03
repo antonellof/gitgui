@@ -10,6 +10,10 @@ libc = "0.2"
 base64 = "0.22"
 flate2 = "1"
 anyhow = "1"
+png = "0.17"
+
+[dev-dependencies]
+smallvec = "1"
 
 [profile.release]
 opt-level = 3
