@@ -388,7 +388,7 @@ mod tests {
         t.commit_file("f", "x\n", "hello world");
         let mut repo = crate::git::repo::Repo::open(&t.dir).unwrap();
         let snap = repo.snapshot(10).unwrap();
-        let mut app = App::new(Theme::dark(), "test", 1.0);
+        let mut app = App::new(Theme::dark(), "test", 1.0, t.dir.clone());
         app.apply(crate::git::ops::Reply::Snapshot(snap));
         let oid = app.snapshot.commits[0].short.clone();
         select_oid(&mut app, &oid).unwrap();
@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn status_json_shape() {
-        let app = App::new(Theme::dark(), "test", 1.0);
+        let app = App::new(Theme::dark(), "test", 1.0, PathBuf::from("."));
         let v = status_json(&app);
         assert!(v.get("pid").is_some());
         assert!(v.get("repo").is_some());

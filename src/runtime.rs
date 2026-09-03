@@ -188,7 +188,7 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
     let ppp = opts.scale.unwrap_or(1.0);
     let theme = Theme::dark();
     let ctx = setup_context(opts.font_size.unwrap_or(13.0), &theme);
-    let mut app = App::new(theme, "headless", ppp);
+    let mut app = App::new(theme, "headless", ppp, opts.path.to_path_buf());
     let mut raster = Rasterizer::new();
     let mut fb = Framebuffer::new(size.0, size.1);
     let mut t = Timings::default();
@@ -196,28 +196,32 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
     // Load the repository synchronously: snapshot, then whatever the app
     // asks for (commit files, first diff) until it is quiet.
     let mut repo = match Repo::open(&opts.path) {
-        Ok(r) => r,
+        Ok(r) => Some(r),
         Err(GitError::NotARepository(p)) => {
-            eprintln!("gitgui: not a git repository: {}", p.display());
-            return Ok(2);
+            app.no_repo = true;
+            app.repo_path = p;
+            None
         }
         Err(e) => return Err(e.into()),
     };
-    let t_git = Instant::now();
-    app.apply(Reply::Snapshot(repo.snapshot(ops::COMMIT_LIMIT)?));
-    let git_ms = t_git.elapsed().as_secs_f64() * 1e3;
-    for _ in 0..8 {
-        let cmds = std::mem::take(&mut app.pending);
-        if cmds.is_empty() {
-            break;
-        }
-        for cmd in cmds {
-            match cmd {
-                Command::LoadDiff(target) => app.apply(Reply::Diff(repo.diff(&target))),
-                Command::LoadCommitFiles(oid) => {
-                    app.apply(Reply::CommitFiles(oid, repo.commit_files(oid)))
+    let mut git_ms = 0.0;
+    if let Some(repo) = repo.as_mut() {
+        let t_git = Instant::now();
+        app.apply(Reply::Snapshot(repo.snapshot(ops::COMMIT_LIMIT)?));
+        git_ms = t_git.elapsed().as_secs_f64() * 1e3;
+        for _ in 0..8 {
+            let cmds = std::mem::take(&mut app.pending);
+            if cmds.is_empty() {
+                break;
+            }
+            for cmd in cmds {
+                match cmd {
+                    Command::LoadDiff(target) => app.apply(Reply::Diff(repo.diff(&target))),
+                    Command::LoadCommitFiles(oid) => {
+                        app.apply(Reply::CommitFiles(oid, repo.commit_files(oid)))
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }
@@ -391,16 +395,9 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
         })
         .expect("spawn agent bridge");
     let _agent = Server::bind(&opts.path, agent_job_tx).context("agent socket")?;
-    let worker = match ops::spawn(opts.path.clone(), move |r| {
+    let worker = ops::spawn(opts.path.clone(), move |r| {
         let _ = git_tx.send(Msg::Git(r));
-    }) {
-        Ok(w) => w,
-        Err(GitError::NotARepository(p)) => {
-            eprintln!("gitgui: not a git repository: {}", p.display());
-            return Ok(2);
-        }
-        Err(e) => return Err(e.into()),
-    };
+    });
 
     let session = term::Session::enter()?;
     let (w, h) = caps.frame_size();
@@ -409,7 +406,7 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
         .font_size
         .unwrap_or_else(|| font_size_for_cell(caps.cell_h, ppp));
     let ctx = setup_context(font_size, &theme);
-    let mut app = App::new(theme, transport_name, ppp);
+    let mut app = App::new(theme, transport_name, ppp, opts.path.clone());
     let mut raster = Rasterizer::new();
     let mut fb = Framebuffer::new(w, h);
     let mut enc = kitty::FrameEncoder::new(transport, std::process::id());
@@ -557,6 +554,9 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                 for cmd in app.pending.drain(..) {
                     let _ = worker.tx.send(cmd);
                 }
+                if app.quit {
+                    break;
+                }
                 last_frame = Instant::now();
                 next_deadline = last_frame
                     + pass
@@ -682,7 +682,7 @@ mod tests {
         // native_pixels_per_point doubled the scale on screen.
         let theme = Theme::dark();
         let ctx = setup_context(13.0, &theme);
-        let mut app = App::new(theme, "test", 2.0);
+        let mut app = App::new(theme, "test", 2.0, PathBuf::from("."));
         let mut raster = Rasterizer::new();
         let mut fb = Framebuffer::new(200, 100);
         let mut t = Timings::default();
@@ -711,7 +711,7 @@ mod tests {
         fn new(dir: &std::path::Path) -> Self {
             let theme = Theme::dark();
             let ctx = setup_context(13.0, &theme);
-            let mut app = App::new(theme, "test", 1.0);
+            let mut app = App::new(theme, "test", 1.0, dir.to_path_buf());
             let mut repo = Repo::open(dir).unwrap();
             app.apply(Reply::Snapshot(repo.snapshot(100).unwrap()));
             let mut h = Harness {
@@ -899,7 +899,7 @@ mod tests {
         h.frame(Vec::new());
         let rect = h.app.commit_button_rect.expect("commit button laid out");
         h.click(rect.center());
-        assert!(h
+assert!(h
             .app
             .pending
             .iter()
@@ -968,7 +968,7 @@ mod tests {
         let ppp = 1.0;
         let theme = Theme::dark();
         let ctx = setup_context(13.0, &theme);
-        let mut app = App::new(theme, "test", ppp);
+        let mut app = App::new(theme, "test", ppp, PathBuf::from("."));
         let mut raster = Rasterizer::new();
         let mut fb = Framebuffer::new(400, 300);
         let mut t = Timings::default();
@@ -1009,7 +1009,7 @@ mod tests {
         let ppp = 1.0;
         let theme = Theme::dark();
         let ctx = setup_context(13.0, &theme);
-        let mut app = App::new(theme, "test", ppp);
+        let mut app = App::new(theme, "test", ppp, PathBuf::from("."));
         let mut repo = Repo::open(&t.dir).unwrap();
         app.apply(Reply::Snapshot(repo.snapshot(100).unwrap()));
         // Clean tree: first commit is selected and its files are requested.

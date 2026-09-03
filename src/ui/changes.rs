@@ -121,20 +121,19 @@ pub fn commit_box_height(total_h: f32) -> f32 {
     if total_h <= 180.0 {
         72.0
     } else if total_h <= 260.0 {
-        96.0
+        88.0
     } else {
-        118.0
+        104.0
     }
 }
 
 /// Rows in the commit message field for the given box height.
+/// Reserves space for the amend row and commit buttons below the message.
 pub fn commit_message_rows(box_h: f32) -> usize {
-    if box_h <= 80.0 {
+    if box_h <= 96.0 {
         1
-    } else if box_h <= 100.0 {
-        2
     } else {
-        3
+        2
     }
 }
 
@@ -151,46 +150,9 @@ pub fn list_scroll_heights(lists_h: f32) -> (f32, f32) {
 
 fn show_commit_box(app: &mut App, ui: &mut egui::Ui, s: &crate::git::repo::RepoSnapshot, box_h: f32, busy: bool) {
     ui.separator();
-    ui.add_space(2.0);
-    ui.horizontal(|ui| {
-        let can_commit = !busy && (!s.staged.is_empty() || app.amend) && !app.commit_msg.trim().is_empty();
-        let commit = ui
-            .add_enabled(can_commit, egui::Button::new(if app.amend { "Amend" } else { "Commit" }))
-            .on_hover_text("Ctrl+Enter");
-        app.commit_button_rect = Some(commit.rect);
-        if commit.clicked() {
-            app.commit_now();
-        }
-        let commit_push = ui
-            .add_enabled(
-                can_commit,
-                egui::Button::new(if app.amend {
-                    "Amend & Push"
-                } else {
-                    "Commit & Push"
-                }),
-            )
-            .on_hover_text("Ctrl+Shift+Enter");
-        app.commit_push_button_rect = Some(commit_push.rect);
-        if commit_push.clicked() {
-            app.commit_and_push_now();
-        }
-        let before = app.amend;
-        ui.checkbox(&mut app.amend, "amend");
-        if app.amend && !before && app.commit_msg.trim().is_empty() {
-            app.amend_loaded = true;
-            if let Some(m) = &s.head_message {
-                app.commit_msg = m.trim_end().to_owned();
-            }
-        }
-        if box_h > 80.0 {
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-            ui.weak(format!("{} <{}>", s.user_name, s.user_email));
-        }
-    });
     let rows = commit_message_rows(box_h);
     let edit = egui::TextEdit::multiline(&mut app.commit_msg)
-        .hint_text("Commit message (Ctrl+Enter to commit, Ctrl+Shift+Enter to commit and push)")
+        .hint_text("Commit message")
         .desired_rows(rows)
         .desired_width(f32::INFINITY);
     let resp = ui.add(edit);
@@ -198,6 +160,63 @@ fn show_commit_box(app: &mut App, ui: &mut egui::Ui, s: &crate::git::repo::RepoS
         resp.request_focus();
         app.focus_commit_msg = false;
     }
+    let can_commit =
+        !busy && (!s.staged.is_empty() || app.amend) && !app.commit_msg.trim().is_empty();
+    let commit_tip = if can_commit {
+        "Ctrl+Enter"
+    } else if busy {
+        "wait for the current operation"
+    } else if app.commit_msg.trim().is_empty() {
+        "enter a commit message"
+    } else if s.staged.is_empty() && !app.amend {
+        "stage files first"
+    } else {
+        "Ctrl+Enter"
+    };
+    let push_tip = if can_commit {
+        "Ctrl+Shift+Enter"
+    } else {
+        commit_tip
+    };
+    ui.horizontal(|ui| {
+        let before = app.amend;
+        let author = format!("{} <{}>", s.user_name, s.user_email);
+        ui.checkbox(&mut app.amend, "Amend")
+            .on_hover_text(author);
+        if app.amend && !before && app.commit_msg.trim().is_empty() {
+            app.amend_loaded = true;
+            if let Some(m) = &s.head_message {
+                app.commit_msg = m.trim_end().to_owned();
+            }
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let commit = ui
+                .add_enabled(
+                    can_commit,
+                    egui::Button::new(if app.amend { "Amend" } else { "Commit" }).small(),
+                )
+                .on_hover_text(commit_tip);
+            app.commit_button_rect = Some(commit.rect);
+            if commit.clicked() {
+                app.commit_now();
+            }
+            let commit_push = ui
+                .add_enabled(
+                    can_commit,
+                    egui::Button::new(if app.amend {
+                        "Amend & Push"
+                    } else {
+                        "Commit & Push"
+                    })
+                    .small(),
+                )
+                .on_hover_text(push_tip);
+            app.commit_push_button_rect = Some(commit_push.rect);
+            if commit_push.clicked() {
+                app.commit_and_push_now();
+            }
+        });
+    });
 }
 
 fn show_worktree_lists(
@@ -323,7 +342,7 @@ mod tests {
             used <= total + 0.5,
             "layout used {used} pt in a {total} pt pane"
         );
-        assert_eq!(commit, 96.0);
+        assert_eq!(commit, 88.0);
         assert!(u >= 0.0 && s >= 0.0);
     }
 
@@ -331,5 +350,6 @@ mod tests {
     fn commit_box_shrinks_in_tiny_panes() {
         assert_eq!(commit_box_height(150.0), 72.0);
         assert_eq!(commit_message_rows(72.0), 1);
+        assert_eq!(commit_message_rows(104.0), 2);
     }
 }

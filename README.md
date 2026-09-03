@@ -192,7 +192,7 @@ Release binaries are built by `.github/workflows/release.yml` on tag push (`v*`)
 - Auto refresh every 2 s when the repo changes (no need to press `r` after edits in another pane)
 - Agent control socket: `gitgui ls`, `gitgui action '{"cmd":"status"}'` (see [skill/SKILL.md](skill/SKILL.md))
 
-Status: **v0.1.3**. Phases 0 to 5 of the roadmap are done. See [Roadmap](#roadmap) and [docs/PLAN.md](docs/PLAN.md) for open issues.
+Status: **v0.1.4**. Phases 0 to 5 of the roadmap are done. See [Roadmap](#roadmap) and [docs/PLAN.md](docs/PLAN.md) for open issues.
 
 ## Architecture
 
