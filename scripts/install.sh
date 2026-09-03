@@ -45,9 +45,9 @@ resolve_version() {
 
 install_from_release() {
   local asset="gitgui-${VERSION}-${platform}-${arch}"
-  local tmpdir
+  local tmpdir bin
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
+  trap "rm -rf '${tmpdir}'" EXIT
 
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
     echo "downloading ${asset}.tar.gz from GitHub release v${VERSION} (via gh)"
@@ -57,18 +57,19 @@ install_from_release() {
   else
     local url="https://github.com/${REPO}/releases/download/v${VERSION}/${asset}.tar.gz"
     echo "downloading $url"
-    curl -fsSL "$url" -o "$tmpdir/archive.tar.gz" || return 1
-    tar xzf "$tmpdir/archive.tar.gz" -C "$tmpdir"
+    curl -fsSL "$url" -o "$tmpdir/${asset}.tar.gz" || return 1
+    tar xzf "$tmpdir/${asset}.tar.gz" -C "$tmpdir"
   fi
 
-  local bin
-  bin="$(find "$tmpdir" -maxdepth 1 -type f -name 'gitgui-*' | head -1)"
-  if [ -z "$bin" ]; then
-    echo "release archive did not contain a gitgui binary" >&2
+  bin="$tmpdir/${asset}"
+  if [ ! -f "$bin" ]; then
+    echo "release archive did not contain $asset" >&2
     return 1
   fi
   mkdir -p "$INSTALL_DIR"
   install -m 755 "$bin" "$INSTALL_DIR/gitgui"
+  trap - EXIT
+  rm -rf "$tmpdir"
 }
 
 install_from_source() {
@@ -80,7 +81,7 @@ install_from_source() {
   local tmpdir src
   tmpdir="$(mktemp -d)"
   src="$tmpdir/gitgui"
-  trap 'rm -rf "$tmpdir"' EXIT
+  trap "rm -rf '${tmpdir}'" EXIT
   echo "building gitgui from source (this takes a few minutes)"
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
     if [ -n "${VERSION:-}" ]; then
@@ -101,6 +102,8 @@ install_from_source() {
     mv "$INSTALL_DIR/bin/gitgui" "$INSTALL_DIR/gitgui"
     rmdir "$INSTALL_DIR/bin" 2>/dev/null || true
   fi
+  trap - EXIT
+  rm -rf "$tmpdir"
 }
 
 print_done() {
