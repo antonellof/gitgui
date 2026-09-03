@@ -1,0 +1,17 @@
+[package]
+name = "gitgui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+egui = { version = "=0.36.1", default-features = false, features = ["default_fonts"] }
+epaint = { version = "=0.36.1", default-features = false }
+libc = "0.2"
+base64 = "0.22"
+flate2 = "1"
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
