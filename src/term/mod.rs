@@ -1,6 +1,7 @@
 //! Terminal session management: raw mode, alternate screen, mode toggles,
 //! and restoration on every exit path (drop, panic, signals).
 
+pub mod input;
 pub mod kitty;
 pub mod probe;
 

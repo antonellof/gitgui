@@ -5,6 +5,7 @@ use std::path::PathBuf;
 pub const USAGE: &str = "usage: gitgui [options] [path]
 
   --probe                    print detected terminal capabilities and exit
+  --dump-input               print decoded input events, Ctrl+C to exit
   --headless-frame <out.png> render one frame to a PNG and exit
   --size <WxH>               frame size for --headless-frame (default 1600x1000)
   --scale <1|1.5|2>          override pixels per point
@@ -14,6 +15,7 @@ pub const USAGE: &str = "usage: gitgui [options] [path]
 
 pub struct Cli {
     pub probe: bool,
+    pub dump_input: bool,
     pub no_shm: bool,
     pub crash: bool,
     pub headless: Option<PathBuf>,
@@ -26,6 +28,7 @@ pub struct Cli {
 pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
     let mut cli = Cli {
         probe: false,
+        dump_input: false,
         no_shm: false,
         crash: false,
         headless: None,
@@ -39,6 +42,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
         let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value\n{USAGE}"));
         match arg.as_str() {
             "--probe" => cli.probe = true,
+            "--dump-input" => cli.dump_input = true,
             "--no-shm" => cli.no_shm = true,
             // Hidden: panic one second into the session to verify restoration.
             "--crash" => cli.crash = true,

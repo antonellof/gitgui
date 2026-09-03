@@ -48,6 +48,7 @@ Send all probes at once, then read responses until the `CSI c` (primary DA) repl
 APC G i=31,s=1,v=1,a=q,t=d,f=24 ; AAAA ST     kitty graphics probe (1x1 RGB pixel)
 APC G i=32,s=1,v=1,a=q,t=s,f=32 ; <b64 name> ST shared memory probe (section 4.2)
 CSI ? u                                       kitty keyboard probe
+CSI ? 1016 $ p                                DECRQM: does the terminal know pixel mouse mode?
 CSI 16 t                                      cell size in pixels
 CSI 14 t                                      text area size in pixels
 CSI 18 t                                      text area size in cells
@@ -60,6 +61,7 @@ Expected replies:
 APC G i=31 ; OK ST                 graphics supported (any other message or no reply: unsupported)
 APC G i=32 ; OK ST                 shm transport supported (see 4.2, sent only when not over SSH)
 CSI ? <flags> u                    kitty keyboard supported, current flags
+CSI ? 1016 ; <Ps> $ y              DECRPM: Ps 0 = mode unknown (mouse reports cells), 1..4 = known (pixels once enabled)
 CSI 6 ; <height> ; <width> t       cell size
 CSI 4 ; <height> ; <width> t       pixel size
 CSI 8 ; <rows> ; <cols> t          cell grid
@@ -86,7 +88,9 @@ CSI <unicode-key> [ : <shifted-key> [ : <base-layout-key> ] ] ; <modifiers> [ : 
 - `event-type`: 1 press (default), 2 repeat, 3 release. Map press and repeat to `KeyDown`, release to `KeyUp`.
 - Functional keys arrive as private use codepoints: Escape 27, Enter 13, Tab 9, Backspace 127, Insert 57348, Delete 57349, Left 57350, Right 57351, Up 57352, Down 57353, PageUp 57354, PageDown 57355, Home 57356, End 57357, F1..F12 57364..57375. Also accept the legacy forms below because some keys still use them even with flags pushed.
 - Legacy forms to accept: `CSI A/B/C/D` arrows, `CSI 1 ; <mod> A` etc., `CSI H`/`CSI F` home/end, `CSI 2~ 3~ 5~ 6~` insert/delete/pgup/pgdn, `CSI 3 ; <mod> ~`.
-- Text: when the `text-codepoints` field is present, use it as the typed text. Otherwise, for a press of a printable `unicode-key` without ctrl/alt/super, the text is that codepoint, uppercased if shift is set and the key is ASCII.
+- Text: when the `text-codepoints` field is present, use it as the typed text. Otherwise, for a press of a printable `unicode-key` without ctrl/alt/super, the text is that codepoint; with shift held use the `shifted-key` field when present (flag 4 makes the terminal send it, so `shift+1` yields `!`), else uppercase the key if it is ASCII.
+- Modifier keys themselves (left shift 57441 and friends) arrive as key events because of flag 8. They map to no key and no text.
+- Lock modifiers (caps lock 64, num lock 128) are masked out of the modifier bits.
 
 Fallback when kitty keyboard is unsupported: plain UTF-8 bytes are text, `0x01..0x1A` are `Ctrl+<letter>`, `ESC <byte>` is `Alt+<byte>`.
 
@@ -97,7 +101,7 @@ CSI < <Cb> ; <Px> ; <Py> M     press or motion
 CSI < <Cb> ; <Px> ; <Py> m     release
 ```
 
-- With `?1016h` active, `Px, Py` are 1-based pixels. Convert to 0-based by subtracting 1. If `?1016` was rejected (Ghostty accepted it in 2025, older builds did not), coordinates are cells: convert with `(Px - 1) * cell_w + cell_w / 2`.
+- With `?1016h` active, `Px, Py` are 1-based pixels. Convert to 0-based by subtracting 1. If the DECRQM probe reported mode 1016 as unknown (Ghostty accepted it in 2025, older builds did not), coordinates are cells: convert with `(Px - 1) * cell_w + cell_w / 2`.
 - `Cb` low two bits: 0 left, 1 middle, 2 right, 3 none (motion with no button when combined with 32).
 - `Cb` bit 4 shift, bit 8 alt, bit 16 ctrl, bit 32 motion, bit 64 wheel: 64 wheel up, 65 wheel down, 66 wheel left, 67 wheel right (high-resolution terminals send these repeatedly; each event is one notch, translate to 40 px of scroll per notch in egui points, adjusted by scale).
 - Ghostty trackpad scrolling arrives as many wheel events per second. Coalesce wheel events received within one poll cycle into a single egui scroll delta.

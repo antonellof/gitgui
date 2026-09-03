@@ -55,8 +55,14 @@ impl Framebuffer {
         self.pixels != self.last_sent
     }
 
+    /// Record the current pixels as sent. Swaps buffers instead of copying;
+    /// the next frame clears the buffer anyway.
     pub fn mark_sent(&mut self) {
-        self.last_sent.clone_from(&self.pixels);
+        if self.last_sent.len() == self.pixels.len() {
+            std::mem::swap(&mut self.last_sent, &mut self.pixels);
+        } else {
+            self.last_sent.clone_from(&self.pixels);
+        }
     }
 
     #[cfg(test)]
@@ -89,6 +95,9 @@ mod tests {
         assert!(!fb.is_dirty());
         fb.clear([1, 2, 3, 255]);
         assert!(!fb.is_dirty(), "identical repaint is not dirty");
+        fb.mark_sent();
+        fb.clear([1, 2, 3, 255]);
+        assert!(!fb.is_dirty(), "swap keeps the sent frame");
         fb.pixels_mut()[0] = 9;
         assert!(fb.is_dirty());
         assert_eq!(fb.pixel(3, 1), [1, 2, 3, 255]);

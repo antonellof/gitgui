@@ -37,6 +37,11 @@ fn main() -> ExitCode {
         run_probe(cli.no_shm)
     } else if let Some(path) = &cli.headless {
         runtime::run_headless(path, cli.size, &opts)
+    } else if cli.dump_input {
+        term::install_handlers();
+        let r = runtime::run_dump_input();
+        term::restore_terminal();
+        r
     } else {
         term::install_handlers();
         let r = runtime::run_interactive(&opts);
