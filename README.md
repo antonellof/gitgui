@@ -12,7 +12,19 @@ Not a TUI. gitgui paints an [egui](https://github.com/emilk/egui) interface into
 
 ## Quick install
 
-macOS and Linux, Ghostty, cmux, kitty, or WezTerm:
+Requires macOS or Linux and a kitty-graphics terminal (cmux, Ghostty, kitty, WezTerm).
+
+**From a public clone** (works for private repos when you are logged in with `gh`):
+
+```bash
+gh repo clone antonellof/gitgui
+cd gitgui
+bash scripts/install.sh
+```
+
+The script downloads a release binary when one exists, otherwise builds from source with `cargo` (Rust 1.95+).
+
+**One-liner** (public repo only; `curl` cannot fetch scripts or release assets from a private repo):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/antonellof/gitgui/main/scripts/install.sh | bash
@@ -24,7 +36,7 @@ Pin a version or install elsewhere:
 GITGUI_VERSION=0.1.0 GITGUI_INSTALL_DIR=~/.local/bin bash scripts/install.sh
 ```
 
-From source (Rust 1.95+):
+**Build from source directly** (Rust 1.95+):
 
 ```bash
 git clone https://github.com/antonellof/gitgui
@@ -32,15 +44,44 @@ cd gitgui
 cargo install --path .
 ```
 
-Then open any repo:
+### After install
 
-```bash
-gitgui              # current directory
-gitgui /path/to/repo
-gitgui --split right   # new terminal split (cmux, kitty)
+On success the installer prints:
+
+```
+installed: ~/.local/bin/gitgui
+
+run in a kitty-graphics terminal (cmux, Ghostty, kitty):
+  gitgui                  open repo in current directory
+  gitgui /path/to/repo    open a specific repo
+  gitgui --split right .  open in a new terminal split
+
+quit with q or Ctrl+C
 ```
 
-Press `q` or `Ctrl+C` to quit.
+If `gitgui` is not found, add the install dir to your PATH:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Verify the terminal supports kitty graphics:
+
+```bash
+gitgui --probe
+```
+
+### Run it
+
+Open cmux, Ghostty, kitty, or WezTerm, then:
+
+```bash
+cd /path/to/your/repo
+gitgui                    # current directory
+gitgui --split right .    # new split beside your agent pane (cmux, kitty)
+```
+
+Inside gitgui: `j`/`k` to move, `s`/`u` to stage/unstage, `Ctrl+Enter` to commit, `q` or `Ctrl+C` to quit. See [Shortcuts](#shortcuts).
 
 ## cmux + pi + gitgui (AI coding setup)
 
