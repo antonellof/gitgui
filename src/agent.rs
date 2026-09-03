@@ -38,6 +38,15 @@ pub enum AgentCmd {
     Stage { paths: Vec<String> },
     Unstage { paths: Vec<String> },
     Commit { message: String },
+    #[serde(rename = "commit_and_push")]
+    CommitAndPush {
+        message: String,
+        #[serde(default)]
+        amend: bool,
+    },
+    Fetch,
+    Pull,
+    Push,
     Screenshot { path: String },
     List,
 }
@@ -184,6 +193,25 @@ pub fn handle_in_app(app: &mut App, cmd: AgentCmd, screenshot: &mut Option<PathB
                 amend: false,
             });
             ok(json!({ "queued": "commit" }))
+        }
+        AgentCmd::CommitAndPush { message, amend } => {
+            if message.trim().is_empty() {
+                return err("message is empty");
+            }
+            app.run(Command::CommitAndPush { message, amend });
+            ok(json!({ "queued": "commit_and_push" }))
+        }
+        AgentCmd::Fetch => {
+            app.run(Command::Fetch);
+            ok(json!({ "queued": "fetch" }))
+        }
+        AgentCmd::Pull => {
+            app.run(Command::Pull);
+            ok(json!({ "queued": "pull" }))
+        }
+        AgentCmd::Push => {
+            app.run(Command::Push);
+            ok(json!({ "queued": "push" }))
         }
         AgentCmd::Screenshot { path } => {
             screenshot.replace(PathBuf::from(path));
@@ -347,6 +375,10 @@ mod tests {
         let s: AgentCmd =
             serde_json::from_str(r#"{"cmd":"stage","paths":["a.rs","b.rs"]}"#).unwrap();
         assert!(matches!(s, AgentCmd::Stage { .. }));
+        let s: AgentCmd = serde_json::from_str(r#"{"cmd":"commit_and_push","message":"fix"}"#).unwrap();
+        assert!(matches!(s, AgentCmd::CommitAndPush { .. }));
+        let s: AgentCmd = serde_json::from_str(r#"{"cmd":"push"}"#).unwrap();
+        assert!(matches!(s, AgentCmd::Push));
     }
 
     #[test]

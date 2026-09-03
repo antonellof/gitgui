@@ -431,9 +431,13 @@ impl App {
     pub fn handle_keys(&mut self, ctx: &egui::Context) {
         if ctx.egui_wants_keyboard_input() {
             // A text field owns the keyboard. Ctrl+Enter commits from the
-            // commit box, Escape leaves the field.
+            // commit box, Ctrl+Shift+Enter commits and pushes, Escape leaves.
             if ctx.input(|i| ctrl(i, egui::Key::Enter)) && self.modal.is_none() {
-                self.commit_now();
+                if ctx.input(|i| i.modifiers.shift) {
+                    self.commit_and_push_now();
+                } else {
+                    self.commit_now();
+                }
             }
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 ctx.memory_mut(|m| m.request_focus(egui::Id::NULL));
@@ -464,12 +468,13 @@ impl App {
                 ctrl(i, egui::Key::D),
             )
         });
-        let (s_key, u_key, a_key, shift_a, c_key, f_key, p_key, shift_p, enter) = ctx.input(|i| {
+        let (s_key, u_key, a_key, shift_a, shift_s, c_key, f_key, p_key, shift_p, enter) = ctx.input(|i| {
             (
                 plain(i, egui::Key::S),
                 plain(i, egui::Key::U),
                 plain(i, egui::Key::A),
                 shifted(i, egui::Key::A),
+                shifted(i, egui::Key::S),
                 plain(i, egui::Key::C),
                 plain(i, egui::Key::F),
                 plain(i, egui::Key::P),
@@ -488,6 +493,9 @@ impl App {
         }
         if shift_a {
             self.run(Command::UnstageAll);
+        }
+        if shift_s && self.snapshot.is_dirty() && self.modal.is_none() {
+            self.modal = Some(Modal::StashPush { message: String::new() });
         }
         if c_key {
             self.focus_commit_msg = true;
@@ -893,7 +901,9 @@ fn key_hints_label(theme: &Theme, desc_color: egui::Color32) -> egui::text::Layo
         ("j/k", "move"),
         ("s/u", "stage/unstage"),
         ("a/A", "all"),
+        ("S", "stash"),
         ("c", "commit"),
+        ("r", "refresh"),
         ("f/p/P", "fetch/pull/push"),
         ("/", "filter"),
         ("q", "quit"),
@@ -908,6 +918,11 @@ fn key_hints_label(theme: &Theme, desc_color: egui::Color32) -> egui::text::Layo
         job.append(" ", 0.0, sep_format.clone());
         job.append(desc, 0.0, desc_format.clone());
     }
+    job.append("  ", 0.0, sep_format.clone());
+    job.append("^Enter", 0.0, key_format.clone());
+    job.append(" commit  ", 0.0, sep_format.clone());
+    job.append("^⇧Enter", 0.0, key_format.clone());
+    job.append(" commit+push", 0.0, desc_format.clone());
     job
 }
 

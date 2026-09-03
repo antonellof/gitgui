@@ -189,9 +189,10 @@ Release binaries are built by `.github/workflows/release.yml` on tag push (`v*`)
 - Stage and unstage files and hunks, commit, amend
 - Branch checkout, create, delete; stash push, pop, drop
 - Fetch, pull, push (via your `git` CLI and credential helpers)
+- Auto refresh every 2 s when the repo changes (no need to press `r` after edits in another pane)
 - Agent control socket: `gitgui ls`, `gitgui action '{"cmd":"status"}'` (see [skill/SKILL.md](skill/SKILL.md))
 
-Status: **v0.1.2**. Phases 0 to 5 of the roadmap are done. See [Roadmap](#roadmap) and [docs/PLAN.md](docs/PLAN.md) for open issues.
+Status: **v0.1.3**. Phases 0 to 5 of the roadmap are done. See [Roadmap](#roadmap) and [docs/PLAN.md](docs/PLAN.md) for open issues.
 
 ## Architecture
 
@@ -272,6 +273,8 @@ Run `gitgui` on the remote machine inside an SSH session in a supported terminal
 | Stage all, unstage all | `a` / `Shift+A` |
 | Focus commit message | `c` |
 | Commit | `Ctrl+Enter` |
+| Commit and push | `Ctrl+Shift+Enter` |
+| Stash | `Shift+S` |
 | Filter commits | `/` |
 | Clear filter, close modal | `Escape` |
 | Fetch, pull, push | `f` / `p` / `Shift+P` |
@@ -281,7 +284,7 @@ Run `gitgui` on the remote machine inside an SSH session in a supported terminal
 
 Mouse: click files to view diffs, `+` / `-` to stage or unstage, `Stage hunk` on a hunk header, double-click a branch to check it out, right-click branches, tags and stashes for more.
 
-gitgui never binds `Cmd+*` or `Ctrl+Shift+*`; those stay with your terminal and multiplexer.
+gitgui never binds `Cmd+*`. Most `Ctrl+Shift+*` combos stay with your terminal; the exception is `Ctrl+Shift+Enter` to commit and push from the commit box.
 
 ## Roadmap
 
@@ -291,6 +294,16 @@ gitgui never binds `Cmd+*` or `Ctrl+Shift+*`; those stay with your terminal and 
 - [x] Phase 3: read-only git. Sidebar, commit graph, commit detail, diff view.
 - [x] Phase 4: writes. Stage and unstage by file and hunk, commit, amend, branches, stash, fetch, pull, push.
 - [x] Phase 5: integration. Split panes (cmux, kitty), agent control socket, install script, release workflow, agent skill file.
+
+Post v0.1 (see [docs/PLAN.md](docs/PLAN.md)):
+
+- [ ] Terminal font family matching (Ghostty `font-family` via CoreText / fontconfig)
+- [ ] Diff search and in-file navigation
+- [ ] Conflict resolution UI for merge conflicts
+- [ ] tmux / Zellij graphics passthrough
+- [ ] README demo recording
+- [x] Commit and push button and agent command
+- [x] Status bar key hint styling
 
 ## Development
 
