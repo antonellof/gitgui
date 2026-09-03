@@ -17,11 +17,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if app.snapshot.truncated {
             ui.weak(format!("(first {})", app.snapshot.commits.len()));
             if ui.small_button("load more").clicked() {
-                app.pending.push(crate::git::ops::Command::LoadMore(app.snapshot.commits.len() + 2000));
+                app.pending.push(crate::git::ops::Command::LoadMore(
+                    app.snapshot.commits.len() + 2000,
+                ));
             }
         }
         if app.filter_active || !app.filter.is_empty() {
-            let edit = egui::TextEdit::singleline(&mut app.filter).hint_text("filter summary, author, hash").desired_width(260.0);
+            let edit = egui::TextEdit::singleline(&mut app.filter)
+                .hint_text("filter summary, author, hash")
+                .desired_width(260.0);
             let resp = ui.add(edit);
             if app.filter_focus_requested {
                 resp.request_focus();
@@ -59,7 +63,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         app.scroll_to_selection = false;
     }
 
-    let area = egui::ScrollArea::vertical().id_salt("log_scroll").auto_shrink([false, false]);
+    let area = egui::ScrollArea::vertical()
+        .id_salt("log_scroll")
+        .auto_shrink([false, false]);
     let total = rows.len();
     area.show_rows(ui, ROW_HEIGHT, total, |ui, range| {
         let width = ui.available_width();
@@ -68,10 +74,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let (rect, resp) = ui.allocate_exact_size(vec2(width, ROW_HEIGHT), Sense::click());
             let selected = sel == app.selection;
             if selected {
-                let color = if focused { theme.selection } else { theme.selection_inactive };
+                let color = if focused {
+                    theme.selection
+                } else {
+                    theme.selection_inactive
+                };
                 ui.painter().rect_filled(rect, 3.0, color);
             } else if resp.hovered() {
-                ui.painter().rect_filled(rect, 3.0, ui.visuals().widgets.hovered.weak_bg_fill);
+                ui.painter()
+                    .rect_filled(rect, 3.0, ui.visuals().widgets.hovered.weak_bg_fill);
             }
             if resp.clicked() {
                 new_selection = Some(sel);
@@ -85,7 +96,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             match sel {
                 Selection::WorkingTree => {
                     let center = pos2(graph_rect.min.x + 3.0 + LANE_WIDTH / 2.0, rect.center().y);
-                    painter.circle_stroke(center, NODE_RADIUS, Stroke::new(1.5, theme.graph_color(0)));
+                    painter.circle_stroke(
+                        center,
+                        NODE_RADIUS,
+                        Stroke::new(1.5, theme.graph_color(0)),
+                    );
                     let s = &app.snapshot;
                     let text = if s.commits.is_empty() && !s.is_dirty() {
                         "Working tree (empty repository)".to_owned()
@@ -94,7 +109,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                             "Working tree: {} unstaged, {} staged{}",
                             s.unstaged.len(),
                             s.staged.len(),
-                            if s.conflicted.is_empty() { String::new() } else { format!(", {} conflicted", s.conflicted.len()) }
+                            if s.conflicted.is_empty() {
+                                String::new()
+                            } else {
+                                format!(", {} conflicted", s.conflicted.len())
+                            }
                         )
                     };
                     painter.text(
@@ -114,11 +133,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     let mut x = text_x;
                     let font = egui::TextStyle::Small.resolve(ui.style());
                     for r in &c.refs {
-                        let galley = painter.layout_no_wrap(r.name.clone(), font.clone(), Color32::WHITE);
+                        let galley =
+                            painter.layout_no_wrap(r.name.clone(), font.clone(), Color32::WHITE);
                         let w = galley.size().x + 8.0;
-                        let pill = Rect::from_min_size(pos2(x, rect.center().y - 8.0), vec2(w, 16.0));
+                        let pill =
+                            Rect::from_min_size(pos2(x, rect.center().y - 8.0), vec2(w, 16.0));
                         painter.rect_filled(pill, 4.0, theme.pill(r.kind));
-                        painter.galley(pos2(x + 4.0, rect.center().y - galley.size().y / 2.0), galley, Color32::WHITE);
+                        painter.galley(
+                            pos2(x + 4.0, rect.center().y - galley.size().y / 2.0),
+                            galley,
+                            Color32::WHITE,
+                        );
                         x += w + 4.0;
                     }
                     let right_w = 150.0;
@@ -126,13 +151,25 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     let body = egui::TextStyle::Body.resolve(ui.style());
                     let color = ui.visuals().text_color();
                     let galley = painter.layout(c.summary.clone(), body.clone(), color, summary_w);
-                    let clip = Rect::from_min_max(pos2(x, rect.min.y), pos2(x + summary_w, rect.max.y));
-                    painter.with_clip_rect(clip).galley(pos2(x, rect.center().y - galley.size().y / 2.0), galley, color);
+                    let clip =
+                        Rect::from_min_max(pos2(x, rect.min.y), pos2(x + summary_w, rect.max.y));
+                    painter.with_clip_rect(clip).galley(
+                        pos2(x, rect.center().y - galley.size().y / 2.0),
+                        galley,
+                        color,
+                    );
                     let weak = ui.visuals().weak_text_color();
                     let a = painter.layout_no_wrap(c.author.clone(), font.clone(), weak);
                     let author_x = rect.max.x - right_w + 4.0;
-                    let aclip = Rect::from_min_max(pos2(author_x, rect.min.y), pos2(rect.max.x - 40.0, rect.max.y));
-                    painter.with_clip_rect(aclip).galley(pos2(author_x, rect.center().y - a.size().y / 2.0), a, weak);
+                    let aclip = Rect::from_min_max(
+                        pos2(author_x, rect.min.y),
+                        pos2(rect.max.x - 40.0, rect.max.y),
+                    );
+                    painter.with_clip_rect(aclip).galley(
+                        pos2(author_x, rect.center().y - a.size().y / 2.0),
+                        a,
+                        weak,
+                    );
                     painter.text(
                         pos2(rect.max.x - 6.0, rect.center().y),
                         egui::Align2::RIGHT_CENTER,
@@ -157,7 +194,14 @@ fn lane_x(rect: Rect, lane: usize) -> f32 {
     rect.min.x + 3.0 + LANE_WIDTH / 2.0 + lane as f32 * LANE_WIDTH
 }
 
-fn draw_graph_row(painter: &egui::Painter, rect: Rect, row: &RowLayout, next: Option<&RowLayout>, theme: &crate::ui::theme::Theme, max_lanes: usize) {
+fn draw_graph_row(
+    painter: &egui::Painter,
+    rect: Rect,
+    row: &RowLayout,
+    next: Option<&RowLayout>,
+    theme: &crate::ui::theme::Theme,
+    max_lanes: usize,
+) {
     let top = rect.min.y;
     let bottom = rect.max.y;
     let mid = rect.center().y;
@@ -179,7 +223,11 @@ fn draw_graph_row(painter: &egui::Painter, rect: Rect, row: &RowLayout, next: Op
     }
     // Continuation below to the first parent: the next row shows it as a
     // through lane or as its own commit, so we draw only our half.
-    let continues = row.edges.iter().all(|e| e.kind != EdgeKind::Merge || e.to_lane != row.lane) && has_parent_below(row, next);
+    let continues = row
+        .edges
+        .iter()
+        .all(|e| e.kind != EdgeKind::Merge || e.to_lane != row.lane)
+        && has_parent_below(row, next);
     if continues {
         painter.line_segment([pos2(cx, mid), pos2(cx, bottom)], stroke(row.color));
     }
@@ -188,14 +236,26 @@ fn draw_graph_row(painter: &egui::Painter, rect: Rect, row: &RowLayout, next: Op
             EdgeKind::Fork => {
                 if visible(e.to_lane) {
                     let tx = lane_x(rect, e.to_lane);
-                    let color = next.and_then(|n| n.through.iter().find(|(l, _)| *l == e.to_lane).map(|(_, c)| *c)).unwrap_or(row.color);
+                    let color = next
+                        .and_then(|n| {
+                            n.through
+                                .iter()
+                                .find(|(l, _)| *l == e.to_lane)
+                                .map(|(_, c)| *c)
+                        })
+                        .unwrap_or(row.color);
                     curve(painter, pos2(cx, mid), pos2(tx, bottom), stroke(color));
                 }
             }
             EdgeKind::Merge => {
                 if visible(e.from_lane) {
                     let fx = lane_x(rect, e.from_lane);
-                    let color = row.through.iter().find(|(l, _)| *l == e.from_lane).map(|(_, c)| *c).unwrap_or(row.color);
+                    let color = row
+                        .through
+                        .iter()
+                        .find(|(l, _)| *l == e.from_lane)
+                        .map(|(_, c)| *c)
+                        .unwrap_or(row.color);
                     curve(painter, pos2(fx, top), pos2(cx, mid), stroke(color));
                 }
             }
@@ -217,7 +277,13 @@ fn draw_graph_row(painter: &egui::Painter, rect: Rect, row: &RowLayout, next: Op
 fn has_parent_below(row: &RowLayout, next: Option<&RowLayout>) -> bool {
     match next {
         None => false,
-        Some(n) => n.lane == row.lane || n.through.iter().any(|(l, _)| *l == row.lane) || n.edges.iter().any(|e| e.kind == EdgeKind::Merge && e.from_lane == row.lane),
+        Some(n) => {
+            n.lane == row.lane
+                || n.through.iter().any(|(l, _)| *l == row.lane)
+                || n.edges
+                    .iter()
+                    .any(|e| e.kind == EdgeKind::Merge && e.from_lane == row.lane)
+        }
     }
 }
 

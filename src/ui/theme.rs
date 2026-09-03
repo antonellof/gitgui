@@ -96,7 +96,11 @@ impl Theme {
         match bg {
             Some([r, g, b]) => {
                 let lum = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
-                let mut t = if lum > 128.0 { Theme::light() } else { Theme::dark() };
+                let mut t = if lum > 128.0 {
+                    Theme::light()
+                } else {
+                    Theme::dark()
+                };
                 t.background = Color32::from_rgb(r, g, b);
                 t
             }
@@ -118,7 +122,11 @@ impl Theme {
     }
 
     pub fn apply(&self, ctx: &egui::Context) {
-        let mut visuals = if self.dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+        let mut visuals = if self.dark {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        };
         visuals.panel_fill = self.background;
         visuals.window_fill = self.background;
         visuals.extreme_bg_color = if self.dark {
@@ -140,6 +148,9 @@ mod tests {
         assert!(Theme::from_background(None).dark);
         assert!(Theme::from_background(Some([0x1e, 0x1e, 0x2e])).dark);
         assert!(!Theme::from_background(Some([0xff, 0xff, 0xff])).dark);
-        assert_eq!(Theme::from_background(Some([10, 20, 30])).background, Color32::from_rgb(10, 20, 30));
+        assert_eq!(
+            Theme::from_background(Some([10, 20, 30])).background,
+            Color32::from_rgb(10, 20, 30)
+        );
     }
 }

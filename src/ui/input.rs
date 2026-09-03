@@ -95,7 +95,13 @@ impl Mapper {
     /// [`flush`] once per batch to emit them as one scroll event.
     pub fn map(&mut self, ev: &Event, out: &mut Vec<egui::Event>) {
         match ev {
-            Event::Key { key, mods, text, pressed, repeat } => {
+            Event::Key {
+                key,
+                mods,
+                text,
+                pressed,
+                repeat,
+            } => {
                 let m = modifiers(*mods);
                 self.set_modifiers(m, out);
                 if let Some(k) = egui_key(*key) {
@@ -109,15 +115,22 @@ impl Mapper {
                 }
                 if *pressed && !mods.ctrl && !mods.alt && !mods.sup {
                     if let Some(t) = text {
-                        let is_control = matches!(key, Key::Enter | Key::Tab | Key::Escape | Key::Backspace)
-                            || t.chars().any(|c| c.is_control());
+                        let is_control =
+                            matches!(key, Key::Enter | Key::Tab | Key::Escape | Key::Backspace)
+                                || t.chars().any(|c| c.is_control());
                         if !is_control && !t.is_empty() {
                             out.push(egui::Event::Text(t.clone()));
                         }
                     }
                 }
             }
-            Event::MouseButton { button, pressed, x, y, mods } => {
+            Event::MouseButton {
+                button,
+                pressed,
+                x,
+                y,
+                mods,
+            } => {
                 self.set_modifiers(modifiers(*mods), out);
                 let pos = self.pos(*x, *y);
                 if pos != self.pointer {
@@ -181,7 +194,11 @@ impl Mapper {
 
     /// Release every pressed button (focus lost).
     pub fn release_all(&mut self, out: &mut Vec<egui::Event>) {
-        let buttons = [egui::PointerButton::Primary, egui::PointerButton::Middle, egui::PointerButton::Secondary];
+        let buttons = [
+            egui::PointerButton::Primary,
+            egui::PointerButton::Middle,
+            egui::PointerButton::Secondary,
+        ];
         for (i, b) in buttons.iter().enumerate() {
             if self.down[i] {
                 self.down[i] = false;
@@ -201,7 +218,13 @@ mod tests {
     use super::*;
 
     fn key(k: Key, mods: Mods, text: Option<&str>) -> Event {
-        Event::Key { key: k, mods, text: text.map(|s| s.to_owned()), pressed: true, repeat: false }
+        Event::Key {
+            key: k,
+            mods,
+            text: text.map(|s| s.to_owned()),
+            pressed: true,
+            repeat: false,
+        }
     }
 
     #[test]
@@ -210,7 +233,14 @@ mod tests {
         let mut out = Vec::new();
         m.map(&key(Key::Char('j'), Mods::NONE, Some("j")), &mut out);
         assert_eq!(out.len(), 2);
-        assert!(matches!(out[0], egui::Event::Key { key: egui::Key::J, pressed: true, .. }));
+        assert!(matches!(
+            out[0],
+            egui::Event::Key {
+                key: egui::Key::J,
+                pressed: true,
+                ..
+            }
+        ));
         assert_eq!(out[1], egui::Event::Text("j".into()));
     }
 
@@ -222,9 +252,15 @@ mod tests {
         assert!(matches!(out[0], egui::Event::ModifiersChanged(mm) if mm.ctrl && mm.command));
         out.clear();
         m.map(&key(Key::Char('b'), Mods::CTRL, None), &mut out);
-        assert!(!out.iter().any(|e| matches!(e, egui::Event::ModifiersChanged(_))), "unchanged state is not repeated");
+        assert!(
+            !out.iter()
+                .any(|e| matches!(e, egui::Event::ModifiersChanged(_))),
+            "unchanged state is not repeated"
+        );
         m.map(&key(Key::Char('a'), Mods::NONE, Some("a")), &mut out);
-        assert!(out.iter().any(|e| matches!(e, egui::Event::ModifiersChanged(mm) if *mm == egui::Modifiers::NONE)));
+        assert!(out.iter().any(
+            |e| matches!(e, egui::Event::ModifiersChanged(mm) if *mm == egui::Modifiers::NONE)
+        ));
     }
 
     #[test]
@@ -245,23 +281,63 @@ mod tests {
         m.map(&key(Key::Char('/'), Mods::NONE, Some("/")), &mut out);
         m.map(&key(Key::F(5), Mods::NONE, None), &mut out);
         m.map(&key(Key::Other(57441), Mods::SHIFT, None), &mut out);
-        assert!(matches!(out[0], egui::Event::Key { key: egui::Key::Slash, .. }));
-        assert!(matches!(out[2], egui::Event::Key { key: egui::Key::F5, .. }));
+        assert!(matches!(
+            out[0],
+            egui::Event::Key {
+                key: egui::Key::Slash,
+                ..
+            }
+        ));
+        assert!(matches!(
+            out[2],
+            egui::Event::Key {
+                key: egui::Key::F5,
+                ..
+            }
+        ));
         assert_eq!(out.len(), 4);
-        assert!(matches!(out[3], egui::Event::ModifiersChanged(m) if m.shift), "a modifier key alone only updates the modifier state");
+        assert!(
+            matches!(out[3], egui::Event::ModifiersChanged(m) if m.shift),
+            "a modifier key alone only updates the modifier state"
+        );
     }
 
     #[test]
     fn mouse_positions_scale_by_ppp() {
         let mut m = Mapper::new(2.0);
         let mut out = Vec::new();
-        m.map(&Event::MouseButton { button: MouseButton::Left, pressed: true, x: 100, y: 50, mods: Mods::NONE }, &mut out);
+        m.map(
+            &Event::MouseButton {
+                button: MouseButton::Left,
+                pressed: true,
+                x: 100,
+                y: 50,
+                mods: Mods::NONE,
+            },
+            &mut out,
+        );
         assert_eq!(out[0], egui::Event::PointerMoved(egui::pos2(50.0, 25.0)));
-        assert!(matches!(out[1], egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } if pos == egui::pos2(50.0, 25.0)));
+        assert!(
+            matches!(out[1], egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } if pos == egui::pos2(50.0, 25.0))
+        );
         out.clear();
-        m.map(&Event::MouseMove { x: 100, y: 50, mods: Mods::NONE }, &mut out);
+        m.map(
+            &Event::MouseMove {
+                x: 100,
+                y: 50,
+                mods: Mods::NONE,
+            },
+            &mut out,
+        );
         assert!(out.is_empty(), "no move event for the same position");
-        m.map(&Event::MouseMove { x: 102, y: 50, mods: Mods::NONE }, &mut out);
+        m.map(
+            &Event::MouseMove {
+                x: 102,
+                y: 50,
+                mods: Mods::NONE,
+            },
+            &mut out,
+        );
         assert_eq!(out, vec![egui::Event::PointerMoved(egui::pos2(51.0, 25.0))]);
     }
 
@@ -270,12 +346,26 @@ mod tests {
         let mut m = Mapper::new(2.0);
         let mut out = Vec::new();
         for _ in 0..3 {
-            m.map(&Event::Wheel { dx: 0, dy: -1, x: 10, y: 10, mods: Mods::NONE }, &mut out);
+            m.map(
+                &Event::Wheel {
+                    dx: 0,
+                    dy: -1,
+                    x: 10,
+                    y: 10,
+                    mods: Mods::NONE,
+                },
+                &mut out,
+            );
         }
         m.flush(&mut out);
-        let wheels: Vec<_> = out.iter().filter(|e| matches!(e, egui::Event::MouseWheel { .. })).collect();
+        let wheels: Vec<_> = out
+            .iter()
+            .filter(|e| matches!(e, egui::Event::MouseWheel { .. }))
+            .collect();
         assert_eq!(wheels.len(), 1);
-        assert!(matches!(wheels[0], egui::Event::MouseWheel { delta, .. } if *delta == egui::vec2(0.0, -60.0)));
+        assert!(
+            matches!(wheels[0], egui::Event::MouseWheel { delta, .. } if *delta == egui::vec2(0.0, -60.0))
+        );
         out.clear();
         m.flush(&mut out);
         assert!(out.is_empty());
@@ -285,11 +375,23 @@ mod tests {
     fn focus_lost_releases_buttons() {
         let mut m = Mapper::new(1.0);
         let mut out = Vec::new();
-        m.map(&Event::MouseButton { button: MouseButton::Left, pressed: true, x: 1, y: 1, mods: Mods::NONE }, &mut out);
+        m.map(
+            &Event::MouseButton {
+                button: MouseButton::Left,
+                pressed: true,
+                x: 1,
+                y: 1,
+                mods: Mods::NONE,
+            },
+            &mut out,
+        );
         out.clear();
         m.map(&Event::Focus(false), &mut out);
         assert_eq!(out[0], egui::Event::WindowFocused(false));
-        assert!(matches!(out[1], egui::Event::PointerButton { pressed: false, .. }));
+        assert!(matches!(
+            out[1],
+            egui::Event::PointerButton { pressed: false, .. }
+        ));
         assert_eq!(out[2], egui::Event::PointerGone);
     }
 

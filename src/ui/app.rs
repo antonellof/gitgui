@@ -35,9 +35,16 @@ pub struct Toast {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Modal {
     Discard(Vec<String>),
-    NewBranch { name: String, from: Oid, from_label: String, checkout: bool },
+    NewBranch {
+        name: String,
+        from: Oid,
+        from_label: String,
+        checkout: bool,
+    },
     DeleteBranch(String),
-    StashPush { message: String },
+    StashPush {
+        message: String,
+    },
     DropStash(usize),
 }
 
@@ -116,7 +123,12 @@ impl App {
             show_debug: false,
             sidebar_selected: None,
             modal: None,
-            net: NetLog { label: "", lines: Vec::new(), running: false, open: false },
+            net: NetLog {
+                label: "",
+                lines: Vec::new(),
+                running: false,
+                open: false,
+            },
             focus_commit_msg: false,
             amend_loaded: false,
             busy: 0,
@@ -127,7 +139,11 @@ impl App {
     pub fn toast(&mut self, text: impl Into<String>, error: bool) {
         let text = text.into();
         self.last_op = Some(text.clone());
-        self.toasts.push(Toast { text, error, at: Instant::now() });
+        self.toasts.push(Toast {
+            text,
+            error,
+            at: Instant::now(),
+        });
     }
 
     /// Row count in the log including the virtual working tree row.
@@ -144,7 +160,8 @@ impl App {
                 self.commit_files.clear();
                 self.rebuild_filter();
                 if first {
-                    self.selection = if self.has_worktree_row() || self.snapshot.commits.is_empty() {
+                    self.selection = if self.has_worktree_row() || self.snapshot.commits.is_empty()
+                    {
                         Selection::WorkingTree
                     } else {
                         Selection::Commit(0)
@@ -158,12 +175,19 @@ impl App {
                             self.on_selection_changed();
                         }
                         Selection::Commit(i) if i >= self.snapshot.commits.len() => {
-                            self.selection = if self.has_worktree_row() { Selection::WorkingTree } else { Selection::Commit(0) };
+                            self.selection = if self.has_worktree_row() {
+                                Selection::WorkingTree
+                            } else {
+                                Selection::Commit(0)
+                            };
                             self.on_selection_changed();
                         }
                         Selection::WorkingTree => {
                             // File list changed: keep the file if still present, else pick first.
-                            let still = self.selected_file.as_ref().is_some_and(|t| self.worktree_has(t));
+                            let still = self
+                                .selected_file
+                                .as_ref()
+                                .is_some_and(|t| self.worktree_has(t));
                             if still {
                                 if let Some(t) = self.selected_file.clone() {
                                     self.pending.push(Command::LoadDiff(t));
@@ -191,7 +215,10 @@ impl App {
                 self.commit_files.insert(oid, files);
                 if let Selection::Commit(i) = self.selection {
                     if self.snapshot.commits.get(i).map(|c| c.oid) == Some(oid) {
-                        let keep = self.selected_file.as_ref().is_some_and(|t| matches!(t, DiffTarget::Commit(o, _) if *o == oid));
+                        let keep = self
+                            .selected_file
+                            .as_ref()
+                            .is_some_and(|t| matches!(t, DiffTarget::Commit(o, _) if *o == oid));
                         if !keep {
                             self.select_file(first.map(|p| DiffTarget::Commit(oid, p)));
                         }
@@ -269,12 +296,20 @@ impl App {
             self.toast("nothing staged", true);
             return;
         }
-        self.run(Command::Commit { message: msg, amend: self.amend });
+        self.run(Command::Commit {
+            message: msg,
+            amend: self.amend,
+        });
     }
 
     fn worktree_has(&self, t: &DiffTarget) -> bool {
         match t {
-            DiffTarget::WorkdirUnstaged(p) => self.snapshot.unstaged.iter().chain(self.snapshot.conflicted.iter()).any(|f| &f.path == p),
+            DiffTarget::WorkdirUnstaged(p) => self
+                .snapshot
+                .unstaged
+                .iter()
+                .chain(self.snapshot.conflicted.iter())
+                .any(|f| &f.path == p),
             DiffTarget::Staged(p) => self.snapshot.staged.iter().any(|f| &f.path == p),
             DiffTarget::Commit(..) => false,
         }
@@ -290,7 +325,9 @@ impl App {
                 .iter()
                 .enumerate()
                 .filter(|(_, c)| {
-                    c.summary.to_lowercase().contains(&q) || c.author.to_lowercase().contains(&q) || c.short.starts_with(&q)
+                    c.summary.to_lowercase().contains(&q)
+                        || c.author.to_lowercase().contains(&q)
+                        || c.short.starts_with(&q)
                 })
                 .map(|(i, _)| i)
                 .collect()
@@ -313,7 +350,9 @@ impl App {
                 if let Some(c) = self.snapshot.commits.get(i) {
                     let oid = c.oid;
                     if let Some(files) = self.commit_files.get(&oid) {
-                        let first = files.first().map(|f| DiffTarget::Commit(oid, f.path.clone()));
+                        let first = files
+                            .first()
+                            .map(|f| DiffTarget::Commit(oid, f.path.clone()));
                         self.select_file(first);
                     } else {
                         self.pending.push(Command::LoadCommitFiles(oid));
@@ -330,7 +369,11 @@ impl App {
             .first()
             .map(|f| DiffTarget::WorkdirUnstaged(f.path.clone()))
             .or_else(|| s.staged.first().map(|f| DiffTarget::Staged(f.path.clone())))
-            .or_else(|| s.conflicted.first().map(|f| DiffTarget::WorkdirUnstaged(f.path.clone())));
+            .or_else(|| {
+                s.conflicted
+                    .first()
+                    .map(|f| DiffTarget::WorkdirUnstaged(f.path.clone()))
+            });
         self.select_file(first);
     }
 
@@ -498,17 +541,24 @@ impl App {
     pub fn ui(&mut self, root: &mut egui::Ui) {
         let ctx = root.ctx().clone();
         self.handle_keys(&ctx);
-        self.toasts.retain(|t| t.at.elapsed().as_secs_f32() < if t.error { 8.0 } else { 3.0 });
+        self.toasts
+            .retain(|t| t.at.elapsed().as_secs_f32() < if t.error { 8.0 } else { 3.0 });
         if !self.toasts.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
         }
 
-        egui::Panel::left("sidebar").default_size(220.0).resizable(true).show(root, |ui| {
-            sidebar::show(self, ui);
-        });
+        egui::Panel::left("sidebar")
+            .default_size(220.0)
+            .resizable(true)
+            .show(root, |ui| {
+                sidebar::show(self, ui);
+            });
         egui::Panel::bottom("status").show(root, |ui| self.status_bar(ui));
         if self.net.open {
-            egui::Panel::bottom("netlog").default_size(140.0).resizable(true).show(root, |ui| self.net_log(ui));
+            egui::Panel::bottom("netlog")
+                .default_size(140.0)
+                .resizable(true)
+                .show(root, |ui| self.net_log(ui));
         }
 
         let avail_h = root.available_height();
@@ -534,7 +584,8 @@ impl App {
             ui.strong(format!("git {}", self.net.label));
             if self.net.running {
                 ui.spinner();
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(200));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("close").clicked() {
@@ -542,15 +593,21 @@ impl App {
                 }
             });
         });
-        egui::ScrollArea::vertical().id_salt("netlog_scroll").auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
-            for l in &self.net.lines {
-                ui.monospace(l);
-            }
-        });
+        egui::ScrollArea::vertical()
+            .id_salt("netlog_scroll")
+            .auto_shrink([false, false])
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                for l in &self.net.lines {
+                    ui.monospace(l);
+                }
+            });
     }
 
     fn show_modal(&mut self, ctx: &egui::Context) {
-        let Some(modal) = self.modal.clone() else { return };
+        let Some(modal) = self.modal.clone() else {
+            return;
+        };
         let mut close = false;
         let mut cmd: Option<Command> = None;
         let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
@@ -562,7 +619,8 @@ impl App {
             .show(ctx, |ui| {
                 let rect = ctx.content_rect();
                 ui.allocate_rect(rect, egui::Sense::click());
-                ui.painter().rect_filled(rect, 0.0, egui::Color32::from_black_alpha(120));
+                ui.painter()
+                    .rect_filled(rect, 0.0, egui::Color32::from_black_alpha(120));
             });
         let title = match &modal {
             Modal::Discard(_) => "Discard changes",
@@ -601,17 +659,32 @@ impl App {
                             }
                         });
                     }
-                    Modal::NewBranch { mut name, from, from_label, mut checkout } => {
+                    Modal::NewBranch {
+                        mut name,
+                        from,
+                        from_label,
+                        mut checkout,
+                    } => {
                         ui.label(format!("From {from_label}"));
-                        let resp = ui.add(egui::TextEdit::singleline(&mut name).hint_text("branch name").desired_width(f32::INFINITY));
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut name)
+                                .hint_text("branch name")
+                                .desired_width(f32::INFINITY),
+                        );
                         if !resp.has_focus() && !ctx.egui_wants_keyboard_input() {
                             resp.request_focus();
                         }
                         ui.checkbox(&mut checkout, "check out after creating");
                         let valid = !name.trim().is_empty() && !name.contains(' ');
                         ui.horizontal(|ui| {
-                            if ui.add_enabled(valid, egui::Button::new("Create")).clicked() || (enter && valid) {
-                                cmd = Some(Command::CreateBranch { name: name.trim().to_owned(), from, checkout });
+                            if ui.add_enabled(valid, egui::Button::new("Create")).clicked()
+                                || (enter && valid)
+                            {
+                                cmd = Some(Command::CreateBranch {
+                                    name: name.trim().to_owned(),
+                                    from,
+                                    checkout,
+                                });
                                 close = true;
                             }
                             if ui.button("Cancel").clicked() || esc {
@@ -619,7 +692,12 @@ impl App {
                             }
                         });
                         if !close {
-                            self.modal = Some(Modal::NewBranch { name, from, from_label, checkout });
+                            self.modal = Some(Modal::NewBranch {
+                                name,
+                                from,
+                                from_label,
+                                checkout,
+                            });
                         }
                     }
                     Modal::DeleteBranch(name) => {
@@ -635,13 +713,19 @@ impl App {
                         });
                     }
                     Modal::StashPush { mut message } => {
-                        let resp = ui.add(egui::TextEdit::singleline(&mut message).hint_text("stash message (optional)").desired_width(f32::INFINITY));
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut message)
+                                .hint_text("stash message (optional)")
+                                .desired_width(f32::INFINITY),
+                        );
                         if !resp.has_focus() && !ctx.egui_wants_keyboard_input() {
                             resp.request_focus();
                         }
                         ui.horizontal(|ui| {
                             if ui.button("Stash").clicked() || enter {
-                                cmd = Some(Command::StashPush { message: message.clone() });
+                                cmd = Some(Command::StashPush {
+                                    message: message.clone(),
+                                });
                                 close = true;
                             }
                             if ui.button("Cancel").clicked() || esc {
@@ -727,11 +811,17 @@ impl App {
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 for t in &self.toasts {
-                    let color = if t.error { self.theme.error } else { self.theme.ok };
-                    egui::Frame::popup(ui.style()).stroke(egui::Stroke::new(1.0, color)).show(ui, |ui| {
-                        ui.set_max_width(420.0);
-                        ui.colored_label(color, &t.text);
-                    });
+                    let color = if t.error {
+                        self.theme.error
+                    } else {
+                        self.theme.ok
+                    };
+                    egui::Frame::popup(ui.style())
+                        .stroke(egui::Stroke::new(1.0, color))
+                        .show(ui, |ui| {
+                            ui.set_max_width(420.0);
+                            ui.colored_label(color, &t.text);
+                        });
                 }
             });
     }
@@ -742,7 +832,12 @@ impl App {
 /// than the global modifier state.
 fn key_press(i: &egui::InputState, key: egui::Key) -> Option<egui::Modifiers> {
     i.events.iter().find_map(|e| match e {
-        egui::Event::Key { key: k, pressed: true, modifiers, .. } if *k == key => Some(*modifiers),
+        egui::Event::Key {
+            key: k,
+            pressed: true,
+            modifiers,
+            ..
+        } if *k == key => Some(*modifiers),
         _ => None,
     })
 }

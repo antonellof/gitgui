@@ -19,7 +19,11 @@ pub struct Texture {
 
 impl Texture {
     fn white() -> Self {
-        Self { w: 1, h: 1, rgba: vec![[255; 4]] }
+        Self {
+            w: 1,
+            h: 1,
+            rgba: vec![[255; 4]],
+        }
     }
 
     #[inline]
@@ -127,7 +131,10 @@ impl Default for Rasterizer {
 
 impl Rasterizer {
     pub fn new() -> Self {
-        Self { textures: HashMap::new(), white: Texture::white() }
+        Self {
+            textures: HashMap::new(),
+            white: Texture::white(),
+        }
     }
 
     /// Apply `TexturesDelta::set`. Call before painting.
@@ -136,14 +143,17 @@ impl Rasterizer {
             for d in deltas {
                 let ImageData::Color(img) = &d.image;
                 let [iw, ih] = img.size;
-                let src: Vec<[u8; 4]> = img
-                    .pixels
-                    .iter()
-                    .map(|c| c.to_array())
-                    .collect();
+                let src: Vec<[u8; 4]> = img.pixels.iter().map(|c| c.to_array()).collect();
                 match d.pos {
                     None => {
-                        self.textures.insert(*id, Texture { w: iw, h: ih, rgba: src });
+                        self.textures.insert(
+                            *id,
+                            Texture {
+                                w: iw,
+                                h: ih,
+                                rgba: src,
+                            },
+                        );
                     }
                     Some([px, py]) => {
                         if let Some(t) = self.textures.get_mut(id) {
@@ -177,7 +187,9 @@ impl Rasterizer {
 
     pub fn paint(&self, target: &mut Target, pixels_per_point: f32, prims: &[ClippedPrimitive]) {
         for prim in prims {
-            let Primitive::Mesh(mesh) = &prim.primitive else { continue };
+            let Primitive::Mesh(mesh) = &prim.primitive else {
+                continue;
+            };
             let r = prim.clip_rect;
             let clip = ClipPx {
                 x0: ((r.min.x * pixels_per_point).round().max(0.0) as usize).min(target.w),
@@ -255,7 +267,11 @@ fn draw_triangle(target: &mut Target, clip: ClipPx, tex: &Texture, a: V, b: V, m
     }
 
     let flat = a.c == b.c && b.c == c.c && a.u == b.u && b.u == c.u && a.v == b.v && b.v == c.v;
-    let flat_color = if flat { mul_color(tex.sample(a.u, a.v), a.c) } else { [0; 4] };
+    let flat_color = if flat {
+        mul_color(tex.sample(a.u, a.v), a.c)
+    } else {
+        [0; 4]
+    };
     if flat && flat_color[3] == 0 {
         return;
     }
@@ -365,7 +381,10 @@ fn draw_triangle(target: &mut Target, clip: ClipPx, tex: &Texture, a: V, b: V, m
                         let l2 = 1.0 - l0 - l1;
                         let mut col = [0u8; 4];
                         for (i, ch) in col.iter_mut().enumerate() {
-                            *ch = (a.c[i] as f32 * l0 + b.c[i] as f32 * l1 + c.c[i] as f32 * l2 + 0.5)
+                            *ch = (a.c[i] as f32 * l0
+                                + b.c[i] as f32 * l1
+                                + c.c[i] as f32 * l2
+                                + 0.5)
                                 .clamp(0.0, 255.0) as u8;
                         }
                         col
@@ -403,21 +422,33 @@ mod tests {
     fn mesh(tri: &[(f32, f32)], color: Color32, tex: TextureId) -> Mesh {
         let mut m = Mesh::with_texture(tex);
         for (i, (x, y)) in tri.iter().enumerate() {
-            m.vertices.push(Vertex { pos: epaint::pos2(*x, *y), uv: epaint::WHITE_UV, color });
+            m.vertices.push(Vertex {
+                pos: epaint::pos2(*x, *y),
+                uv: epaint::WHITE_UV,
+                color,
+            });
             let _ = i;
         }
         for k in 0..tri.len() / 3 {
-            m.indices.extend_from_slice(&[k as u32 * 3, k as u32 * 3 + 1, k as u32 * 3 + 2]);
+            m.indices
+                .extend_from_slice(&[k as u32 * 3, k as u32 * 3 + 1, k as u32 * 3 + 2]);
         }
         m
     }
 
     fn count_color(buf: &[u8], rgba: [u8; 4]) -> usize {
-        buf.as_chunks::<4>().0.iter().filter(|p| **p == rgba).count()
+        buf.as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| **p == rgba)
+            .count()
     }
 
     fn prim(m: Mesh, clip: Rect) -> ClippedPrimitive {
-        ClippedPrimitive { clip_rect: clip, primitive: Primitive::Mesh(m) }
+        ClippedPrimitive {
+            clip_rect: clip,
+            primitive: Primitive::Mesh(m),
+        }
     }
 
     #[test]
@@ -428,14 +459,38 @@ mod tests {
         let (w, h) = (10usize, 10usize);
         let mut buf = target(w, h);
         let r = Rasterizer::new();
-        let m = mesh(&[(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)], Color32::RED, TextureId::default());
+        let m = mesh(
+            &[(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)],
+            Color32::RED,
+            TextureId::default(),
+        );
         let clip = Rect::from_min_max(epaint::pos2(0.0, 0.0), epaint::pos2(10.0, 10.0));
-        r.paint(&mut Target { w, h, rgba: &mut buf }, 1.0, &[prim(m, clip)]);
+        r.paint(
+            &mut Target {
+                w,
+                h,
+                rgba: &mut buf,
+            },
+            1.0,
+            &[prim(m, clip)],
+        );
         let n = count_color(&buf, [255, 0, 0, 255]);
         assert!(n == 45 || n == 55, "got {n} red pixels");
         // Opposite triangle fills the rest exactly once: total = 100.
-        let m2 = mesh(&[(10.0, 0.0), (10.0, 10.0), (0.0, 10.0)], Color32::RED, TextureId::default());
-        r.paint(&mut Target { w, h, rgba: &mut buf }, 1.0, &[prim(m2, clip)]);
+        let m2 = mesh(
+            &[(10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+            Color32::RED,
+            TextureId::default(),
+        );
+        r.paint(
+            &mut Target {
+                w,
+                h,
+                rgba: &mut buf,
+            },
+            1.0,
+            &[prim(m2, clip)],
+        );
         assert_eq!(count_color(&buf, [255, 0, 0, 255]), 100);
     }
 
@@ -448,12 +503,27 @@ mod tests {
         let r = Rasterizer::new();
         let col = Color32::from_rgba_premultiplied(128, 0, 0, 128);
         let m = mesh(
-            &[(0.0, 0.0), (10.0, 0.0), (0.0, 10.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+            &[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (0.0, 10.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+            ],
             col,
             TextureId::default(),
         );
         let clip = Rect::from_min_max(epaint::pos2(0.0, 0.0), epaint::pos2(10.0, 10.0));
-        r.paint(&mut Target { w, h, rgba: &mut buf }, 1.0, &[prim(m, clip)]);
+        r.paint(
+            &mut Target {
+                w,
+                h,
+                rgba: &mut buf,
+            },
+            1.0,
+            &[prim(m, clip)],
+        );
         let first = &buf[0..4];
         assert_eq!(first, &[128, 0, 0, 128]);
         assert_eq!(count_color(&buf, [128, 0, 0, 128]), 100);
@@ -465,12 +535,27 @@ mod tests {
         let mut buf = target(w, h);
         let r = Rasterizer::new();
         let m = mesh(
-            &[(0.0, 0.0), (10.0, 0.0), (0.0, 10.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+            &[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (0.0, 10.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+            ],
             Color32::WHITE,
             TextureId::default(),
         );
         let clip = Rect::from_min_max(epaint::pos2(2.0, 3.0), epaint::pos2(5.0, 7.0));
-        r.paint(&mut Target { w, h, rgba: &mut buf }, 1.0, &[prim(m, clip)]);
+        r.paint(
+            &mut Target {
+                w,
+                h,
+                rgba: &mut buf,
+            },
+            1.0,
+            &[prim(m, clip)],
+        );
         assert_eq!(count_color(&buf, [255; 4]), 3 * 4);
         let idx = |x: usize, y: usize| (y * w + x) * 4;
         assert_eq!(&buf[idx(2, 3)..idx(2, 3) + 4], &[255; 4]);
@@ -486,12 +571,27 @@ mod tests {
         let mut buf = target(w, h);
         let r = Rasterizer::new();
         let m = mesh(
-            &[(0.0, 0.0), (5.0, 0.0), (0.0, 5.0), (5.0, 0.0), (5.0, 5.0), (0.0, 5.0)],
+            &[
+                (0.0, 0.0),
+                (5.0, 0.0),
+                (0.0, 5.0),
+                (5.0, 0.0),
+                (5.0, 5.0),
+                (0.0, 5.0),
+            ],
             Color32::WHITE,
             TextureId::default(),
         );
         let clip = Rect::from_min_max(epaint::pos2(0.0, 0.0), epaint::pos2(10.0, 10.0));
-        r.paint(&mut Target { w, h, rgba: &mut buf }, 2.0, &[prim(m, clip)]);
+        r.paint(
+            &mut Target {
+                w,
+                h,
+                rgba: &mut buf,
+            },
+            2.0,
+            &[prim(m, clip)],
+        );
         assert_eq!(count_color(&buf, [255; 4]), 100);
     }
 
@@ -511,7 +611,10 @@ mod tests {
         let mut delta = TexturesDelta::default();
         delta.set.insert(
             id,
-            smallvec_one(epaint::ImageDelta::full(ImageData::Color(Arc::new(img)), Default::default())),
+            smallvec_one(epaint::ImageDelta::full(
+                ImageData::Color(Arc::new(img)),
+                Default::default(),
+            )),
         );
         r.apply_set(&delta);
         delta.clear();
@@ -525,11 +628,23 @@ mod tests {
             ((0.0, 4.0), (0.0, 1.0)),
         ];
         for ((x, y), (u, v)) in quad {
-            m.vertices.push(Vertex { pos: epaint::pos2(x, y), uv: epaint::pos2(u, v), color: Color32::WHITE });
+            m.vertices.push(Vertex {
+                pos: epaint::pos2(x, y),
+                uv: epaint::pos2(u, v),
+                color: Color32::WHITE,
+            });
         }
         m.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
         let clip = Rect::from_min_max(epaint::pos2(0.0, 0.0), epaint::pos2(4.0, 4.0));
-        r.paint(&mut Target { w, h, rgba: &mut buf }, 1.0, &[prim(m, clip)]);
+        r.paint(
+            &mut Target {
+                w,
+                h,
+                rgba: &mut buf,
+            },
+            1.0,
+            &[prim(m, clip)],
+        );
         let px = |x: usize, y: usize| &buf[(y * w + x) * 4..(y * w + x) * 4 + 4];
         // Corners are pure texels; the middle is a bilinear mix.
         assert_eq!(px(0, 0), &[255, 0, 0, 255]);
@@ -539,7 +654,10 @@ mod tests {
         // Pixel center (1.5, 1.5) maps to uv 0.375: mostly red with some
         // green and blue bleeding in from the bilinear filter.
         let mid = px(1, 1);
-        assert!(mid[0] > mid[1] && mid[1] > 30 && mid[2] > 30, "expected a red-dominant mix, got {mid:?}");
+        assert!(
+            mid[0] > mid[1] && mid[1] > 30 && mid[2] > 30,
+            "expected a red-dominant mix, got {mid:?}"
+        );
 
         // Partial update of the top-left texel to black.
         let patch = epaint::ColorImage {
@@ -550,7 +668,11 @@ mod tests {
         let mut delta = TexturesDelta::default();
         delta.set.insert(
             id,
-            smallvec_one(epaint::ImageDelta::partial([0, 0], ImageData::Color(Arc::new(patch)), Default::default())),
+            smallvec_one(epaint::ImageDelta::partial(
+                [0, 0],
+                ImageData::Color(Arc::new(patch)),
+                Default::default(),
+            )),
         );
         r.apply_set(&delta);
         delta.clear();

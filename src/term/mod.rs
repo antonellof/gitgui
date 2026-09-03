@@ -35,7 +35,8 @@ impl From<io::Error> for TermError {
 }
 
 /// Sequences sent when entering the session (PROTOCOLS section 1).
-pub const ENTER_SEQ: &[u8] = b"\x1b[?1049h\x1b[?25l\x1b[?1004h\x1b[?1003h\x1b[?1006h\x1b[?1016h\x1b[?2004h\x1b[>15u";
+pub const ENTER_SEQ: &[u8] =
+    b"\x1b[?1049h\x1b[?25l\x1b[?1004h\x1b[?1003h\x1b[?1006h\x1b[?1016h\x1b[?2004h\x1b[>15u";
 
 /// Sequences sent when leaving, reverse order, preceded by the delete-all
 /// graphics command so nothing leaks into the main screen.
@@ -189,10 +190,22 @@ pub fn install_handlers() {
     }));
     // SAFETY: handlers only touch atomics.
     unsafe {
-        libc::signal(libc::SIGWINCH, on_sigwinch as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGINT, on_quit_signal as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGTERM, on_quit_signal as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGHUP, on_quit_signal as *const () as libc::sighandler_t);
+        libc::signal(
+            libc::SIGWINCH,
+            on_sigwinch as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGINT,
+            on_quit_signal as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGTERM,
+            on_quit_signal as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGHUP,
+            on_quit_signal as *const () as libc::sighandler_t,
+        );
     }
 }
 
@@ -251,7 +264,9 @@ mod tests {
     fn leave_sequence_is_reverse_of_enter_with_delete_all() {
         assert!(LEAVE_SEQ.starts_with(b"\x1b_Ga=d,d=A,q=2\x1b\\"));
         let s = std::str::from_utf8(LEAVE_SEQ).unwrap();
-        let order = ["\x1b[<u", "?2004l", "?1016l", "?1006l", "?1003l", "?1004l", "?25h", "?1049l"];
+        let order = [
+            "\x1b[<u", "?2004l", "?1016l", "?1006l", "?1003l", "?1004l", "?25h", "?1049l",
+        ];
         let mut last = 0;
         for o in order {
             let pos = s[last..].find(o).unwrap_or_else(|| panic!("missing {o:?}")) + last;

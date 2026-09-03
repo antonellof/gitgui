@@ -33,7 +33,10 @@ fn main() -> ExitCode {
         crash: cli.crash,
         scale: cli.scale,
         font_size: cli.font_size,
-        path: cli.path.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into())),
+        path: cli
+            .path
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into())),
     };
     let result = if cli.probe {
         run_probe(cli.no_shm)

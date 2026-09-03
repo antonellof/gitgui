@@ -68,7 +68,12 @@ impl Framebuffer {
     #[cfg(test)]
     pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
         let i = ((y * self.w + x) * 4) as usize;
-        [self.pixels[i], self.pixels[i + 1], self.pixels[i + 2], self.pixels[i + 3]]
+        [
+            self.pixels[i],
+            self.pixels[i + 1],
+            self.pixels[i + 2],
+            self.pixels[i + 3],
+        ]
     }
 
     pub fn save_png(&self, path: &Path) -> anyhow::Result<()> {
