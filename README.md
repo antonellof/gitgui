@@ -4,25 +4,47 @@ A git GUI that runs inside your terminal.
 
 Not a TUI. gitgui renders a real pixel interface (commit graph, staging area, diff viewer) into your existing terminal pane using the kitty graphics protocol. One small Rust binary, no browser engine, no Electron, works over SSH.
 
-Status: early development. Phases 0 to 4 of the roadmap are done: it renders, takes input, and can stage, commit, branch, stash, fetch, pull and push. See [Roadmap](#roadmap) and [docs/PLAN.md](docs/PLAN.md) for the live plan and open issues.
+## Quick install
 
-## Install (macOS & Linux)
-
-Release binaries (after the first tagged release):
+macOS and Linux, Ghostty, cmux, kitty, or WezTerm:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/antonellof/gitgui/main/scripts/install.sh | bash
 ```
 
-From source:
+Pin a version or install elsewhere:
 
+```bash
+GITGUI_VERSION=0.1.0 GITGUI_INSTALL_DIR=~/.local/bin bash scripts/install.sh
 ```
+
+From source (Rust 1.95+):
+
+```bash
 git clone https://github.com/antonellof/gitgui
 cd gitgui
 cargo install --path .
 ```
 
-Requires a Rust stable toolchain (1.95 or newer) and a terminal that speaks the kitty graphics protocol: Ghostty, cmux, kitty, WezTerm.
+Then open any repo:
+
+```bash
+gitgui              # current directory
+gitgui /path/to/repo
+gitgui --split right   # new terminal split (cmux, kitty)
+```
+
+Press `q` or `Ctrl+C` to quit.
+
+## What you get
+
+- Commit graph with branch lanes, sidebar (branches, tags, stashes)
+- Stage and unstage files and hunks, commit, amend
+- Branch checkout, create, delete; stash push, pop, drop
+- Fetch, pull, push (via your `git` CLI and credential helpers)
+- Agent control socket: `gitgui ls`, `gitgui action '{"cmd":"status"}'` (see [skill/SKILL.md](skill/SKILL.md))
+
+Status: **v0.1.0**. Phases 0 to 5 of the roadmap are done. See [Roadmap](#roadmap) and [docs/PLAN.md](docs/PLAN.md) for open issues.
 
 ## Usage
 
@@ -40,9 +62,7 @@ gitgui --font-size 14     UI font size in points
 gitgui --help
 ```
 
-Inside gitgui, press `q` or `Ctrl+C` to quit.
-
-For agent integration, copy or symlink `skill/SKILL.md` into your agent skills directory.
+For agent integration, copy or symlink `skill/SKILL.md` into your agent skills directory (for example `~/.cursor/skills/gitgui/SKILL.md`).
 
 ## How does it work?
 
@@ -97,6 +117,7 @@ cargo run -- --probe                what does this terminal support?
 cargo run --release -- --headless-frame /tmp/frame.png --size 1600x1000 --scale 2
                                     render one frame to a PNG without a terminal, prints timings
 cargo run --release                 interactive
+bash scripts/smoke.sh               headless smoke test without a graphics terminal
 ```
 
 The design documents are the source of truth: [docs/SPEC.md](docs/SPEC.md) for architecture and milestones, [docs/PROTOCOLS.md](docs/PROTOCOLS.md) for the exact escape sequences.

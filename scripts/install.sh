@@ -17,8 +17,8 @@ case "$arch" in
     ;;
 esac
 case "$os" in
-  darwin) asset="gitgui-${VERSION}-macos-${arch}" ;;
-  linux) asset="gitgui-${VERSION}-linux-${arch}" ;;
+  darwin) platform="macos" ;;
+  linux) platform="linux" ;;
   *)
     echo "unsupported OS: $os" >&2
     exit 1
@@ -26,10 +26,17 @@ case "$os" in
 esac
 
 if [ "$VERSION" = "latest" ]; then
-  url="https://github.com/${REPO}/releases/latest/download/${asset}.tar.gz"
-else
-  url="https://github.com/${REPO}/releases/download/v${VERSION}/${asset}.tar.gz"
+  VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/p' \
+    | head -1)"
+  if [ -z "$VERSION" ]; then
+    echo "could not resolve latest release for ${REPO}" >&2
+    exit 1
+  fi
 fi
+
+asset="gitgui-${VERSION}-${platform}-${arch}"
+url="https://github.com/${REPO}/releases/download/v${VERSION}/${asset}.tar.gz"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
