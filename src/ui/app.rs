@@ -10,6 +10,8 @@ pub struct App {
     pub transport: &'static str,
     pub scale: f32,
     pub animate: bool,
+    /// Where the Increment button was laid out last pass (tests click it).
+    pub increment_rect: Option<egui::Rect>,
 }
 
 impl App {
@@ -22,7 +24,8 @@ impl App {
             frame_ms: 0.0,
             transport,
             scale,
-            animate: true,
+            animate: false,
+            increment_rect: None,
         }
     }
 
@@ -35,7 +38,9 @@ impl App {
             ui.label(format!("scale: {}", self.scale));
             ui.label(format!("frame: {:.2} ms", self.frame_ms));
             ui.separator();
-            if ui.button("Increment").clicked() {
+            let inc = ui.button("Increment");
+            self.increment_rect = Some(inc.rect);
+            if inc.clicked() {
                 self.counter += 1;
             }
             if ui.button("Reset").clicked() {
@@ -44,7 +49,7 @@ impl App {
             ui.checkbox(&mut self.checked, "Checkbox");
             ui.checkbox(&mut self.animate, "Animate spinner");
             ui.separator();
-            ui.small("q quits, Ctrl+C quits");
+            ui.small("q or Ctrl+C quits, Tab cycles focus");
         });
 
         egui::Panel::bottom("status").show(root, |ui| {

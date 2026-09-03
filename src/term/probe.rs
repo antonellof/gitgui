@@ -17,6 +17,8 @@ pub struct Capabilities {
     pub shm: bool,
     /// Kitty keyboard protocol flags currently active, if supported.
     pub kitty_keyboard: Option<u32>,
+    /// Terminal recognises mode 1016 (SGR mouse in pixels), per DECRQM.
+    pub pixel_mouse: bool,
     /// Cell size in device pixels.
     pub cell_w: u32,
     pub cell_h: u32,
@@ -61,6 +63,7 @@ impl fmt::Display for Capabilities {
             Some(flags) => writeln!(f, "kitty keyboard : yes (flags {flags})")?,
             None => writeln!(f, "kitty keyboard : no")?,
         }
+        writeln!(f, "pixel mouse    : {}", self.pixel_mouse)?;
         writeln!(f, "cell size      : {}x{} px", self.cell_w, self.cell_h)?;
         writeln!(f, "text area      : {}x{} px", self.px_w, self.px_h)?;
         writeln!(f, "grid           : {} cols x {} rows", self.cols, self.rows)?;
@@ -125,6 +128,16 @@ pub fn parse_replies(buf: &[u8], caps: &mut Capabilities) -> bool {
                             }
                             _ => {}
                         }
+                    }
+                }
+                b'y' if params.starts_with(b"?") && params.ends_with(b"$") => {
+                    // DECRPM: CSI ? Pd ; Ps $ y   (Ps 0 = not recognised)
+                    let inner = &params[1..params.len() - 1];
+                    let mut it = inner.split(|&c| c == b';');
+                    let mode = it.next().and_then(|s| std::str::from_utf8(s).ok()).and_then(|s| s.parse::<u32>().ok());
+                    let state = it.next().and_then(|s| std::str::from_utf8(s).ok()).and_then(|s| s.parse::<u32>().ok());
+                    if mode == Some(1016) {
+                        caps.pixel_mouse = matches!(state, Some(1..=4));
                     }
                 }
                 b'c' if params.starts_with(b"?") => {
@@ -222,7 +235,7 @@ pub fn probe(shm_probe: bool, timeout: Duration) -> std::io::Result<Capabilities
     } else {
         None
     };
-    out.extend_from_slice(b"\x1b[?u\x1b[16t\x1b[14t\x1b[18t\x1b[c");
+    out.extend_from_slice(b"\x1b[?u\x1b[?1016$p\x1b[16t\x1b[14t\x1b[18t\x1b[c");
     super::write_all(&out)?;
 
     let deadline = Instant::now() + timeout;
@@ -267,11 +280,12 @@ mod tests {
 
     #[test]
     fn parses_all_replies_ghostty_style() {
-        let bytes = b"\x1b_Gi=31;OK\x1b\\\x1b_Gi=32;OK\x1b\\\x1b[?1u\x1b[6;32;14t\x1b[4;1000;1600t\x1b[8;31;114t\x1b[?62;22c";
+        let bytes = b"\x1b_Gi=31;OK\x1b\\\x1b_Gi=32;OK\x1b\\\x1b[?1u\x1b[?1016;2$y\x1b[6;32;14t\x1b[4;1000;1600t\x1b[8;31;114t\x1b[?62;22c";
         let mut caps = Capabilities::default();
         assert!(parse_replies(bytes, &mut caps));
         assert!(caps.kitty_graphics);
         assert!(caps.shm);
+        assert!(caps.pixel_mouse);
         assert_eq!(caps.kitty_keyboard, Some(1));
         assert_eq!((caps.cell_w, caps.cell_h), (14, 32));
         assert_eq!((caps.px_w, caps.px_h), (1600, 1000));
@@ -315,6 +329,18 @@ mod tests {
         assert!(parse_replies(bytes, &mut caps));
         assert_eq!((caps.cell_w, caps.cell_h), (8, 16));
         assert_eq!(caps.pixels_per_point(), 1.0);
+    }
+
+    #[test]
+    fn decrqm_states() {
+        let mut caps = Capabilities::default();
+        parse_replies(b"\x1b[?1016;0$y\x1b[?c", &mut caps);
+        assert!(!caps.pixel_mouse, "0 means not recognised");
+        parse_replies(b"\x1b[?1016;1$y\x1b[?c", &mut caps);
+        assert!(caps.pixel_mouse);
+        caps.pixel_mouse = false;
+        parse_replies(b"\x1b[?2004;2$y\x1b[?c", &mut caps);
+        assert!(!caps.pixel_mouse, "other modes are ignored");
     }
 
     #[test]

@@ -1,60 +1,31 @@
-//! The interactive loop and the headless frame renderer. Wires egui, the
-//! rasterizer, the framebuffer and the terminal together.
+//! The interactive loop, `--dump-input`, and the headless frame renderer.
+//! Wires egui, the rasterizer, the framebuffer and the terminal together.
 
 use std::path::Path;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context as _};
+use base64::Engine as _;
 
 use crate::render::frame::Framebuffer;
 use crate::render::raster::{Rasterizer, Target};
+use crate::term::input::{Event, Key, Parser};
 use crate::term::{self, kitty, probe};
 use crate::ui::app::App;
+use crate::ui::input::Mapper;
 
 /// Background color behind everything, matches the egui dark theme panel.
 const CLEAR: [u8; 4] = [0x1b, 0x1b, 0x1b, 0xff];
 const MAX_TEXTURE_SIDE: usize = 8192;
+/// A lone ESC becomes the Escape key after this long without more bytes.
+const ESC_TIMEOUT: Duration = Duration::from_millis(50);
 
 pub struct Options {
     pub no_shm: bool,
     pub crash: bool,
     pub scale: Option<f32>,
     pub font_size: Option<f32>,
-}
-
-/// Minimal quit detection until Phase 2 brings the real parser: `q`,
-/// Ctrl+C as a raw byte, and the kitty keyboard encodings `CSI 113 ... u`
-/// and `CSI 99 ; 5 u`.
-pub fn wants_quit(bytes: &[u8]) -> bool {
-    if bytes.contains(&0x03) {
-        return true;
-    }
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'q' => return true,
-            0x1b if bytes.get(i + 1) == Some(&b'[') => {
-                let body = &bytes[i + 2..];
-                let Some(fin) = body.iter().position(|b| (0x40..=0x7e).contains(b)) else {
-                    return false;
-                };
-                if body[fin] == b'u' {
-                    let params = std::str::from_utf8(&body[..fin]).unwrap_or("");
-                    let mut fields = params.split(';');
-                    let key = fields.next().unwrap_or("").split(':').next().unwrap_or("");
-                    let mods = fields.next().unwrap_or("1").split(':').next().unwrap_or("1");
-                    let event = params.split(';').nth(1).and_then(|m| m.split(':').nth(1)).unwrap_or("1");
-                    let released = event == "3";
-                    if !released && (key == "113" || (key == "99" && mods == "5")) {
-                        return true;
-                    }
-                }
-                i += 2 + fin + 1;
-            }
-            _ => i += 1,
-        }
-    }
-    false
 }
 
 fn setup_context(ppp: f32, font_size: Option<f32>) -> egui::Context {
@@ -75,7 +46,7 @@ fn setup_context(ppp: f32, font_size: Option<f32>) -> egui::Context {
     ctx
 }
 
-fn raw_input(w: u32, h: u32, ppp: f32, time: f64, focused: bool) -> egui::RawInput {
+fn raw_input(w: u32, h: u32, ppp: f32, time: f64, focused: bool, events: Vec<egui::Event>) -> egui::RawInput {
     let mut input = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             egui::pos2(0.0, 0.0),
@@ -85,6 +56,7 @@ fn raw_input(w: u32, h: u32, ppp: f32, time: f64, focused: bool) -> egui::RawInp
         time: Some(time),
         predicted_dt: 1.0 / 60.0,
         focused,
+        events,
         ..Default::default()
     };
     input
@@ -95,14 +67,19 @@ fn raw_input(w: u32, h: u32, ppp: f32, time: f64, focused: bool) -> egui::RawInp
     input
 }
 
+#[derive(Default)]
 pub struct Timings {
     pub ui: Duration,
     pub tessellate: Duration,
     pub raster: Duration,
 }
 
-/// Run one egui pass and rasterize it into `fb`. Returns the repaint delay
-/// egui asked for.
+struct PassResult {
+    repaint_delay: Duration,
+    copy_text: Option<String>,
+}
+
+/// Run one egui pass and rasterize it into `fb`.
 fn render_pass(
     ctx: &egui::Context,
     app: &mut App,
@@ -110,7 +87,7 @@ fn render_pass(
     fb: &mut Framebuffer,
     input: egui::RawInput,
     timings: &mut Timings,
-) -> Duration {
+) -> PassResult {
     let t0 = Instant::now();
     let mut out = ctx.run_ui(input, |ui| app.ui(ui));
     let t1 = Instant::now();
@@ -129,10 +106,27 @@ fn render_pass(
     timings.ui = t1 - t0;
     timings.tessellate = t2 - t1;
     timings.raster = t3 - t2;
-    out.viewport_output
-        .get(&egui::ViewportId::ROOT)
-        .map(|v| v.repaint_delay)
-        .unwrap_or(Duration::MAX)
+    let mut copy_text = None;
+    for cmd in out.platform_output.commands.drain(..) {
+        if let egui::OutputCommand::CopyText(s) = cmd {
+            copy_text = Some(s);
+        }
+    }
+    PassResult {
+        repaint_delay: out
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map(|v| v.repaint_delay)
+            .unwrap_or(Duration::MAX),
+        copy_text,
+    }
+}
+
+/// `OSC 52 ; c ; <base64> ST`: write to the terminal clipboard.
+pub fn encode_osc52_copy(out: &mut Vec<u8>, text: &str) {
+    out.extend_from_slice(b"\x1b]52;c;");
+    out.extend_from_slice(base64::engine::general_purpose::STANDARD.encode(text.as_bytes()).as_bytes());
+    out.extend_from_slice(b"\x1b\\");
 }
 
 pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Result<i32> {
@@ -141,10 +135,10 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
     let mut app = App::new("headless", ppp);
     let mut raster = Rasterizer::new();
     let mut fb = Framebuffer::new(size.0, size.1);
-    let mut t = Timings { ui: Duration::ZERO, tessellate: Duration::ZERO, raster: Duration::ZERO };
+    let mut t = Timings::default();
     // Two passes: the first one loads fonts and settles layout.
     for pass in 0..2 {
-        let input = raw_input(size.0, size.1, ppp, pass as f64 / 60.0, true);
+        let input = raw_input(size.0, size.1, ppp, pass as f64 / 60.0, true, Vec::new());
         render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
     }
     fb.save_png(path).with_context(|| format!("writing {}", path.display()))?;
@@ -160,23 +154,120 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
     Ok(0)
 }
 
-pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
+/// Spawn the stdin reader thread. It blocks in `poll` + `read` and ships
+/// raw byte chunks over the channel until stdin closes.
+fn spawn_stdin_thread() -> mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("stdin".into())
+        .spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match term::read_timeout(&mut buf, Duration::from_secs(3600)) {
+                    Ok(0) => continue,
+                    Ok(n) => {
+                        if tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        })
+        .expect("spawn stdin thread");
+    rx
+}
+
+struct Probed {
+    caps: probe::Capabilities,
+    transport: kitty::Transport,
+}
+
+fn probe_or_exit(no_shm: bool) -> anyhow::Result<Result<Probed, i32>> {
     if !term::is_tty() {
         bail!("interactive mode needs a terminal on stdin and stdout");
     }
     let raw = term::RawGuard::enter()?;
-    let caps = probe::probe(!opts.no_shm, Duration::from_millis(1000)).context("probe failed")?;
+    let caps = probe::probe(!no_shm, Duration::from_millis(1000)).context("probe failed")?;
     drop(raw);
-
     if let Some(m) = &caps.multiplexer {
         eprintln!("gitgui: running inside {m}, which does not pass kitty graphics through. Run it directly in Ghostty, cmux or kitty.");
-        return Ok(4);
+        return Ok(Err(4));
     }
     if !caps.kitty_graphics {
         eprintln!("gitgui: this terminal did not answer the kitty graphics probe. Supported: Ghostty, cmux, kitty, WezTerm.");
-        return Ok(3);
+        return Ok(Err(3));
     }
-    let transport = if caps.shm && !opts.no_shm { kitty::Transport::Shm } else { kitty::Transport::Direct };
+    let transport = if caps.shm && !no_shm { kitty::Transport::Shm } else { kitty::Transport::Direct };
+    Ok(Ok(Probed { caps, transport }))
+}
+
+/// Print decoded input events until Ctrl+C.
+pub fn run_dump_input() -> anyhow::Result<i32> {
+    if !term::is_tty() {
+        bail!("--dump-input needs a terminal");
+    }
+    let caps = {
+        let _raw = term::RawGuard::enter()?;
+        probe::probe(false, Duration::from_millis(1000))?
+    };
+    let session = term::Session::enter()?;
+    let mut parser = Parser::new(caps.pixel_mouse, caps.cell_w, caps.cell_h);
+    let mut line = format!(
+        "gitgui --dump-input: kitty keyboard {:?}, pixel mouse {}, cell {}x{}. Ctrl+C exits.\r\n",
+        caps.kitty_keyboard, caps.pixel_mouse, caps.cell_w, caps.cell_h
+    )
+    .into_bytes();
+    term::write_all(&line)?;
+    let rx = spawn_stdin_thread();
+    let mut last_byte = Instant::now();
+    loop {
+        if term::quit_requested() {
+            break;
+        }
+        let events = match rx.recv_timeout(ESC_TIMEOUT) {
+            Ok(bytes) => {
+                last_byte = Instant::now();
+                line.clear();
+                line.extend_from_slice(b"raw: ");
+                for b in &bytes {
+                    line.extend_from_slice(format!("{b:02x} ").as_bytes());
+                }
+                line.extend_from_slice(b"\r\n");
+                term::write_all(&line)?;
+                parser.feed(&bytes)
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if parser.has_pending() && last_byte.elapsed() >= ESC_TIMEOUT {
+                    parser.flush()
+                } else {
+                    continue;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        let mut quit = false;
+        for ev in &events {
+            line.clear();
+            line.extend_from_slice(format!("  {ev:?}\r\n").as_bytes());
+            term::write_all(&line)?;
+            if matches!(ev, Event::Key { key: Key::Char('c'), mods, pressed: true, .. } if mods.ctrl) {
+                quit = true;
+            }
+        }
+        if quit {
+            break;
+        }
+    }
+    drop(session);
+    Ok(0)
+}
+
+pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
+    let Probed { mut caps, transport } = match probe_or_exit(opts.no_shm)? {
+        Ok(p) => p,
+        Err(code) => return Ok(code),
+    };
     let transport_name = match transport {
         kitty::Transport::Shm => "shm",
         kitty::Transport::Direct => "direct",
@@ -188,19 +279,24 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
     };
 
     let session = term::Session::enter()?;
-    let mut caps = caps;
     let (w, h) = caps.frame_size();
     let ctx = setup_context(ppp, opts.font_size);
     let mut app = App::new(transport_name, ppp);
     let mut raster = Rasterizer::new();
     let mut fb = Framebuffer::new(w, h);
     let mut enc = kitty::FrameEncoder::new(transport, std::process::id());
+    let mut parser = Parser::new(caps.pixel_mouse, caps.cell_w, caps.cell_h);
+    let mut mapper = Mapper::new(ppp);
+    let rx = spawn_stdin_thread();
+
     let mut out = Vec::with_capacity(1 << 16);
-    let mut inbuf = [0u8; 4096];
+    let mut pending: Vec<egui::Event> = Vec::new();
+    let mut focused = true;
     let start = Instant::now();
-    let mut t = Timings { ui: Duration::ZERO, tessellate: Duration::ZERO, raster: Duration::ZERO };
+    let mut t = Timings::default();
     let mut next_deadline = Instant::now();
     let mut last_frame = Instant::now() - min_interval;
+    let mut last_byte = Instant::now();
 
     loop {
         if term::quit_requested() {
@@ -218,6 +314,8 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                 kitty::encode_delete_all(&mut out);
                 term::write_all(&out)?;
                 enc.reset();
+                parser.cell_w = caps.cell_w.max(1);
+                parser.cell_h = caps.cell_h.max(1);
                 next_deadline = Instant::now();
             }
         }
@@ -228,11 +326,16 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
             if since_last < min_interval {
                 next_deadline = last_frame + min_interval;
             } else {
-                let input = raw_input(fb.width(), fb.height(), ppp, start.elapsed().as_secs_f64(), true);
-                let delay = render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
+                mapper.flush(&mut pending);
+                let events = std::mem::take(&mut pending);
+                let input = raw_input(fb.width(), fb.height(), ppp, start.elapsed().as_secs_f64(), focused, events);
+                let pass = render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
                 let t_send = Instant::now();
+                out.clear();
+                if let Some(text) = pass.copy_text {
+                    encode_osc52_copy(&mut out, &text);
+                }
                 if fb.is_dirty() {
-                    out.clear();
                     match transport {
                         kitty::Transport::Shm => {
                             let name = enc.next_shm_name();
@@ -243,25 +346,58 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                             enc.encode_frame(&mut out, fb.width(), fb.height(), fb.pixels(), None)
                         }
                     }
-                    term::write_all(&out)?;
                     fb.mark_sent();
+                }
+                if !out.is_empty() {
+                    term::write_all(&out)?;
                 }
                 let total = t.ui + t.tessellate + t.raster + t_send.elapsed();
                 app.frame_ms = total.as_secs_f64() as f32 * 1e3;
                 last_frame = Instant::now();
-                next_deadline = last_frame + delay.min(Duration::from_secs(3600)).max(min_interval);
+                next_deadline = last_frame + pass.repaint_delay.min(Duration::from_secs(3600)).max(min_interval);
             }
         }
 
-        let wait = next_deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(500));
-        let n = term::read_timeout(&mut inbuf, wait)?;
-        if n > 0 {
-            if wants_quit(&inbuf[..n]) {
-                break;
-            }
-            // Any input wakes egui in Phase 2; for now just repaint.
-            next_deadline = Instant::now();
+        // Wait for input, the repaint deadline, or the escape timeout.
+        let mut wait = next_deadline.saturating_duration_since(Instant::now()).min(Duration::from_secs(3600));
+        if parser.has_pending() {
+            wait = wait.min(ESC_TIMEOUT.saturating_sub(last_byte.elapsed()));
         }
+        let events = match rx.recv_timeout(wait) {
+            Ok(bytes) => {
+                last_byte = Instant::now();
+                parser.feed(&bytes)
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if parser.has_pending() && last_byte.elapsed() >= ESC_TIMEOUT {
+                    parser.flush()
+                } else {
+                    Vec::new()
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        if events.is_empty() {
+            continue;
+        }
+        let mut quit = false;
+        for ev in &events {
+            match ev {
+                Event::Key { key: Key::Char('c'), mods, pressed: true, .. } if mods.ctrl => quit = true,
+                Event::Key { key: Key::Char('q'), mods, pressed: true, .. }
+                    if *mods == crate::term::input::Mods::NONE && !ctx.egui_wants_keyboard_input() =>
+                {
+                    quit = true
+                }
+                Event::Focus(f) => focused = *f,
+                _ => {}
+            }
+            mapper.map(ev, &mut pending);
+        }
+        if quit {
+            break;
+        }
+        next_deadline = Instant::now();
     }
     drop(session);
     Ok(0)
@@ -272,18 +408,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn quit_detection() {
-        assert!(wants_quit(b"q"));
-        assert!(wants_quit(b"\x03"));
-        assert!(wants_quit(b"\x1b[113u"));
-        assert!(wants_quit(b"\x1b[113;1u"));
-        assert!(wants_quit(b"\x1b[113;1:1u"));
-        assert!(wants_quit(b"\x1b[113;1:2u"));
-        assert!(!wants_quit(b"\x1b[113;1:3u"), "release must not quit");
-        assert!(wants_quit(b"\x1b[99;5u"));
-        assert!(!wants_quit(b"\x1b[99;1u"));
-        assert!(!wants_quit(b"\x1b[<35;100;200M"));
-        assert!(!wants_quit(b"abc"));
+    fn osc52_bytes() {
+        let mut out = Vec::new();
+        encode_osc52_copy(&mut out, "hi");
+        assert_eq!(out, b"\x1b]52;c;aGk=\x1b\\");
     }
 
     #[test]
@@ -293,17 +421,43 @@ mod tests {
         let mut app = App::new("test", ppp);
         let mut raster = Rasterizer::new();
         let mut fb = Framebuffer::new(400, 300);
-        let mut t = Timings { ui: Duration::ZERO, tessellate: Duration::ZERO, raster: Duration::ZERO };
+        let mut t = Timings::default();
         for pass in 0..2 {
-            let input = raw_input(400, 300, ppp, pass as f64 / 60.0, true);
+            let input = raw_input(400, 300, ppp, pass as f64 / 60.0, true, Vec::new());
             render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
         }
-        // Something was drawn: not every pixel is the clear color.
         let clear_count = fb.pixels().as_chunks::<4>().0.iter().filter(|p| **p == CLEAR).count();
         assert!(clear_count < 400 * 300, "frame is blank");
-        // Text was drawn in the sidebar heading area: some bright pixels.
         let bright = fb.pixels().as_chunks::<4>().0.iter().take(400 * 40).filter(|p| p[0] > 100).count();
         assert!(bright > 20, "no text pixels found in the heading band, got {bright}");
         assert_eq!(fb.pixel(399, 299)[3], 255);
+    }
+
+    #[test]
+    fn click_increments_counter() {
+        // Drive the demo app with synthetic egui events through the same
+        // pass function the runtime uses: a click on the Increment button.
+        let ppp = 1.0;
+        let ctx = setup_context(ppp, None);
+        let mut app = App::new("test", ppp);
+        let mut raster = Rasterizer::new();
+        let mut fb = Framebuffer::new(600, 400);
+        let mut t = Timings::default();
+        let input = raw_input(600, 400, ppp, 0.0, true, Vec::new());
+        render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
+        let rect = app.increment_rect.expect("increment button rect");
+        let pos = rect.center();
+        let mut mapper = Mapper::new(ppp);
+        let mut events = Vec::new();
+        let (x, y) = ((pos.x * ppp) as i32, (pos.y * ppp) as i32);
+        use crate::term::input::{Mods, MouseButton};
+        mapper.map(&Event::MouseButton { button: MouseButton::Left, pressed: true, x, y, mods: Mods::NONE }, &mut events);
+        let input = raw_input(600, 400, ppp, 0.1, true, events);
+        render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
+        let mut events = Vec::new();
+        mapper.map(&Event::MouseButton { button: MouseButton::Left, pressed: false, x, y, mods: Mods::NONE }, &mut events);
+        let input = raw_input(600, 400, ppp, 0.2, true, events);
+        render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
+        assert_eq!(app.counter, 1);
     }
 }
