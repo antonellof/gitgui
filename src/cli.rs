@@ -10,6 +10,7 @@ pub const USAGE: &str = "usage: gitgui [options] [path]
   --size <WxH>               frame size for --headless-frame (default 1600x1000)
   --scale <1|1.5|2>          override pixels per point
   --font-size <N>            UI font size in points (default 13)
+  --repo <path>              same as the positional path
   --no-shm                   force the direct (base64 + zlib) transport
   -h, --help                 show this help";
 
@@ -47,6 +48,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
             // Hidden: panic one second into the session to verify restoration.
             "--crash" => cli.crash = true,
             "--headless-frame" => cli.headless = Some(PathBuf::from(value("--headless-frame")?)),
+            "--repo" => cli.path = Some(PathBuf::from(value("--repo")?)),
             "--size" => {
                 let v = value("--size")?;
                 let (w, h) = v.split_once('x').ok_or_else(|| format!("--size expects WxH, got {v:?}"))?;

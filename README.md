@@ -4,7 +4,7 @@ A git GUI that runs inside your terminal.
 
 Not a TUI. gitgui renders a real pixel interface (commit graph, staging area, diff viewer) into your existing terminal pane using the kitty graphics protocol. One small Rust binary, no browser engine, no Electron, works over SSH.
 
-Status: early development. Phases 0 to 2 of the roadmap are done (terminal plumbing, rendering, input). See [Roadmap](#roadmap) and [docs/PLAN.md](docs/PLAN.md) for the live plan and open issues.
+Status: early development. Phases 0 to 3 of the roadmap are done (terminal plumbing, rendering, input, read-only git views). See [Roadmap](#roadmap) and [docs/PLAN.md](docs/PLAN.md) for the live plan and open issues.
 
 ## Install (macOS & Linux)
 
@@ -73,7 +73,7 @@ gitgui never binds `Cmd+*` or `Ctrl+Shift+*`; those stay with your terminal and 
 - [x] Phase 0: terminal plumbing. Capability probe, raw mode, kitty graphics frame transport with shm and inline paths, clean restore on quit, panic and signals.
 - [x] Phase 1: rendering. Software rasterizer for egui meshes, headless PNG frames.
 - [x] Phase 2: input. Kitty keyboard, SGR pixel mouse, paste, focus, resize.
-- [ ] Phase 3: read-only git. Sidebar, commit graph, commit detail, diff view.
+- [x] Phase 3: read-only git. Sidebar, commit graph, commit detail, diff view.
 - [ ] Phase 4: writes. Stage and unstage by file and hunk, commit, amend, branches, stash, fetch, pull, push.
 - [ ] Phase 5: integration. Split panes in cmux and Ghostty, agent control socket, install script, release builds.
 

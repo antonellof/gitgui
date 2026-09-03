@@ -11,8 +11,8 @@ this file tracks where we are, what was decided, and what is open.
 | 0 terminal plumbing | done | 22bef03 | probe, raw mode, kitty graphics shm + direct, restore on exit and panic |
 | 1 rendering | done | 475c593 | rasterizer, framebuffer, egui demo, headless PNG |
 | 2 input | done | eecddce | parser with byte tests, stdin thread, egui mapping, `--dump-input` |
-| 3 read-only git | next | | git2 pinned at 0.21.0, add the dependency when starting |
-| 4 writes | | | |
+| 3 read-only git | done | see git log | git2 0.21.0, snapshot + graph + diff, worker thread, real UI |
+| 4 writes | next | | |
 | 5 integration | | | |
 
 ## Measurements
@@ -28,7 +28,27 @@ Release build, raster stage only, `--headless-frame`:
 On screen in cmux (includes shm copy, encode, dirty check): about 7 ms per
 frame at scale 2 in a half-width pane.
 
+Git snapshot (status + 2000 commits + refs) on the worker thread:
+
+| Repo | Time |
+|---|---|
+| gitgui (4 commits) | 6 ms |
+| vllm (20k commits, capped at 2000) | 660 ms |
+
+The UI never waits for it; the first frame shows "loading" until the
+snapshot arrives. Filesystem polling every 2 s only re-snapshots when a
+watched mtime changed.
+
 ## Decisions
+
+- git2 0.21 returns `Result` from most string getters (`shorthand`,
+  `summary`, `Signature::name`, `StatusEntry::path`); unwrap to empty strings.
+- Rename detection: the status entry's `path()` is the old path, the delta's
+  `new_file()` has the new one.
+- The graph keeps the first parent in the commit's lane; merge curves are
+  drawn on the row where lanes join, forks on the merge commit's row.
+- Log virtualization uses `ScrollArea::show_rows`; 2000 rows cost nothing
+  off screen.
 
 - Shm probe rides in the capability batch as `a=q,t=s`; both an `OK` reply and
   the object being unlinked are required (PROTOCOLS 4.2).
