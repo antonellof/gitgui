@@ -2,7 +2,13 @@
 
 A git GUI that runs inside your terminal.
 
-Not a TUI. gitgui renders a real pixel interface (commit graph, staging area, diff viewer) into your existing terminal pane using the kitty graphics protocol. One small Rust binary, no browser engine, no Electron, works over SSH.
+![gitgui in a cmux split next to pi](screenshot/gitgui-cmux-pi.png)
+
+## Why
+
+I live in [cmux](https://cmux.dev) (Ghostty-based terminal workspaces) and wanted a real git GUI in a pane next to my coding agent, not a separate Electron app or a text-mode TUI. gitgui renders pixels inside the terminal: commit graph, staging area, diff viewer, hunk staging, all in the same window as [pi](https://pi.dev) or any other CLI agent. One small Rust binary, no browser engine, works over SSH.
+
+Not a TUI. gitgui paints an [egui](https://github.com/emilk/egui) interface into an RGBA framebuffer with its own software rasterizer and ships every frame to the terminal with the kitty graphics protocol.
 
 ## Quick install
 
@@ -36,6 +42,106 @@ gitgui --split right   # new terminal split (cmux, kitty)
 
 Press `q` or `Ctrl+C` to quit.
 
+## cmux + pi + gitgui (AI coding setup)
+
+This is the layout in the screenshot above: **pi** (or Cursor, Claude Code, Codex, etc.) in the left pane, **gitgui** in a right split, same workspace, same repo.
+
+### 1. Install cmux
+
+Install [cmux](https://cmux.dev) and open a workspace at your project path:
+
+```bash
+cmux /path/to/your/repo
+```
+
+cmux exposes `CMUX_SURFACE_ID`, kitty graphics, and pixel mouse in every terminal pane. That is what gitgui needs.
+
+### 2. Install gitgui
+
+Use the quick install above, or `cargo install --path .` from a clone.
+
+Open gitgui in a split beside your agent pane:
+
+```bash
+gitgui --split right .
+```
+
+Under the hood this runs `cmux new-split right` and `cmux send` with the gitgui command. You can also split manually and run `gitgui` in the new pane.
+
+### 3. Install pi (optional)
+
+[pi](https://pi.dev) is a terminal coding agent. Install it however you prefer (Homebrew, npm: `@earendil-works/pi-coding-agent`), then start it in the main pane:
+
+```bash
+pi
+```
+
+Any agent that runs in a terminal pane works the same way. The point is two panes, one repo, agent on one side and gitgui on the other.
+
+### 4. Give the agent gitgui skills
+
+Copy or symlink the skill file so your agent knows the control API:
+
+```bash
+mkdir -p ~/.cursor/skills/gitgui
+ln -sf "$(pwd)/skill/SKILL.md" ~/.cursor/skills/gitgui/SKILL.md
+```
+
+For pi, point it at the same `skill/SKILL.md` (or add it to pi's skills directory if you use one).
+
+The agent can then:
+
+```bash
+gitgui ls
+gitgui action '{"cmd":"status"}'
+gitgui action '{"cmd":"select","oid":"abc123"}'
+gitgui action '{"cmd":"stage","paths":["src/foo.rs"]}'
+gitgui action '{"cmd":"screenshot","path":"/tmp/gitgui.png"}'
+```
+
+When run from the pane that owns a gitgui instance, `action` auto-connects via the controlling tty. Otherwise pass `--pid`.
+
+### Typical workflow
+
+1. Open cmux at the repo.
+2. Start pi (or your agent) in the left pane.
+3. Run `gitgui --split right .` from the agent pane, or open gitgui manually in a right split.
+4. Agent edits code; you (or the agent via `gitgui action`) stage, review diffs, and commit in gitgui without leaving the terminal.
+
+Suggested cmux keybind: map a workspace shortcut to `gitgui --split right .` if you open it often.
+
+## Local development
+
+To hack on gitgui itself with the same cmux setup:
+
+```bash
+git clone https://github.com/antonellof/gitgui
+cd gitgui
+cargo build --release
+```
+
+Run from a cmux pane (or any kitty-graphics terminal):
+
+```bash
+cargo run --release -- --repo /path/to/test/repo
+cargo run --release -- --split right --repo .
+```
+
+Without a graphics terminal you can still verify rendering and git logic:
+
+```bash
+cargo test
+cargo clippy -- -D warnings
+cargo run --release -- --headless-frame /tmp/frame.png --repo . --size 1600x1000 --scale 2
+bash scripts/smoke.sh
+```
+
+`--headless-frame` renders one PNG and exits. Use it in CI and to inspect layout without a live pane.
+
+Interactive mouse testing in cmux: build `scripts/click.swift` (see [scripts/README.md](scripts/README.md)) because `cmux send` types text but cannot inject raw mouse events.
+
+Release binaries are built by `.github/workflows/release.yml` on tag push (`v*`).
+
 ## What you get
 
 - Commit graph with branch lanes, sidebar (branches, tags, stashes)
@@ -45,6 +151,47 @@ Press `q` or `Ctrl+C` to quit.
 - Agent control socket: `gitgui ls`, `gitgui action '{"cmd":"status"}'` (see [skill/SKILL.md](skill/SKILL.md))
 
 Status: **v0.1.0**. Phases 0 to 5 of the roadmap are done. See [Roadmap](#roadmap) and [docs/PLAN.md](docs/PLAN.md) for open issues.
+
+## Architecture
+
+Single Rust binary (edition 2021, no async runtime). Three threads:
+
+| Thread | Role |
+|---|---|
+| **stdin reader** | Blocking `read(2)` on stdin, pushes raw bytes to a channel |
+| **main loop** | egui UI, tessellation, software rasterizer, kitty graphics frames |
+| **git worker** | libgit2 reads and index writes; `git` CLI for fetch/pull/push |
+
+The UI never blocks on git. It reads an immutable `RepoSnapshot` the worker replaces after each operation. Rendering never touches git.
+
+```
+  Terminal  ──stdin──►  term::input  ──Event──►  main loop
+     ▲                                              │
+     │  kitty graphics (shm or base64+zlib)         │ egui
+     │                                              ▼
+  term::kitty  ◄──  render::frame  ◄──  render::raster  ◄──  ui::app
+                      (RGBA, dirty)      (mesh triangles)
+                                              │
+                                              ▼
+                                         git worker (git2 + git CLI)
+```
+
+### Stack
+
+| Layer | Technology |
+|---|---|
+| Language | Rust (stable, 1.95+) |
+| UI | [egui](https://github.com/emilk/egui) 0.36 + [epaint](https://github.com/emilk/egui) (no eframe, no GPU) |
+| Rasterizer | Custom software triangle rasterizer in `render/raster.rs` |
+| Git | [libgit2](https://github.com/rust-lang/git2-rs) via `git2` 0.21 for reads and writes; `git` subprocess for network |
+| Terminal | kitty graphics protocol, kitty keyboard, SGR pixel mouse, OSC 10/11 theme query |
+| Transport | POSIX shared memory locally; flate2 + base64 over SSH |
+| Agent API | Unix socket, JSON-lines (`src/agent.rs`) |
+| Splits | cmux CLI, kitty `@ launch`, Ghostty hint fallback (`src/split.rs`) |
+
+Pinned dependency versions and API notes live in [CLAUDE.md](CLAUDE.md). Full module map and milestones: [docs/SPEC.md](docs/SPEC.md). Escape sequences: [docs/PROTOCOLS.md](docs/PROTOCOLS.md).
+
+Same idea as [terminal-browser](https://github.com/zenbu-labs/terminal-browser) and [terminal-code](https://github.com/zenbu-labs/terminal-code), minus Chromium.
 
 ## Usage
 
@@ -62,17 +209,13 @@ gitgui --font-size 14     UI font size in points
 gitgui --help
 ```
 
-For agent integration, copy or symlink `skill/SKILL.md` into your agent skills directory (for example `~/.cursor/skills/gitgui/SKILL.md`).
-
 ## How does it work?
 
-The terminal never sees any text. gitgui paints an [egui](https://github.com/emilk/egui) interface into an RGBA framebuffer with its own software rasterizer and ships every frame to the terminal as a kitty graphics image covering the whole pane. Locally the frame goes through POSIX shared memory, so a 1600x1000 frame costs one page-table update. Over SSH it falls back to zlib plus base64 inline.
+The terminal never sees any text. gitgui paints an egui interface into an RGBA framebuffer and ships every frame as a kitty graphics image covering the whole pane. Locally the frame goes through POSIX shared memory. Over SSH it falls back to zlib plus base64 inline.
 
-Input comes back the same way a terminal application receives it: the kitty keyboard protocol for keys, SGR pixel mouse for clicks, drags and wheel, bracketed paste, focus events, SIGWINCH for resize. The bytes are decoded into egui events, so every widget behaves like it does in a native window.
+Input: kitty keyboard protocol for keys, SGR pixel mouse for clicks, drags and wheel, bracketed paste, focus events, SIGWINCH for resize. Bytes are decoded into egui events.
 
-Git access goes through libgit2 for reads and index writes. Network operations (fetch, pull, push) shell out to the `git` CLI so your credential helpers and SSH agent keep working unchanged.
-
-Same idea as [terminal-browser](https://github.com/zenbu-labs/terminal-browser) and [terminal-code](https://github.com/zenbu-labs/terminal-code), minus Chromium.
+Git access goes through libgit2 for reads and index writes. Network operations shell out to the `git` CLI so credential helpers and SSH agents keep working.
 
 ## SSH
 
