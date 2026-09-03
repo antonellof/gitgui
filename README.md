@@ -8,7 +8,13 @@ Status: early development. Phases 0 to 4 of the roadmap are done: it renders, ta
 
 ## Install (macOS & Linux)
 
-From source, until release binaries exist:
+Release binaries (after the first tagged release):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/antonellof/gitgui/main/scripts/install.sh | bash
+```
+
+From source:
 
 ```
 git clone https://github.com/antonellof/gitgui
@@ -23,6 +29,9 @@ Requires a Rust stable toolchain (1.95 or newer) and a terminal that speaks the 
 ```
 gitgui                    open the repository containing the current directory
 gitgui <path>             open the repository at <path>
+gitgui --split right      open in a new terminal split (cmux, kitty)
+gitgui ls                 list running gitgui instances
+gitgui action '{"cmd":"status"}'   control a running instance (see skill/SKILL.md)
 gitgui --probe            print what the terminal supports and exit
 gitgui --dump-input       print decoded key and mouse events, Ctrl+C to exit
 gitgui --no-shm           force the base64 transport (what SSH uses)
@@ -33,7 +42,7 @@ gitgui --help
 
 Inside gitgui, press `q` or `Ctrl+C` to quit.
 
-Not every flag listed in the spec exists yet. Run `gitgui --help` for the current set.
+For agent integration, copy or symlink `skill/SKILL.md` into your agent skills directory.
 
 ## How does it work?
 
@@ -77,7 +86,7 @@ gitgui never binds `Cmd+*` or `Ctrl+Shift+*`; those stay with your terminal and 
 - [x] Phase 2: input. Kitty keyboard, SGR pixel mouse, paste, focus, resize.
 - [x] Phase 3: read-only git. Sidebar, commit graph, commit detail, diff view.
 - [x] Phase 4: writes. Stage and unstage by file and hunk, commit, amend, branches, stash, fetch, pull, push.
-- [ ] Phase 5: integration. Split panes in cmux and Ghostty, agent control socket, install script, release builds. Not started.
+- [x] Phase 5: integration. Split panes (cmux, kitty), agent control socket, install script, release workflow, agent skill file.
 
 ## Development
 

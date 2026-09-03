@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context as _};
 use base64::Engine as _;
 
+use crate::agent::{self, AgentJob, Server};
 use crate::git::ops::{self, Command, Reply};
 use crate::git::repo::{GitError, Repo};
 use crate::render::frame::Framebuffer;
@@ -34,6 +35,7 @@ pub struct Options {
 enum Msg {
     Input(Vec<u8>),
     Git(Reply),
+    Agent(AgentJob),
 }
 
 /// UI font size in points that matches the terminal's text: the cell
@@ -376,6 +378,19 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
     // Start git before touching the screen so a bad path exits cleanly.
     let (tx, rx) = mpsc::channel::<Msg>();
     let git_tx = tx.clone();
+    let (agent_job_tx, agent_job_rx) = mpsc::channel::<AgentJob>();
+    let agent_bridge = tx.clone();
+    std::thread::Builder::new()
+        .name("agent-bridge".into())
+        .spawn(move || {
+            while let Ok(job) = agent_job_rx.recv() {
+                if agent_bridge.send(Msg::Agent(job)).is_err() {
+                    break;
+                }
+            }
+        })
+        .expect("spawn agent bridge");
+    let _agent = Server::bind(&opts.path, agent_job_tx).context("agent socket")?;
     let worker = match ops::spawn(opts.path.clone(), move |r| {
         let _ = git_tx.send(Msg::Git(r));
     }) {
@@ -411,6 +426,8 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
     let mut last_frame = Instant::now() - min_interval;
     let mut last_byte = Instant::now();
     let mut resize_needed = false;
+    let mut screenshot: Option<std::path::PathBuf> = None;
+    let mut screenshot_reply: Option<mpsc::Sender<String>> = None;
 
     loop {
         if term::quit_requested() {
@@ -523,6 +540,15 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                     }
                     fb.mark_sent();
                 }
+                if let Some(path) = screenshot.take() {
+                    let resp = match fb.save_png(&path) {
+                        Ok(()) => agent::ok(serde_json::json!({ "path": path })),
+                        Err(e) => agent::err(format!("screenshot: {e:#}")),
+                    };
+                    if let Some(reply) = screenshot_reply.take() {
+                        let _ = reply.send(resp);
+                    }
+                }
                 if !out.is_empty() {
                     term::write_all(&out)?;
                 }
@@ -564,6 +590,20 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                     let _ = worker.tx.send(cmd);
                 }
                 next_deadline = Instant::now();
+                continue;
+            }
+            Ok(Msg::Agent(job)) => {
+                if matches!(job.request, agent::AgentCmd::Screenshot { .. }) {
+                    screenshot_reply = Some(job.reply);
+                    let _ = agent::handle_in_app(&mut app, job.request, &mut screenshot);
+                    next_deadline = Instant::now();
+                } else {
+                    let resp = agent::handle_in_app(&mut app, job.request, &mut screenshot);
+                    let _ = job.reply.send(resp);
+                }
+                for cmd in app.pending.drain(..) {
+                    let _ = worker.tx.send(cmd);
+                }
                 continue;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {

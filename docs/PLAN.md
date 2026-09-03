@@ -13,7 +13,7 @@ this file tracks where we are, what was decided, and what is open.
 | 2 input | done | eecddce | parser with byte tests, stdin thread, egui mapping, `--dump-input` |
 | 3 read-only git | done | 9b7de3d | git2 0.21.0, snapshot + graph + diff, worker thread, real UI |
 | 4 writes | done | b4de578 | stage/unstage files and hunks, commit, amend, checkout, branches, stash, discard, fetch/pull/push via git CLI |
-| 5 integration | next | | |
+| 5 integration | done | | split.rs, agent.rs, skill/SKILL.md, install script, release workflow |
 
 ## Measurements
 
@@ -87,23 +87,18 @@ watched mtime changed.
 
 ## Next steps (resume here)
 
-1. Phase 5: `split.rs` (cmux CLI has `new-split`, `send`, `read-screen`;
-   detect cmux via `CMUX_*` env, TERM_PROGRAM says ghostty), `agent.rs`
-   unix socket JSON-lines API, `skill/SKILL.md`, install script, release
-   workflow, README demo recording.
-2. Detail column: when the detail pane is short (about 225 pt or less) the
-   staged list overlaps the commit box (nested `Panel::bottom` does not clip
-   the content above it). Fix by allocating explicit heights; the attempt in
-   this session hid the commit box, so start from the committed layout.
-3. Fonts: load the terminal's font family (Ghostty `font-family`) via a
+1. Fonts: load the terminal's font family (Ghostty `font-family`) via a
    system font lookup; currently egui's bundled fonts at the terminal's size.
-4. Manual verification still owed on a real screen: commit via the Commit
-   button, Stage hunk button, branch context menus, fetch/pull/push log.
-   All are covered by headless harness tests in `runtime.rs`.
+2. Manual verification still owed on a real screen: commit via the Commit
+   button, Stage hunk button, branch context menus, fetch/pull/push log,
+   short-pane layout (detail pane about 225 pt tall). Harness tests cover
+   the commit button; layout math is unit-tested in `changes.rs`.
+3. First tagged release (`v0.1.0`) to populate GitHub release binaries for
+   the install script. README demo recording still open.
+4. Commit Phase 5 integration (split, agent, skill, install script, release
+   workflow) plus the layout fix when ready.
 
 ## Open issues
-
-- Detail column overlaps in short panes (see next steps).
 
 - SSH manual check not done: Remote Login is off on the dev Mac. The direct
   transport was verified with `--no-shm` instead.
@@ -116,6 +111,10 @@ watched mtime changed.
   Turning it on repaints at 60 fps on purpose.
 
 ## Closed issues
+
+- Detail column overlapped the commit box in short panes (~225 pt): nested
+  `Panel::bottom` did not clip the lists above it. Fixed with explicit
+  height allocation (`allocate_ui_with_layout`) and shrinking commit rows.
 
 - A gitgui whose pane was closed kept running at 100% CPU: the stdin thread
   treated EOF like a timeout and spun, and the main loop could sleep up to an
