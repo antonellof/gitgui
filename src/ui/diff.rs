@@ -7,13 +7,17 @@ use crate::git::repo::{DiffTarget, DiffText};
 use crate::ui::app::App;
 
 enum Row<'a> {
-    Hunk(&'a str),
+    Hunk(usize, &'a str),
     Line(&'a crate::git::repo::DiffLine),
 }
 
-/// Commands the diff view wants sent (hunk staging arrives in Phase 4).
+thread_local! {
+    static PENDING: std::cell::RefCell<Option<Command>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Command produced by a hunk button click this frame, if any.
 pub fn take_pending(_app: &mut App) -> Option<Command> {
-    None
+    PENDING.with(|p| p.borrow_mut().take())
 }
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
@@ -72,7 +76,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         .iter()
         .map(|r| match r {
             Row::Line(l) => l.text.chars().count(),
-            Row::Hunk(h) => h.chars().count(),
+            Row::Hunk(_, h) => h.chars().count(),
         })
         .max()
         .unwrap_or(0);
@@ -83,6 +87,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     let text_color = ui.visuals().text_color();
     let strong = ui.visuals().strong_text_color();
+    let hunk_action: Option<(&str, bool)> = match &d.target {
+        DiffTarget::WorkdirUnstaged(p) => Some((p.as_str(), true)),
+        DiffTarget::Staged(p) => Some((p.as_str(), false)),
+        DiffTarget::Commit(..) => None,
+    };
+    let hunk_action = hunk_action.map(|(p, stage)| (p.to_owned(), stage));
+    let busy = app.busy > 0;
     area.show_rows(ui, row_h, rows.len(), |ui, range| {
         let view_w = ui.available_width();
         let content_w = if wrap { view_w } else { view_w.max(gutter + longest as f32 * char_w + 16.0) };
@@ -90,9 +101,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let (rect, _resp) = ui.allocate_exact_size(vec2(content_w, row_h), Sense::hover());
             let p = ui.painter();
             match &rows[i] {
-                Row::Hunk(header) => {
+                Row::Hunk(hunk_index, header) => {
                     p.rect_filled(rect, 0.0, theme.hunk_bg);
                     p.text(pos2(rect.min.x + 6.0, rect.center().y), egui::Align2::LEFT_CENTER, *header, font.clone(), theme.hunk_fg);
+                    if let Some((path, stage)) = &hunk_action {
+                        let label = if *stage { "Stage hunk" } else { "Unstage hunk" };
+                        let bw = 100.0;
+                        let brect = Rect::from_min_size(pos2(rect.min.x + view_w - bw - 8.0, rect.min.y + 1.0), vec2(bw, row_h - 2.0));
+                        let clicked = ui.put(brect, egui::Button::new(label).small()).clicked();
+                        if clicked && !busy {
+                            let cmd = if *stage {
+                                Command::StageHunk { path: path.clone(), hunk_index: *hunk_index }
+                            } else {
+                                Command::UnstageHunk { path: path.clone(), hunk_index: *hunk_index }
+                            };
+                            PENDING.with(|p| *p.borrow_mut() = Some(cmd));
+                        }
+                    }
                 }
                 Row::Line(l) => {
                     let (bg, fg) = match l.origin {
@@ -131,8 +156,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
 fn flatten(d: &DiffText) -> Vec<Row<'_>> {
     let mut rows = Vec::new();
-    for h in &d.hunks {
-        rows.push(Row::Hunk(h.header.as_str()));
+    for (i, h) in d.hunks.iter().enumerate() {
+        rows.push(Row::Hunk(i, h.header.as_str()));
         for l in &h.lines {
             rows.push(Row::Line(l));
         }

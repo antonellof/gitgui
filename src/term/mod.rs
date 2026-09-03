@@ -87,7 +87,9 @@ pub fn write_all(mut buf: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// Wait up to `timeout` for stdin bytes, then read once. Returns 0 on timeout.
+/// Wait up to `timeout` for stdin bytes, then read once. Returns 0 on
+/// timeout and `UnexpectedEof` when the terminal went away (read returned 0
+/// after poll reported the descriptor ready, or POLLHUP).
 pub fn read_timeout(buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
     let mut pfd = libc::pollfd {
         fd: libc::STDIN_FILENO,
@@ -115,6 +117,10 @@ pub fn read_timeout(buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
             return Ok(0);
         }
         return Err(e);
+    }
+    if n == 0 {
+        // Ready but nothing to read: end of file, the pty is gone.
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "stdin closed"));
     }
     Ok(n as usize)
 }

@@ -36,11 +36,23 @@ enum Msg {
     Git(Reply),
 }
 
-fn setup_context(ppp: f32, font_size: Option<f32>, theme: &Theme) -> egui::Context {
+/// UI font size in points that matches the terminal's text: the cell
+/// height in logical pixels times a typical font/line-height ratio.
+pub fn font_size_for_cell(cell_h_px: u32, ppp: f32) -> f32 {
+    if cell_h_px == 0 {
+        return 13.0;
+    }
+    let cell_pt = cell_h_px as f32 / ppp;
+    (cell_pt * 0.76).round().clamp(9.0, 24.0)
+}
+
+/// The scale is NOT set with `set_pixels_per_point`: egui multiplies its
+/// zoom factor by `native_pixels_per_point` from `RawInput`, so setting
+/// both would double the scale. Only the raw input carries it.
+fn setup_context(font_size: f32, theme: &Theme) -> egui::Context {
     let ctx = egui::Context::default();
-    ctx.set_pixels_per_point(ppp);
     theme.apply(&ctx);
-    let body = font_size.unwrap_or(13.0);
+    let body = font_size;
     ctx.all_styles_mut(|style| {
         use egui::{FontFamily, FontId, TextStyle};
         style.text_styles = [
@@ -142,7 +154,7 @@ pub fn encode_osc52_copy(out: &mut Vec<u8>, text: &str) {
 pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Result<i32> {
     let ppp = opts.scale.unwrap_or(1.0);
     let theme = Theme::dark();
-    let ctx = setup_context(ppp, opts.font_size, &theme);
+    let ctx = setup_context(opts.font_size.unwrap_or(13.0), &theme);
     let mut app = App::new(theme, "headless", ppp);
     let mut raster = Rasterizer::new();
     let mut fb = Framebuffer::new(size.0, size.1);
@@ -310,7 +322,7 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
         kitty::Transport::Shm => "shm",
         kitty::Transport::Direct => "direct",
     };
-    let ppp = opts.scale.unwrap_or_else(|| caps.pixels_per_point());
+    let mut ppp = opts.scale.unwrap_or_else(|| caps.pixels_per_point());
     let min_interval = match transport {
         kitty::Transport::Shm => Duration::from_millis(16),
         kitty::Transport::Direct => Duration::from_millis(50),
@@ -333,7 +345,8 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
     let session = term::Session::enter()?;
     let (w, h) = caps.frame_size();
     let theme = Theme::from_background(caps.background);
-    let ctx = setup_context(ppp, opts.font_size, &theme);
+    let font_size = opts.font_size.unwrap_or_else(|| font_size_for_cell(caps.cell_h, ppp));
+    let ctx = setup_context(font_size, &theme);
     let mut app = App::new(theme, transport_name, ppp);
     let mut raster = Rasterizer::new();
     let mut fb = Framebuffer::new(w, h);
@@ -350,6 +363,7 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
     let mut next_deadline = Instant::now();
     let mut last_frame = Instant::now() - min_interval;
     let mut last_byte = Instant::now();
+    let mut resize_needed = false;
 
     loop {
         if term::quit_requested() {
@@ -359,18 +373,48 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
             panic!("deliberate panic from --crash: the terminal must be restored");
         }
         if term::take_sigwinch() {
+            // Grid from the ioctl right away; the cell size may also have
+            // changed (font zoom, another display), so ask the terminal and
+            // apply the reply when it arrives through the input stream.
             probe::apply_winsize(&mut caps);
+            term::write_all(b"\x1b[16t\x1b[14t\x1b[18t")?;
+            resize_needed = true;
+        }
+        if resize_needed {
+            resize_needed = false;
             let (nw, nh) = caps.frame_size();
+            if opts.scale.is_none() {
+                let new_ppp = caps.pixels_per_point();
+                if new_ppp != ppp {
+                    ppp = new_ppp;
+                    mapper.set_ppp(ppp);
+                    app.scale = ppp;
+                    if opts.font_size.is_none() {
+                        let fs = font_size_for_cell(caps.cell_h, ppp);
+                        ctx.all_styles_mut(|style| {
+                            use egui::{FontFamily, FontId, TextStyle};
+                            style.text_styles = [
+                                (TextStyle::Small, FontId::new(fs - 3.0, FontFamily::Proportional)),
+                                (TextStyle::Body, FontId::new(fs, FontFamily::Proportional)),
+                                (TextStyle::Button, FontId::new(fs, FontFamily::Proportional)),
+                                (TextStyle::Heading, FontId::new(fs + 5.0, FontFamily::Proportional)),
+                                (TextStyle::Monospace, FontId::new(fs - 0.5, FontFamily::Monospace)),
+                            ]
+                            .into();
+                        });
+                    }
+                }
+            }
             if (nw, nh) != (fb.width(), fb.height()) {
                 fb.resize(nw, nh);
                 out.clear();
                 kitty::encode_delete_all(&mut out);
                 term::write_all(&out)?;
                 enc.reset();
-                parser.cell_w = caps.cell_w.max(1);
-                parser.cell_h = caps.cell_h.max(1);
-                next_deadline = Instant::now();
             }
+            parser.cell_w = caps.cell_w.max(1);
+            parser.cell_h = caps.cell_h.max(1);
+            next_deadline = Instant::now();
         }
 
         let now = Instant::now();
@@ -393,10 +437,10 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                         kitty::Transport::Shm => {
                             let name = enc.next_shm_name();
                             kitty::Shm::create_and_fill(&name, fb.pixels()).context("shm create")?;
-                            enc.encode_frame(&mut out, fb.width(), fb.height(), fb.pixels(), Some(&name));
+                            enc.encode_frame(&mut out, fb.width(), fb.height(), caps.cols, caps.rows, fb.pixels(), Some(&name));
                         }
                         kitty::Transport::Direct => {
-                            enc.encode_frame(&mut out, fb.width(), fb.height(), fb.pixels(), None)
+                            enc.encode_frame(&mut out, fb.width(), fb.height(), caps.cols, caps.rows, fb.pixels(), None)
                         }
                     }
                     fb.mark_sent();
@@ -414,8 +458,10 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
             }
         }
 
-        // Wait for input, the repaint deadline, or the escape timeout.
-        let mut wait = next_deadline.saturating_duration_since(Instant::now()).min(Duration::from_secs(3600));
+        // Wait for input, the repaint deadline, or the escape timeout. The
+        // cap keeps signal flags (SIGTERM, SIGHUP, SIGWINCH) honored within
+        // half a second even when nothing else happens.
+        let mut wait = next_deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(500));
         if parser.has_pending() {
             wait = wait.min(ESC_TIMEOUT.saturating_sub(last_byte.elapsed()));
         }
@@ -443,7 +489,7 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                     Vec::new()
                 }
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break, // stdin closed: the terminal is gone
         };
         if events.is_empty() {
             continue;
@@ -460,6 +506,14 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                 Event::Focus(f) => {
                     focused = *f;
                     let _ = worker.tx.send(Command::Focus(*f));
+                }
+                Event::Unknown(bytes) if bytes.ends_with(b"t") => {
+                    // Size replies requested after SIGWINCH.
+                    let before = (caps.cell_w, caps.cell_h, caps.cols, caps.rows);
+                    probe::parse_replies(bytes, &mut caps);
+                    if (caps.cell_w, caps.cell_h, caps.cols, caps.rows) != before {
+                        resize_needed = true;
+                    }
                 }
                 _ => {}
             }
@@ -480,6 +534,222 @@ mod tests {
     use super::*;
 
     #[test]
+    fn font_size_follows_cell_height() {
+        assert_eq!(font_size_for_cell(34, 2.0), 13.0);
+        assert_eq!(font_size_for_cell(17, 1.0), 13.0);
+        assert_eq!(font_size_for_cell(24, 1.5), 12.0);
+        assert_eq!(font_size_for_cell(0, 2.0), 13.0);
+        assert_eq!(font_size_for_cell(80, 1.0), 24.0, "clamped");
+    }
+
+    #[test]
+    fn scale_comes_only_from_native_pixels_per_point() {
+        // Regression: setting pixels_per_point on the context and passing
+        // native_pixels_per_point doubled the scale on screen.
+        let theme = Theme::dark();
+        let ctx = setup_context(13.0, &theme);
+        let mut app = App::new(theme, "test", 2.0);
+        let mut raster = Rasterizer::new();
+        let mut fb = Framebuffer::new(200, 100);
+        let mut t = Timings::default();
+        for pass in 0..3 {
+            let input = raw_input(200, 100, 2.0, pass as f64 / 60.0, true, Vec::new());
+            render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
+        }
+        assert_eq!(ctx.pixels_per_point(), 2.0);
+        assert_eq!(ctx.content_rect().width(), 100.0);
+    }
+
+    /// Drive the real app with a real repository and synthetic terminal
+    /// events, the same path the interactive loop takes.
+    struct Harness {
+        ctx: egui::Context,
+        app: App,
+        repo: Repo,
+        raster: Rasterizer,
+        fb: Framebuffer,
+        mapper: Mapper,
+        t: Timings,
+        time: f64,
+    }
+
+    impl Harness {
+        fn new(dir: &std::path::Path) -> Self {
+            let theme = Theme::dark();
+            let ctx = setup_context(13.0, &theme);
+            let mut app = App::new(theme, "test", 1.0);
+            let mut repo = Repo::open(dir).unwrap();
+            app.apply(Reply::Snapshot(repo.snapshot(100).unwrap()));
+            let mut h = Harness {
+                ctx,
+                app,
+                repo,
+                raster: Rasterizer::new(),
+                fb: Framebuffer::new(900, 700),
+                mapper: Mapper::new(1.0),
+                t: Timings::default(),
+                time: 0.0,
+            };
+            h.settle();
+            h
+        }
+
+        /// Run pending git commands synchronously and render until quiet.
+        fn settle(&mut self) {
+            for _ in 0..6 {
+                let cmds = std::mem::take(&mut self.app.pending);
+                for cmd in cmds {
+                    match cmd {
+                        Command::LoadDiff(target) => self.app.apply(Reply::Diff(self.repo.diff(&target))),
+                        Command::LoadCommitFiles(oid) => self.app.apply(Reply::CommitFiles(oid, self.repo.commit_files(oid))),
+                        Command::Stage(p) => {
+                            self.repo.stage(&p).unwrap();
+                            self.finish("stage");
+                        }
+                        Command::StageAll => {
+                            self.repo.stage_all().unwrap();
+                            self.finish("stage");
+                        }
+                        Command::Unstage(p) => {
+                            self.repo.unstage(&p).unwrap();
+                            self.finish("unstage");
+                        }
+                        Command::Discard(p) => {
+                            self.repo.discard(&p).unwrap();
+                            self.finish("discard");
+                        }
+                        Command::StageHunk { path, hunk_index } => {
+                            self.repo.stage_hunk(&path, hunk_index).unwrap();
+                            self.finish("stage");
+                        }
+                        Command::Commit { message, amend } => {
+                            self.repo.commit(&message, amend).unwrap();
+                            self.finish("commit");
+                        }
+                        other => panic!("unexpected command {other:?}"),
+                    }
+                }
+                self.frame(Vec::new());
+            }
+        }
+
+        fn finish(&mut self, label: &'static str) {
+            self.app.apply(Reply::Op { label, result: Ok("ok".into()) });
+            self.app.apply(Reply::Snapshot(self.repo.snapshot(100).unwrap()));
+        }
+
+        fn frame(&mut self, events: Vec<egui::Event>) {
+            self.time += 1.0 / 60.0;
+            let input = raw_input(900, 700, 1.0, self.time, true, events);
+            render_pass(&self.ctx, &mut self.app, &mut self.raster, &mut self.fb, input, &mut self.t);
+        }
+
+        fn key(&mut self, bytes: &[u8]) {
+            let mut parser = Parser::new(true, 1, 1);
+            let mut events = Vec::new();
+            for ev in parser.feed(bytes).iter().chain(parser.flush().iter()) {
+                self.mapper.map(ev, &mut events);
+            }
+            self.frame(events);
+            self.frame(Vec::new());
+        }
+
+        fn click(&mut self, pos: egui::Pos2) {
+            use crate::term::input::{Mods, MouseButton};
+            let (x, y) = (pos.x as i32, pos.y as i32);
+            let mut events = Vec::new();
+            self.mapper.map(&Event::MouseButton { button: MouseButton::Left, pressed: true, x, y, mods: Mods::NONE }, &mut events);
+            self.frame(events);
+            let mut events = Vec::new();
+            self.mapper.map(&Event::MouseButton { button: MouseButton::Left, pressed: false, x, y, mods: Mods::NONE }, &mut events);
+            self.frame(events);
+            self.frame(Vec::new());
+        }
+    }
+
+    #[test]
+    fn keyboard_stage_commit_workflow() {
+        use crate::git::repo::testutil::TempRepo;
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        t.write("a.txt", "one\ntwo\n");
+        t.write("b.txt", "new\n");
+        let mut h = Harness::new(&t.dir);
+        assert_eq!(h.app.selection, crate::ui::app::Selection::WorkingTree);
+        assert_eq!(h.app.snapshot.unstaged.len(), 2);
+
+        // `s` stages the selected (first unstaged) file.
+        h.key(b"s");
+        h.settle();
+        assert_eq!(h.app.snapshot.staged.len(), 1);
+        assert_eq!(h.app.snapshot.staged[0].path, "a.txt");
+        // `a` stages everything.
+        h.key(b"a");
+        h.settle();
+        assert_eq!(h.app.snapshot.staged.len(), 2);
+        assert!(h.app.snapshot.unstaged.is_empty());
+        // `u` on the staged file that is now selected unstages it, `A` unstages all.
+        h.key(b"u");
+        h.settle();
+        assert_eq!(h.app.snapshot.staged.len(), 1);
+        h.key(b"a");
+        h.settle();
+        // `c` focuses the commit box, typed text lands there, `q` does not quit
+        // (it is text now), Ctrl+Enter commits.
+        h.key(b"c");
+        assert!(h.ctx.egui_wants_keyboard_input());
+        h.key(b"fix things");
+        h.key(b"q");
+        assert_eq!(h.app.commit_msg, "fix thingsq");
+        h.key(b"\x1b[13;5u");
+        assert!(h.app.pending.iter().any(|c| matches!(c, Command::Commit { message, amend: false } if message == "fix thingsq")));
+        h.settle();
+        assert_eq!(h.app.snapshot.commits.len(), 2);
+        assert_eq!(h.app.snapshot.commits[0].summary, "fix thingsq");
+        assert!(!h.app.snapshot.is_dirty());
+        assert!(h.app.commit_msg.is_empty(), "message cleared after commit");
+        // Escape leaves the text field so single-key bindings work again.
+        h.key(b"\x1b");
+        assert!(!h.ctx.egui_wants_keyboard_input());
+    }
+
+    #[test]
+    fn commit_button_and_discard_modal() {
+        use crate::git::repo::testutil::TempRepo;
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        t.write("a.txt", "changed\n");
+        let mut h = Harness::new(&t.dir);
+        h.key(b"s");
+        h.settle();
+        h.app.commit_msg = "via button".into();
+        h.frame(Vec::new());
+        let rect = h.app.commit_button_rect.expect("commit button laid out");
+        h.click(rect.center());
+        assert!(h.app.pending.iter().any(|c| matches!(c, Command::Commit { .. })));
+        h.settle();
+        assert_eq!(h.app.snapshot.commits[0].summary, "via button");
+
+        // Discard: modal asks first, Escape cancels, Enter confirms.
+        t.write("a.txt", "junk\n");
+        h.app.apply(Reply::Snapshot(h.repo.snapshot(100).unwrap()));
+        h.settle();
+        assert_eq!(h.app.snapshot.unstaged.len(), 1);
+        h.app.modal = Some(crate::ui::app::Modal::Discard(vec!["a.txt".into()]));
+        h.frame(Vec::new());
+        h.key(b"\x1b");
+        assert!(h.app.modal.is_none(), "escape closes the dialog");
+        assert!(h.app.pending.is_empty());
+        h.app.modal = Some(crate::ui::app::Modal::Discard(vec!["a.txt".into()]));
+        h.frame(Vec::new());
+        h.key(b"\r");
+        assert!(h.app.pending.iter().any(|c| matches!(c, Command::Discard(p) if p == &["a.txt".to_string()])));
+        h.settle();
+        assert!(!h.app.snapshot.is_dirty());
+        assert_eq!(std::fs::read_to_string(t.dir.join("a.txt")).unwrap(), "changed\n");
+    }
+
+    #[test]
     fn osc52_bytes() {
         let mut out = Vec::new();
         encode_osc52_copy(&mut out, "hi");
@@ -490,7 +760,7 @@ mod tests {
     fn headless_frame_has_panel_and_background_pixels() {
         let ppp = 1.0;
         let theme = Theme::dark();
-        let ctx = setup_context(ppp, None, &theme);
+        let ctx = setup_context(13.0, &theme);
         let mut app = App::new(theme, "test", ppp);
         let mut raster = Rasterizer::new();
         let mut fb = Framebuffer::new(400, 300);
@@ -515,7 +785,7 @@ mod tests {
         t.commit_file("hello.txt", "hello\nworld\n", "first commit");
         let ppp = 1.0;
         let theme = Theme::dark();
-        let ctx = setup_context(ppp, None, &theme);
+        let ctx = setup_context(13.0, &theme);
         let mut app = App::new(theme, "test", ppp);
         let mut repo = Repo::open(&t.dir).unwrap();
         app.apply(Reply::Snapshot(repo.snapshot(100).unwrap()));
