@@ -170,7 +170,7 @@ fn show_commit_box(app: &mut App, ui: &mut egui::Ui, s: &crate::git::repo::RepoS
                     "Commit & Push"
                 }),
             )
-            .on_hover_text("commit then git push");
+            .on_hover_text("Ctrl+Shift+Enter");
         app.commit_push_button_rect = Some(commit_push.rect);
         if commit_push.clicked() {
             app.commit_and_push_now();
@@ -190,7 +190,7 @@ fn show_commit_box(app: &mut App, ui: &mut egui::Ui, s: &crate::git::repo::RepoS
     });
     let rows = commit_message_rows(box_h);
     let edit = egui::TextEdit::multiline(&mut app.commit_msg)
-        .hint_text("Commit message (Ctrl+Enter to commit)")
+        .hint_text("Commit message (Ctrl+Enter to commit, Ctrl+Shift+Enter to commit and push)")
         .desired_rows(rows)
         .desired_width(f32::INFINITY);
     let resp = ui.add(edit);
@@ -217,7 +217,7 @@ fn show_worktree_lists(
         if ui.add_enabled(!busy && !s.unstaged.is_empty(), egui::Button::new("Stage all").small()).on_hover_text("a").clicked() {
             action.cmd = Some(Command::StageAll);
         }
-        if ui.add_enabled(!busy && s.is_dirty(), egui::Button::new("Stash").small()).clicked() {
+        if ui.add_enabled(!busy && s.is_dirty(), egui::Button::new("Stash").small()).on_hover_text("Shift+S").clicked() {
             action.modal = Some(Modal::StashPush { message: String::new() });
         }
         if let Some((p, false)) = app.selected_worktree_file() {

@@ -20,7 +20,7 @@ pub enum Command {
     LoadMore(usize),
     LoadDiff(DiffTarget),
     LoadCommitFiles(Oid),
-    /// Whether the UI is focused; polling only happens while focused.
+    /// Whether the UI is focused (reserved; auto-refresh polls regardless).
     Focus(bool),
     Stage(Vec<String>),
     Unstage(Vec<String>),
@@ -120,8 +120,7 @@ pub fn spawn(path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Result<Wo
         .name("git".into())
         .spawn(move || {
             let mut limit = COMMIT_LIMIT;
-            let mut focused = true;
-            let mut stamp = stamp(&repo.watch_paths());
+            let (mut stamp, mut work_fp) = refresh_tracking(&repo);
             let send_snapshot = |repo: &mut Repo, limit: usize| -> Option<Arc<RepoSnapshot>> {
                 match repo.snapshot(limit) {
                     Ok(s) => {
@@ -140,11 +139,12 @@ pub fn spawn(path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Result<Wo
                     Ok(Command::Quit) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     Ok(Command::Refresh) => {
                         send_snapshot(&mut repo, limit);
-                        stamp = self::stamp(&repo.watch_paths());
+                        (stamp, work_fp) = refresh_tracking(&repo);
                     }
                     Ok(Command::LoadMore(n)) => {
                         limit = n;
                         send_snapshot(&mut repo, limit);
+                        (stamp, work_fp) = refresh_tracking(&repo);
                     }
                     Ok(Command::LoadDiff(target)) => {
                         reply(Reply::Diff(repo.diff(&target)));
@@ -152,7 +152,7 @@ pub fn spawn(path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Result<Wo
                     Ok(Command::LoadCommitFiles(oid)) => {
                         reply(Reply::CommitFiles(oid, repo.commit_files(oid)));
                     }
-                    Ok(Command::Focus(f)) => focused = f,
+                    Ok(Command::Focus(_)) => {}
                     Ok(Command::CommitAndPush { message, amend }) => {
                         let commit_result = write_op(
                             &mut repo,
@@ -176,7 +176,7 @@ pub fn spawn(path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Result<Wo
                             });
                         }
                         send_snapshot(&mut repo, limit);
-                        stamp = self::stamp(&repo.watch_paths());
+                        (stamp, work_fp) = refresh_tracking(&repo);
                     }
                     Ok(cmd @ (Command::Fetch | Command::Pull | Command::Push)) => {
                         let label = cmd.label();
@@ -189,22 +189,21 @@ pub fn spawn(path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Result<Wo
                         let result = run_git_cli(&workdir, args, &reply);
                         reply(Reply::Op { label, result });
                         send_snapshot(&mut repo, limit);
-                        stamp = self::stamp(&repo.watch_paths());
+                        (stamp, work_fp) = refresh_tracking(&repo);
                     }
                     Ok(cmd) => {
                         let label = cmd.label();
                         let result = write_op(&mut repo, cmd).map_err(|e| e.to_string());
                         reply(Reply::Op { label, result });
                         send_snapshot(&mut repo, limit);
-                        stamp = self::stamp(&repo.watch_paths());
+                        (stamp, work_fp) = refresh_tracking(&repo);
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
-                        if focused {
-                            let now = self::stamp(&repo.watch_paths());
-                            if now != stamp {
-                                stamp = now;
-                                send_snapshot(&mut repo, limit);
-                            }
+                        let (new_stamp, new_fp) = refresh_tracking(&repo);
+                        if new_stamp != stamp || new_fp != work_fp {
+                            stamp = new_stamp;
+                            work_fp = new_fp;
+                            send_snapshot(&mut repo, limit);
                         }
                     }
                 }
@@ -362,6 +361,13 @@ fn mtime(p: &Path) -> Option<SystemTime> {
     std::fs::metadata(p).ok().and_then(|m| m.modified().ok())
 }
 
+fn refresh_tracking(repo: &Repo) -> (Vec<Option<SystemTime>>, u64) {
+    (
+        stamp(&repo.watch_paths()),
+        repo.worktree_fingerprint().unwrap_or(0),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,6 +478,39 @@ mod tests {
             }
         }
         assert!(saw_commit && saw_push_start);
+        w.tx.send(Command::Quit).unwrap();
+    }
+
+    #[test]
+    fn worker_poll_refreshes_on_worktree_change() {
+        use std::time::Instant;
+
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "x\n", "init");
+        let (tx, rx) = mpsc::channel();
+        let w = spawn(t.dir.clone(), move |r| {
+            let _ = tx.send(r);
+        })
+        .unwrap();
+        match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+            Reply::Snapshot(s) => assert!(s.unstaged.is_empty()),
+            other => panic!("unexpected {other:?}"),
+        }
+        t.write("a.txt", "changed\n");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut got = false;
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_secs(2)) {
+                Ok(Reply::Snapshot(s)) if !s.unstaged.is_empty() => {
+                    got = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        assert!(got, "poll should refresh snapshot after worktree edit");
         w.tx.send(Command::Quit).unwrap();
     }
 

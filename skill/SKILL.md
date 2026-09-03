@@ -39,6 +39,10 @@ automatically via the controlling tty. Otherwise pass `--pid`.
 | Stage | `{"cmd":"stage","paths":["a.rs"]}` | Queues a stage on the worker thread |
 | Unstage | `{"cmd":"unstage","paths":["a.rs"]}` | Queues an unstage |
 | Commit | `{"cmd":"commit","message":"..."}` | Staged files only |
+| Commit and push | `{"cmd":"commit_and_push","message":"...","amend":false}` | Commit then `git push` |
+| Fetch | `{"cmd":"fetch"}` | Opens network log |
+| Pull | `{"cmd":"pull"}` | Opens network log |
+| Push | `{"cmd":"push"}` | Opens network log |
 | Screenshot | `{"cmd":"screenshot","path":"/tmp/frame.png"}` | Saves the current frame as PNG |
 | List | `{"cmd":"list"}` | Same as `gitgui ls` |
 

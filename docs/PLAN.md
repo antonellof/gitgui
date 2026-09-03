@@ -13,7 +13,8 @@ this file tracks where we are, what was decided, and what is open.
 | 2 input | done | eecddce | parser with byte tests, stdin thread, egui mapping, `--dump-input` |
 | 3 read-only git | done | 9b7de3d | git2 0.21.0, snapshot + graph + diff, worker thread, real UI |
 | 4 writes | done | b4de578 | stage/unstage files and hunks, commit, amend, checkout, branches, stash, discard, fetch/pull/push via git CLI |
-| 5 integration | done | | split.rs, agent.rs, skill/SKILL.md, install script, release workflow |
+| 5 integration | done | b394bdc | split.rs, agent.rs, skill/SKILL.md, install script, release workflow |
+| post-v0.1 polish | in progress | | keyboard shortcuts, agent network ops, status bar hints |
 
 ## Measurements
 
@@ -87,16 +88,29 @@ watched mtime changed.
 
 ## Next steps (resume here)
 
-1. Fonts: load the terminal's font family (Ghostty `font-family`) via a
-   system font lookup; currently egui's bundled fonts at the terminal's size.
-2. Manual verification still owed on a real screen: commit via the Commit
-   button, Stage hunk button, branch context menus, fetch/pull/push log,
-   short-pane layout (detail pane about 225 pt tall). Harness tests cover
-   the commit button; layout math is unit-tested in `changes.rs`.
-3. First tagged release (`v0.1.0`) to populate GitHub release binaries for
-   the install script. README demo recording still open.
-4. Commit Phase 5 integration (split, agent, skill, install script, release
-   workflow) plus the layout fix when ready.
+### Post v0.1 feature backlog
+
+Priority order for the next releases:
+
+1. **Terminal fonts** (medium): load Ghostty `font-family` via CoreText / fontconfig so UI text matches the terminal face at the computed size. egui bundled fonts until then.
+2. **Diff search** (medium): `/` or `Ctrl+F` in the diff pane to find text, `n` / `N` for next match. High value when reviewing large patches.
+3. **Conflict UI** (large): show conflict markers, pick ours/theirs per hunk, mark resolved. Needed for merge-heavy workflows.
+4. **tmux / Zellij passthrough** (medium): detect and enable kitty graphics passthrough instead of hard exit.
+5. **Repo switcher** (small): recent repos list, `--repo` history file under XDG config.
+6. **README demo** (small): screen recording for the install section.
+
+### Recently shipped (v0.1.1 to v0.1.3)
+
+- Install script fix (binary vs tar.gz)
+- Commit and push button and worker command
+- Status bar key letter highlighting
+- Keyboard: `Shift+S` stash, `Ctrl+Shift+Enter` commit and push, `r` refresh (manual)
+- Agent API: `fetch`, `pull`, `push`, `commit_and_push`
+- **Auto refresh**: git worker polls every 2 s; refreshes when worktree fingerprint or `.git/` mtimes change, even when the gitgui pane is unfocused (edits from pi in a neighboring cmux pane show up without pressing `r`)
+
+### Manual verification still owed
+
+Commit via button, Stage hunk, branch context menus, fetch/pull/push log, short-pane layout (~225 pt detail pane). Harness tests cover the commit button; layout math is unit-tested in `changes.rs`.
 
 ## Open issues
 

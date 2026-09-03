@@ -1,6 +1,8 @@
 //! Repository access through git2. Everything here runs on the worker thread.
 
+use std::collections::hash_map::DefaultHasher;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -223,6 +225,34 @@ impl Repo {
             g.join("refs/heads"),
             self.workdir.clone(),
         ]
+    }
+
+    /// Cheap hash of working tree status and file mtimes for auto-refresh polling.
+    pub fn worktree_fingerprint(&self) -> Result<u64> {
+        let mut opts = git2::StatusOptions::new();
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .renames_head_to_index(true)
+            .renames_index_to_workdir(true)
+            .include_ignored(false);
+        let statuses = self.repo.statuses(Some(&mut opts))?;
+        let wd = self.workdir();
+        let mut entries: Vec<_> = statuses.iter().collect();
+        entries.sort_by(|a, b| a.path().unwrap_or("").cmp(b.path().unwrap_or("")));
+        let mut h = DefaultHasher::new();
+        for e in entries {
+            e.path().unwrap_or("").hash(&mut h);
+            e.status().bits().hash(&mut h);
+            if let Ok(path) = e.path() {
+                let p = wd.join(path);
+                if let Ok(meta) = std::fs::metadata(&p) {
+                    if let Ok(t) = meta.modified() {
+                        t.hash(&mut h);
+                    }
+                }
+            }
+        }
+        Ok(h.finish())
     }
 
     pub fn snapshot(&mut self, commit_limit: usize) -> Result<Arc<RepoSnapshot>> {
@@ -1109,6 +1139,17 @@ mod tests {
         assert_eq!(s.head.as_ref().unwrap().oid, None);
         assert!(s.head.as_ref().unwrap().branch_name.is_some());
         assert_eq!(s.user_name, "Test User");
+    }
+
+    #[test]
+    fn worktree_fingerprint_changes_on_edit() {
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "x\n", "init");
+        let repo = Repo::open(&t.dir).unwrap();
+        let before = repo.worktree_fingerprint().unwrap();
+        t.write("a.txt", "changed\n");
+        let after = repo.worktree_fingerprint().unwrap();
+        assert_ne!(before, after);
     }
 
     #[test]
