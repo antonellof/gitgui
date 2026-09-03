@@ -1,13 +1,16 @@
 //! gitgui: a git GUI rendered as pixels inside kitty-graphics terminals.
 //! This file only parses the CLI and dispatches to a mode.
 
+mod agent;
 mod cli;
 mod git;
 mod render;
 mod runtime;
+mod split;
 mod term;
 mod ui;
 
+use std::env;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -28,15 +31,51 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    match cli.mode {
+        cli::Mode::List => match agent::run_ls() {
+            Ok(code) => return ExitCode::from(code as u8),
+            Err(e) => {
+                eprintln!("gitgui: {e:#}");
+                return ExitCode::from(1);
+            }
+        },
+        cli::Mode::Action { json, pid } => match agent::run_action(&json, pid) {
+            Ok(code) => return ExitCode::from(code as u8),
+            Err(e) => {
+                eprintln!("gitgui: {e:#}");
+                return ExitCode::from(1);
+            }
+        },
+        cli::Mode::Run => {}
+    }
+    let repo = cli
+        .path
+        .clone()
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| ".".into()));
+    if let Some(dir) = &cli.split {
+        let direction = match split::Direction::parse(dir) {
+            Some(d) => d,
+            None => {
+                eprintln!("gitgui: bad split direction {dir:?}; use left, right, up, or down");
+                return ExitCode::from(1);
+            }
+        };
+        let exe = env::current_exe().unwrap_or_else(|_| "gitgui".into());
+        let args: Vec<String> = env::args().collect();
+        match split::try_launch(direction, &exe, &args) {
+            Ok(true) => return ExitCode::SUCCESS,
+            Ok(false) => {}
+            Err(e) => {
+                eprintln!("gitgui: split failed: {e:#}; running in this pane");
+            }
+        }
+    }
     let opts = runtime::Options {
         no_shm: cli.no_shm,
         crash: cli.crash,
         scale: cli.scale,
         font_size: cli.font_size,
-        path: cli
-            .path
-            .clone()
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into())),
+        path: repo,
     };
     let result = if cli.probe {
         run_probe(cli.no_shm)
