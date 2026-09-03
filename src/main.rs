@@ -1,41 +1,14 @@
 //! gitgui: a git GUI rendered as pixels inside kitty-graphics terminals.
 //! This file only parses the CLI and dispatches to a mode.
 
-mod demo;
+mod cli;
+mod render;
+mod runtime;
 mod term;
+mod ui;
 
 use std::process::ExitCode;
 use std::time::Duration;
-
-struct Cli {
-    probe: bool,
-    no_shm: bool,
-    crash: bool,
-}
-
-const USAGE: &str = "usage: gitgui [--probe] [--no-shm]
-
-  --probe     print detected terminal capabilities and exit
-  --no-shm    force the direct (base64 + zlib) transport
-  -h, --help  show this help";
-
-fn parse_cli() -> Result<Cli, String> {
-    let mut cli = Cli { probe: false, no_shm: false, crash: false };
-    for arg in std::env::args().skip(1) {
-        match arg.as_str() {
-            "--probe" => cli.probe = true,
-            "--no-shm" => cli.no_shm = true,
-            // Hidden: panic one second into the session to verify restoration.
-            "--crash" => cli.crash = true,
-            "-h" | "--help" => {
-                println!("{USAGE}");
-                std::process::exit(0);
-            }
-            other => return Err(format!("unknown argument {other:?}\n{USAGE}")),
-        }
-    }
-    Ok(cli)
-}
 
 fn run_probe(no_shm: bool) -> anyhow::Result<i32> {
     let caps = {
@@ -47,16 +20,29 @@ fn run_probe(no_shm: bool) -> anyhow::Result<i32> {
 }
 
 fn main() -> ExitCode {
-    let cli = match parse_cli() {
+    let cli = match cli::parse(std::env::args().skip(1)) {
         Ok(c) => c,
         Err(msg) => {
             eprintln!("{msg}");
             return ExitCode::from(1);
         }
     };
-    term::install_handlers();
-    let result = if cli.probe { run_probe(cli.no_shm) } else { demo::run(cli.no_shm, cli.crash) };
-    term::restore_terminal();
+    let opts = runtime::Options {
+        no_shm: cli.no_shm,
+        crash: cli.crash,
+        scale: cli.scale,
+        font_size: cli.font_size,
+    };
+    let result = if cli.probe {
+        run_probe(cli.no_shm)
+    } else if let Some(path) = &cli.headless {
+        runtime::run_headless(path, cli.size, &opts)
+    } else {
+        term::install_handlers();
+        let r = runtime::run_interactive(&opts);
+        term::restore_terminal();
+        r
+    };
     match result {
         Ok(code) => ExitCode::from(code as u8),
         Err(e) => {

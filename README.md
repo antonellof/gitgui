@@ -4,7 +4,7 @@ A git GUI that runs inside your terminal.
 
 Not a TUI. gitgui renders a real pixel interface (commit graph, staging area, diff viewer) into your existing terminal pane using the kitty graphics protocol. One small Rust binary, no browser engine, no Electron, works over SSH.
 
-Status: early development. Phase 0 of the roadmap is done (terminal plumbing). See [Roadmap](#roadmap).
+Status: early development. Phases 0 and 1 of the roadmap are done (terminal plumbing, rendering). See [Roadmap](#roadmap).
 
 ## Install (macOS & Linux)
 
@@ -25,6 +25,8 @@ gitgui                    open the repository containing the current directory
 gitgui <path>             open the repository at <path>
 gitgui --probe            print what the terminal supports and exit
 gitgui --no-shm           force the base64 transport (what SSH uses)
+gitgui --scale 2          override pixels per point (auto-detected from the cell height)
+gitgui --font-size 14     UI font size in points
 gitgui --help
 ```
 
@@ -68,7 +70,7 @@ gitgui never binds `Cmd+*` or `Ctrl+Shift+*`; those stay with your terminal and 
 ## Roadmap
 
 - [x] Phase 0: terminal plumbing. Capability probe, raw mode, kitty graphics frame transport with shm and inline paths, clean restore on quit, panic and signals.
-- [ ] Phase 1: rendering. Software rasterizer for egui meshes, headless PNG frames.
+- [x] Phase 1: rendering. Software rasterizer for egui meshes, headless PNG frames.
 - [ ] Phase 2: input. Kitty keyboard, SGR pixel mouse, paste, focus, resize.
 - [ ] Phase 3: read-only git. Sidebar, commit graph, commit detail, diff view.
 - [ ] Phase 4: writes. Stage and unstage by file and hunk, commit, amend, branches, stash, fetch, pull, push.
@@ -80,6 +82,8 @@ gitgui never binds `Cmd+*` or `Ctrl+Shift+*`; those stay with your terminal and 
 cargo test                          unit tests, byte-exact for every protocol encoder and parser
 cargo clippy -- -D warnings
 cargo run -- --probe                what does this terminal support?
+cargo run --release -- --headless-frame /tmp/frame.png --size 1600x1000 --scale 2
+                                    render one frame to a PNG without a terminal, prints timings
 cargo run --release                 interactive
 ```
 
