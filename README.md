@@ -4,7 +4,7 @@ A git GUI that runs inside your terminal.
 
 Not a TUI. gitgui renders a real pixel interface (commit graph, staging area, diff viewer) into your existing terminal pane using the kitty graphics protocol. One small Rust binary, no browser engine, no Electron, works over SSH.
 
-Status: early development. Phases 0 to 3 of the roadmap are done (terminal plumbing, rendering, input, read-only git views). See [Roadmap](#roadmap) and [docs/PLAN.md](docs/PLAN.md) for the live plan and open issues.
+Status: early development. Phases 0 to 4 of the roadmap are done: it renders, takes input, and can stage, commit, branch, stash, fetch, pull and push. See [Roadmap](#roadmap) and [docs/PLAN.md](docs/PLAN.md) for the live plan and open issues.
 
 ## Install (macOS & Linux)
 
@@ -66,6 +66,8 @@ Run `gitgui` on the remote machine inside an SSH session in a supported terminal
 | Cycle panes | `Tab` |
 | Quit | `q`, `Ctrl+C` |
 
+Mouse: click files to view diffs, `+` / `-` to stage or unstage, `Stage hunk` on a hunk header, double-click a branch to check it out, right-click branches, tags and stashes for more.
+
 gitgui never binds `Cmd+*` or `Ctrl+Shift+*`; those stay with your terminal and multiplexer.
 
 ## Roadmap
@@ -74,7 +76,7 @@ gitgui never binds `Cmd+*` or `Ctrl+Shift+*`; those stay with your terminal and 
 - [x] Phase 1: rendering. Software rasterizer for egui meshes, headless PNG frames.
 - [x] Phase 2: input. Kitty keyboard, SGR pixel mouse, paste, focus, resize.
 - [x] Phase 3: read-only git. Sidebar, commit graph, commit detail, diff view.
-- [ ] Phase 4: writes. Stage and unstage by file and hunk, commit, amend, branches, stash, fetch, pull, push.
+- [x] Phase 4: writes. Stage and unstage by file and hunk, commit, amend, branches, stash, fetch, pull, push.
 - [ ] Phase 5: integration. Split panes in cmux and Ghostty, agent control socket, install script, release builds.
 
 ## Development

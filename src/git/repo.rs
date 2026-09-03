@@ -181,6 +181,8 @@ pub struct RepoSnapshot {
     pub conflicted: Vec<FileStatus>,
     pub user_name: String,
     pub user_email: String,
+    /// Full message of the HEAD commit, offered when amending.
+    pub head_message: Option<String>,
 }
 
 impl RepoSnapshot {
@@ -200,6 +202,10 @@ impl Repo {
         let repo = Repository::discover(path).map_err(|_| GitError::NotARepository(path.to_path_buf()))?;
         let workdir = repo.workdir().map(|p| p.to_path_buf()).unwrap_or_else(|| repo.path().to_path_buf());
         Ok(Repo { repo, workdir })
+    }
+
+    pub fn workdir(&self) -> &Path {
+        &self.workdir
     }
 
     /// Paths whose mtime signals repository or working tree changes.
@@ -240,6 +246,7 @@ impl Repo {
             conflicted,
             user_name,
             user_email,
+            head_message: self.head_message(),
         }))
     }
 
@@ -534,7 +541,291 @@ impl Repo {
         }
         Ok(out)
     }
+    // ---- writes (Phase 4) ----
+
+    fn index_write(&self, index: &mut git2::Index) -> Result<()> {
+        index.write()?;
+        Ok(())
+    }
+
+    /// Stage paths: add or update existing files (and directories), remove
+    /// entries whose file is gone from the working tree.
+    pub fn stage(&self, paths: &[String]) -> Result<()> {
+        let mut index = self.repo.index()?;
+        for p in paths {
+            let full = self.workdir.join(p);
+            if full.exists() {
+                index.add_all([p.as_str()], git2::IndexAddOption::DEFAULT, None)?;
+            } else {
+                // Deleted file or directory.
+                if index.get_path(Path::new(p), 0).is_some() {
+                    index.remove_path(Path::new(p))?;
+                } else {
+                    index.remove_dir(Path::new(p), 0)?;
+                }
+            }
+        }
+        self.index_write(&mut index)
+    }
+
+    pub fn stage_all(&self) -> Result<()> {
+        let mut index = self.repo.index()?;
+        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None)?;
+        index.update_all(["*"], None)?;
+        self.index_write(&mut index)
+    }
+
+    /// Reset index entries to HEAD (or drop them when there is no HEAD yet).
+    pub fn unstage(&self, paths: &[String]) -> Result<()> {
+        match self.repo.head().ok().and_then(|h| h.peel(git2::ObjectType::Commit).ok()) {
+            Some(head) => {
+                self.repo.reset_default(Some(&head), paths.iter().map(|s| s.as_str()))?;
+            }
+            None => {
+                let mut index = self.repo.index()?;
+                for p in paths {
+                    let _ = index.remove_path(Path::new(p));
+                    let _ = index.remove_dir(Path::new(p), 0);
+                }
+                self.index_write(&mut index)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn unstage_all(&self) -> Result<()> {
+        let (_, staged, _) = self.status()?;
+        let mut paths: Vec<String> = staged.iter().map(|f| f.path.clone()).collect();
+        paths.extend(staged.iter().filter_map(|f| f.old_path.clone()));
+        if paths.is_empty() {
+            return Ok(());
+        }
+        self.unstage(&paths)
+    }
+
+    /// Throw away working tree changes for paths: tracked files are restored
+    /// from the index, untracked files and directories are deleted.
+    pub fn discard(&self, paths: &[String]) -> Result<()> {
+        let index = self.repo.index()?;
+        let mut tracked = Vec::new();
+        for p in paths {
+            if index.get_path(Path::new(p), 0).is_some() {
+                tracked.push(p.clone());
+            } else {
+                let full = self.workdir.join(p);
+                if full.is_dir() {
+                    std::fs::remove_dir_all(&full).map_err(|e| git2::Error::from_str(&e.to_string()))?;
+                } else if full.exists() {
+                    std::fs::remove_file(&full).map_err(|e| git2::Error::from_str(&e.to_string()))?;
+                }
+            }
+        }
+        if !tracked.is_empty() {
+            let mut cb = git2::build::CheckoutBuilder::new();
+            cb.force();
+            for p in &tracked {
+                cb.path(p);
+            }
+            self.repo.checkout_index(None, Some(&mut cb))?;
+        }
+        Ok(())
+    }
+
+    /// Stage only hunk `hunk_index` of the unstaged diff for `path`.
+    pub fn stage_hunk(&self, path: &str, hunk_index: usize) -> Result<()> {
+        let mut opts = git2::DiffOptions::new();
+        opts.pathspec(path).include_untracked(true).show_untracked_content(true).context_lines(3);
+        let diff = self.repo.diff_index_to_workdir(None, Some(&mut opts))?;
+        self.apply_hunk_to_index(&diff, hunk_index)
+    }
+
+    /// Remove only hunk `hunk_index` of the staged diff for `path` from the index.
+    pub fn unstage_hunk(&self, path: &str, hunk_index: usize) -> Result<()> {
+        let mut opts = git2::DiffOptions::new();
+        opts.pathspec(path).context_lines(3);
+        let head_tree = self.repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+        let index = self.repo.index()?;
+        let diff = self.repo.diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut opts))?;
+        let mut text = Vec::new();
+        for i in 0..diff.deltas().len() {
+            if let Some(mut patch) = git2::Patch::from_diff(&diff, i)? {
+                text.extend_from_slice(&patch.to_buf()?);
+            }
+        }
+        let reversed = reverse_patch(&text);
+        let rdiff = git2::Diff::from_buffer(&reversed)?;
+        self.apply_hunk_to_index(&rdiff, hunk_index)
+    }
+
+    fn apply_hunk_to_index(&self, diff: &git2::Diff<'_>, hunk_index: usize) -> Result<()> {
+        let mut seen = 0usize;
+        let mut opts = git2::ApplyOptions::new();
+        opts.hunk_callback(move |_hunk| {
+            let keep = seen == hunk_index;
+            seen += 1;
+            keep
+        });
+        self.repo.apply(diff, git2::ApplyLocation::Index, Some(&mut opts))?;
+        Ok(())
+    }
+
+    /// True when `commit.gpgsign` is set, in which case commits go through
+    /// the git CLI so the user's signing setup is used.
+    pub fn gpgsign(&self) -> bool {
+        self.repo.config().ok().and_then(|c| c.get_bool("commit.gpgsign").ok()).unwrap_or(false)
+    }
+
+    pub fn commit(&self, message: &str, amend: bool) -> Result<Oid> {
+        if self.gpgsign() {
+            return self.commit_via_cli(message, amend);
+        }
+        let sig = self.repo.signature()?;
+        let mut index = self.repo.index()?;
+        let tree_id = index.write_tree()?;
+        let tree = self.repo.find_tree(tree_id)?;
+        if amend {
+            let head = self.repo.head()?.peel_to_commit()?;
+            return Ok(head.amend(Some("HEAD"), None, Some(&sig), None, Some(message), Some(&tree))?);
+        }
+        let parent = self.repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+        let parents: Vec<&git2::Commit> = parent.iter().collect();
+        Ok(self.repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)?)
+    }
+
+    fn commit_via_cli(&self, message: &str, amend: bool) -> Result<Oid> {
+        let mut cmd = std::process::Command::new("git");
+        cmd.arg("commit").arg("-m").arg(message);
+        if amend {
+            cmd.arg("--amend");
+        }
+        let out = cmd
+            .current_dir(&self.workdir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .map_err(|e| git2::Error::from_str(&format!("running git: {e}")))?;
+        if !out.status.success() {
+            return Err(git2::Error::from_str(String::from_utf8_lossy(&out.stderr).trim()).into());
+        }
+        Ok(self.repo.head()?.peel_to_commit()?.id())
+    }
+
+    /// Message of the HEAD commit, for amend.
+    pub fn head_message(&self) -> Option<String> {
+        self.repo.head().ok()?.peel_to_commit().ok()?.message().ok().map(|m| m.to_owned())
+    }
+
+    /// Check out a local branch, or a remote branch by creating a local
+    /// tracking branch of the same short name first.
+    pub fn checkout(&self, name: &str) -> Result<String> {
+        let local = if self.repo.find_branch(name, git2::BranchType::Local).is_ok() {
+            name.to_owned()
+        } else {
+            let remote = self.repo.find_branch(name, git2::BranchType::Remote)?;
+            let short = name.split_once('/').map(|(_, b)| b).unwrap_or(name).to_owned();
+            let target = remote.get().peel_to_commit()?;
+            let mut b = match self.repo.find_branch(&short, git2::BranchType::Local) {
+                Ok(b) => b,
+                Err(_) => self.repo.branch(&short, &target, false)?,
+            };
+            let _ = b.set_upstream(Some(name));
+            short
+        };
+        let refname = format!("refs/heads/{local}");
+        let obj = self.repo.revparse_single(&refname)?;
+        let mut cb = git2::build::CheckoutBuilder::new();
+        cb.safe();
+        self.repo.checkout_tree(&obj, Some(&mut cb))?;
+        self.repo.set_head(&refname)?;
+        Ok(local)
+    }
+
+    pub fn create_branch(&self, name: &str, from: Oid, checkout: bool) -> Result<()> {
+        let commit = self.repo.find_commit(from)?;
+        self.repo.branch(name, &commit, false)?;
+        if checkout {
+            self.checkout(name)?;
+        }
+        Ok(())
+    }
+
+    pub fn delete_branch(&self, name: &str) -> Result<()> {
+        let head = self.head_info().and_then(|h| h.branch_name);
+        if head.as_deref() == Some(name) {
+            return Err(git2::Error::from_str("cannot delete the checked out branch").into());
+        }
+        let mut b = self.repo.find_branch(name, git2::BranchType::Local)?;
+        b.delete()?;
+        Ok(())
+    }
+
+    pub fn stash_push(&mut self, message: &str) -> Result<()> {
+        let sig = self.repo.signature()?;
+        let msg = if message.trim().is_empty() { "gitgui stash" } else { message };
+        self.repo.stash_save(&sig, msg, Some(git2::StashFlags::INCLUDE_UNTRACKED))?;
+        Ok(())
+    }
+
+    pub fn stash_pop(&mut self, index: usize) -> Result<()> {
+        self.repo.stash_pop(index, None)?;
+        Ok(())
+    }
+
+    pub fn stash_drop(&mut self, index: usize) -> Result<()> {
+        self.repo.stash_drop(index)?;
+        Ok(())
+    }
 }
+
+/// Reverse a unified diff: swap the file headers, the hunk ranges and the
+/// +/- line prefixes. Lines starting with `\` (no newline markers) and
+/// `diff --git`/`index` headers are kept as they are.
+pub fn reverse_patch(text: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len());
+    for line in text.split_inclusive(|&b| b == b'\n') {
+        let (body, nl): (&[u8], &[u8]) = match line.strip_suffix(b"\n") {
+            Some(b) => (b, b"\n"),
+            None => (line, b""),
+        };
+        if body.starts_with(b"--- ") || body.starts_with(b"+++ ") {
+            // File headers stay as they are: libgit2 checks them against the
+            // "diff --git a/x b/x" line, and both sides name the same file.
+            out.extend_from_slice(body);
+        } else if body.starts_with(b"@@ ") {
+            out.extend_from_slice(&reverse_hunk_header(body));
+        } else if body.starts_with(b"+") {
+            out.push(b'-');
+            out.extend_from_slice(&body[1..]);
+        } else if body.starts_with(b"-") {
+            out.push(b'+');
+            out.extend_from_slice(&body[1..]);
+        } else {
+            out.extend_from_slice(body);
+        }
+        out.extend_from_slice(nl);
+    }
+    out
+}
+
+fn reverse_hunk_header(body: &[u8]) -> Vec<u8> {
+    // @@ -a,b +c,d @@ rest
+    let s = String::from_utf8_lossy(body);
+    let mut parts = s.splitn(4, ' ');
+    let (Some(_), Some(old), Some(new), rest) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+        return body.to_vec();
+    };
+    let old = old.strip_prefix('-').unwrap_or(old);
+    let new = new.strip_prefix('+').unwrap_or(new);
+    let mut out = format!("@@ -{new} +{old}");
+    match rest {
+        Some(r) => {
+            out.push(' ');
+            out.push_str(r);
+        }
+        None => out.push_str(" @@"),
+    }
+    out.into_bytes()
+}
+
 
 pub fn short_id(oid: Oid) -> String {
     let s = oid.to_string();
@@ -733,5 +1024,182 @@ mod tests {
         assert_eq!(s.commits.len(), 3);
         assert!(s.truncated);
         assert_eq!(s.commits[0].summary, "c4");
+    }
+    #[test]
+    fn stage_unstage_files_and_all() {
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "a\n", "init");
+        t.commit_file("gone.txt", "g\n", "add gone");
+        let r = Repo::open(&t.dir).unwrap();
+        t.write("a.txt", "a2\n");
+        t.write("new.txt", "n\n");
+        t.write("dir/sub.txt", "s\n");
+        std::fs::remove_file(t.dir.join("gone.txt")).unwrap();
+
+        r.stage(&["a.txt".into(), "dir".into(), "gone.txt".into()]).unwrap();
+        let (unstaged, staged, _) = r.status().unwrap();
+        let names = |v: &[FileStatus]| v.iter().map(|f| f.path.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&staged), vec!["a.txt", "dir/sub.txt", "gone.txt"]);
+        assert_eq!(names(&unstaged), vec!["new.txt"]);
+        assert_eq!(staged.iter().find(|f| f.path == "gone.txt").unwrap().kind, FileKind::Deleted);
+
+        r.unstage(&["a.txt".into(), "dir/sub.txt".into()]).unwrap();
+        let (unstaged, staged, _) = r.status().unwrap();
+        assert_eq!(names(&staged), vec!["gone.txt"]);
+        assert_eq!(names(&unstaged), vec!["a.txt", "dir/sub.txt", "new.txt"]);
+
+        r.stage_all().unwrap();
+        let (unstaged, staged, _) = r.status().unwrap();
+        assert!(unstaged.is_empty());
+        assert_eq!(staged.len(), 4);
+
+        r.unstage_all().unwrap();
+        let (unstaged, staged, _) = r.status().unwrap();
+        assert!(staged.is_empty());
+        assert_eq!(unstaged.len(), 4);
+    }
+
+    #[test]
+    fn discard_restores_tracked_and_removes_untracked() {
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "orig\n", "init");
+        let r = Repo::open(&t.dir).unwrap();
+        t.write("a.txt", "changed\n");
+        t.write("junk.txt", "x\n");
+        t.write("junkdir/f.txt", "x\n");
+        r.discard(&["a.txt".into(), "junk.txt".into(), "junkdir".into()]).unwrap();
+        assert_eq!(std::fs::read_to_string(t.dir.join("a.txt")).unwrap(), "orig\n");
+        assert!(!t.dir.join("junk.txt").exists());
+        assert!(!t.dir.join("junkdir").exists());
+        let (unstaged, staged, _) = r.status().unwrap();
+        assert!(unstaged.is_empty() && staged.is_empty());
+    }
+
+    fn two_hunk_file() -> String {
+        let mut s = String::new();
+        for i in 1..=30 {
+            s.push_str(&format!("line {i}\n"));
+        }
+        s
+    }
+
+    #[test]
+    fn stage_and_unstage_single_hunk_round_trip() {
+        let t = TempRepo::new();
+        let base = two_hunk_file();
+        t.commit_file("f.txt", &base, "init");
+        let r = Repo::open(&t.dir).unwrap();
+        // Change line 2 and line 28: two separate hunks.
+        let modified = base.replace("line 2\n", "LINE 2\n").replace("line 28\n", "LINE 28\n");
+        t.write("f.txt", &modified);
+        let d = r.diff(&DiffTarget::WorkdirUnstaged("f.txt".into())).unwrap();
+        assert_eq!(d.hunks.len(), 2);
+
+        r.stage_hunk("f.txt", 1).unwrap();
+        let staged = r.diff(&DiffTarget::Staged("f.txt".into())).unwrap();
+        assert_eq!(staged.hunks.len(), 1);
+        assert!(staged.hunks[0].lines.iter().any(|l| l.origin == '+' && l.text == "LINE 28"));
+        let unstaged = r.diff(&DiffTarget::WorkdirUnstaged("f.txt".into())).unwrap();
+        assert_eq!(unstaged.hunks.len(), 1);
+        assert!(unstaged.hunks[0].lines.iter().any(|l| l.origin == '+' && l.text == "LINE 2"));
+
+        // Stage the other hunk too, then unstage only the first one.
+        r.stage_hunk("f.txt", 0).unwrap();
+        assert_eq!(r.diff(&DiffTarget::Staged("f.txt".into())).unwrap().hunks.len(), 2);
+        assert!(r.diff(&DiffTarget::WorkdirUnstaged("f.txt".into())).unwrap().hunks.is_empty());
+        r.unstage_hunk("f.txt", 0).unwrap();
+        let staged = r.diff(&DiffTarget::Staged("f.txt".into())).unwrap();
+        assert_eq!(staged.hunks.len(), 1);
+        assert!(staged.hunks[0].lines.iter().any(|l| l.text == "LINE 28"));
+        let unstaged = r.diff(&DiffTarget::WorkdirUnstaged("f.txt".into())).unwrap();
+        assert_eq!(unstaged.hunks.len(), 1);
+        assert!(unstaged.hunks[0].lines.iter().any(|l| l.text == "LINE 2"));
+        // Unstage the remaining hunk: index equals HEAD again, worktree unchanged.
+        r.unstage_hunk("f.txt", 0).unwrap();
+        assert!(r.diff(&DiffTarget::Staged("f.txt".into())).unwrap().hunks.is_empty());
+        assert_eq!(std::fs::read_to_string(t.dir.join("f.txt")).unwrap(), modified);
+    }
+
+    #[test]
+    fn reverse_patch_text() {
+        let patch = b"diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -1,3 +1,4 @@ ctx\n a\n-b\n+B\n+c\n d\n\\ No newline at end of file\n";
+        let rev = reverse_patch(patch);
+        let text = String::from_utf8(rev).unwrap();
+        assert_eq!(
+            text,
+            "diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -1,4 +1,3 @@ ctx\n a\n+b\n-B\n-c\n d\n\\ No newline at end of file\n"
+        );
+    }
+
+    #[test]
+    fn commit_and_amend() {
+        let t = TempRepo::new();
+        let r = Repo::open(&t.dir).unwrap();
+        t.write("a.txt", "1\n");
+        r.stage(&["a.txt".into()]).unwrap();
+        let c1 = r.commit("first", false).unwrap();
+        assert_eq!(t.repo.find_commit(c1).unwrap().message().unwrap(), "first");
+        assert_eq!(t.repo.find_commit(c1).unwrap().parent_count(), 0);
+        t.write("b.txt", "2\n");
+        r.stage(&["b.txt".into()]).unwrap();
+        let c2 = r.commit("second", false).unwrap();
+        assert_eq!(t.repo.find_commit(c2).unwrap().parent_id(0).unwrap(), c1);
+        assert_eq!(r.head_message().as_deref(), Some("second"));
+        t.write("c.txt", "3\n");
+        r.stage(&["c.txt".into()]).unwrap();
+        let c3 = r.commit("second, amended", true).unwrap();
+        let head = t.repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(head.id(), c3);
+        assert_eq!(head.parent_id(0).unwrap(), c1);
+        assert!(head.tree().unwrap().get_name("c.txt").is_some());
+        let (unstaged, staged, _) = r.status().unwrap();
+        assert!(unstaged.is_empty() && staged.is_empty());
+    }
+
+    #[test]
+    fn branches_checkout_create_delete() {
+        let t = TempRepo::new();
+        let c1 = t.commit_file("a.txt", "1\n", "one");
+        t.commit_file("a.txt", "2\n", "two");
+        let r = Repo::open(&t.dir).unwrap();
+        r.create_branch("old", c1, false).unwrap();
+        assert_eq!(std::fs::read_to_string(t.dir.join("a.txt")).unwrap(), "2\n");
+        assert_eq!(r.checkout("old").unwrap(), "old");
+        assert_eq!(std::fs::read_to_string(t.dir.join("a.txt")).unwrap(), "1\n");
+        assert_eq!(r.head_info().unwrap().branch_name.as_deref(), Some("old"));
+        assert!(r.delete_branch("old").is_err(), "cannot delete current branch");
+        let main = t.repo.branches(Some(git2::BranchType::Local)).unwrap().flatten().map(|(b, _)| b.name().unwrap().unwrap().to_owned()).find(|n| n != "old").unwrap();
+        r.checkout(&main).unwrap();
+        r.delete_branch("old").unwrap();
+        assert!(t.repo.find_branch("old", git2::BranchType::Local).is_err());
+        // Remote branch checkout creates a local tracking branch.
+        t.repo.remote("origin", "https://example.invalid/repo.git").unwrap();
+        let c = t.repo.head().unwrap().peel_to_commit().unwrap();
+        t.repo.reference("refs/remotes/origin/feature", c.id(), false, "").unwrap();
+        assert_eq!(r.checkout("origin/feature").unwrap(), "feature");
+        let b = t.repo.find_branch("feature", git2::BranchType::Local).unwrap();
+        assert!(b.upstream().is_ok());
+    }
+
+    #[test]
+    fn stash_push_pop_drop() {
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "1\n", "one");
+        let mut r = Repo::open(&t.dir).unwrap();
+        t.write("a.txt", "dirty\n");
+        t.write("u.txt", "untracked\n");
+        r.stash_push("wip").unwrap();
+        assert_eq!(std::fs::read_to_string(t.dir.join("a.txt")).unwrap(), "1\n");
+        assert!(!t.dir.join("u.txt").exists());
+        let s = r.snapshot(10).unwrap();
+        assert_eq!(s.stashes.len(), 1);
+        assert!(s.stashes[0].message.contains("wip"));
+        r.stash_pop(0).unwrap();
+        assert_eq!(std::fs::read_to_string(t.dir.join("a.txt")).unwrap(), "dirty\n");
+        assert!(t.dir.join("u.txt").exists());
+        r.stash_push("again").unwrap();
+        r.stash_drop(0).unwrap();
+        assert!(r.snapshot(10).unwrap().stashes.is_empty());
+        assert_eq!(std::fs::read_to_string(t.dir.join("a.txt")).unwrap(), "1\n");
     }
 }

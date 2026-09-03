@@ -1,7 +1,8 @@
 //! Detail pane: commit files or working tree lists, plus the diff viewer.
 
+use crate::git::ops::Command;
 use crate::git::repo::{DiffTarget, FileKind, FileStatus};
-use crate::ui::app::{App, Pane, Selection};
+use crate::ui::app::{App, Modal, Pane, Selection};
 use crate::ui::diff;
 
 pub fn show_detail(app: &mut App, ui: &mut egui::Ui) {
@@ -71,21 +72,76 @@ fn show_commit(app: &mut App, ui: &mut egui::Ui, idx: usize, _focused: bool) {
 fn show_worktree(app: &mut App, ui: &mut egui::Ui, _focused: bool) {
     let s = app.snapshot.clone();
     let mut clicked: Option<DiffTarget> = None;
-    let half = (ui.available_height() - 60.0).max(80.0) / 2.0;
+    let mut cmd: Option<Command> = None;
+    let mut modal: Option<Modal> = None;
+    let busy = app.busy > 0;
+
+    // Commit box pinned to the bottom so it never scrolls away.
+    egui::Panel::bottom("commit_box").show_separator_line(true).show(ui, |ui| {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let can_commit = !busy && (!s.staged.is_empty() || app.amend) && !app.commit_msg.trim().is_empty();
+            let commit = ui
+                .add_enabled(can_commit, egui::Button::new(if app.amend { "Amend" } else { "Commit" }))
+                .on_hover_text("Ctrl+Enter");
+            app.commit_button_rect = Some(commit.rect);
+            if commit.clicked() {
+                app.commit_now();
+            }
+            let before = app.amend;
+            ui.checkbox(&mut app.amend, "amend");
+            if app.amend && !before && app.commit_msg.trim().is_empty() {
+                // Load the HEAD message the first time amend is switched on.
+                app.amend_loaded = true;
+                if let Some(m) = &s.head_message {
+                    app.commit_msg = m.trim_end().to_owned();
+                }
+            }
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            ui.weak(format!("{} <{}>", s.user_name, s.user_email));
+        });
+        let edit = egui::TextEdit::multiline(&mut app.commit_msg)
+            .hint_text("Commit message (Ctrl+Enter to commit)")
+            .desired_rows(3)
+            .desired_width(f32::INFINITY);
+        let resp = ui.add(edit);
+        if app.focus_commit_msg {
+            resp.request_focus();
+            app.focus_commit_msg = false;
+        }
+        ui.add_space(2.0);
+    });
+
+    let list_h = (ui.available_height() - 70.0).max(60.0) / 2.0;
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.strong(format!("Unstaged ({})", s.unstaged.len() + s.conflicted.len()));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_enabled(false, egui::Button::new("Stage all")).on_disabled_hover_text("Phase 4");
-        });
     });
-    egui::ScrollArea::vertical().id_salt("unstaged").max_height(half).auto_shrink([false, false]).show(ui, |ui| {
+    ui.horizontal(|ui| {
+        if ui.add_enabled(!busy && !s.unstaged.is_empty(), egui::Button::new("Stage all").small()).on_hover_text("a").clicked() {
+            cmd = Some(Command::StageAll);
+        }
+        if ui.add_enabled(!busy && s.is_dirty(), egui::Button::new("Stash").small()).clicked() {
+            modal = Some(Modal::StashPush { message: String::new() });
+        }
+        if let Some((p, false)) = app.selected_worktree_file() {
+            if ui.add_enabled(!busy, egui::Button::new("Discard").small()).on_hover_text("asks for confirmation").clicked() {
+                modal = Some(Modal::Discard(vec![p]));
+            }
+        }
+    });
+    egui::ScrollArea::vertical().id_salt("unstaged").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
         for f in s.conflicted.iter().chain(s.unstaged.iter()) {
             let target = DiffTarget::WorkdirUnstaged(f.path.clone());
             let selected = app.selected_file.as_ref() == Some(&target);
-            if file_row(ui, f, selected, &app.theme).clicked() {
-                clicked = Some(target);
-            }
+            ui.horizontal(|ui| {
+                if ui.add_enabled(!busy, egui::Button::new("+").small()).on_hover_text("stage (s)").clicked() {
+                    cmd = Some(Command::Stage(vec![f.path.clone()]));
+                }
+                if file_row(ui, f, selected, &app.theme).clicked() {
+                    clicked = Some(target);
+                }
+            });
         }
         if s.unstaged.is_empty() && s.conflicted.is_empty() {
             ui.weak("nothing unstaged");
@@ -94,34 +150,36 @@ fn show_worktree(app: &mut App, ui: &mut egui::Ui, _focused: bool) {
     ui.separator();
     ui.horizontal(|ui| {
         ui.strong(format!("Staged ({})", s.staged.len()));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_enabled(false, egui::Button::new("Unstage all")).on_disabled_hover_text("Phase 4");
-        });
+        if ui.add_enabled(!busy && !s.staged.is_empty(), egui::Button::new("Unstage all").small()).on_hover_text("Shift+A").clicked() {
+            cmd = Some(Command::UnstageAll);
+        }
     });
-    egui::ScrollArea::vertical().id_salt("staged").max_height(half).auto_shrink([false, false]).show(ui, |ui| {
+    egui::ScrollArea::vertical().id_salt("staged").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
         for f in &s.staged {
             let target = DiffTarget::Staged(f.path.clone());
             let selected = app.selected_file.as_ref() == Some(&target);
-            if file_row(ui, f, selected, &app.theme).clicked() {
-                clicked = Some(target);
-            }
+            ui.horizontal(|ui| {
+                if ui.add_enabled(!busy, egui::Button::new("-").small()).on_hover_text("unstage (u)").clicked() {
+                    cmd = Some(Command::Unstage(vec![f.path.clone()]));
+                }
+                if file_row(ui, f, selected, &app.theme).clicked() {
+                    clicked = Some(target);
+                }
+            });
         }
         if s.staged.is_empty() {
             ui.weak("nothing staged");
         }
     });
-    ui.separator();
-    ui.horizontal(|ui| {
-        ui.weak(format!("{} <{}>", s.user_name, s.user_email));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_enabled(false, egui::Button::new("Commit")).on_disabled_hover_text("Phase 4");
-            ui.checkbox(&mut app.amend, "amend");
-        });
-    });
-    ui.add(egui::TextEdit::multiline(&mut app.commit_msg).hint_text("Commit message").desired_rows(2).desired_width(f32::INFINITY));
     if let Some(t) = clicked {
         app.focus = Pane::Detail;
         app.select_file(Some(t));
+    }
+    if let Some(c) = cmd {
+        app.run(c);
+    }
+    if modal.is_some() {
+        app.modal = modal;
     }
 }
 

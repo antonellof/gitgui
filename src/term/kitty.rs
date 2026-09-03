@@ -42,11 +42,15 @@ pub fn encode_shm_probe(out: &mut Vec<u8>, shm_name: &str) {
 }
 
 /// Transmit and display a frame stored in a POSIX shared memory object.
-pub fn encode_shm_place(out: &mut Vec<u8>, w: u32, h: u32, id: u32, shm_name: &str) {
+/// `cols` and `rows` bind the placement to the whole cell grid, so the
+/// terminal scales the image to the grid regardless of how it maps image
+/// pixels to screen pixels (Ghostty and cmux treat them as logical points
+/// on HiDPI displays, which would otherwise show the frame at 2x).
+pub fn encode_shm_place(out: &mut Vec<u8>, w: u32, h: u32, id: u32, shm_name: &str, cols: u32, rows: u32) {
     let mut ctl = String::new();
     let _ = write!(
         ctl,
-        "a=T,t=s,f=32,s={w},v={h},i={id},p={id},C=1,q=2;"
+        "a=T,t=s,f=32,s={w},v={h},c={cols},r={rows},i={id},p={id},C=1,q=2;"
     );
     out.extend_from_slice(APC);
     out.extend_from_slice(ctl.as_bytes());
@@ -56,7 +60,7 @@ pub fn encode_shm_place(out: &mut Vec<u8>, w: u32, h: u32, id: u32, shm_name: &s
 
 /// Transmit and display a frame inline: zlib compressed, base64 encoded, split
 /// into chunks of at most [`DIRECT_CHUNK`] characters.
-pub fn encode_direct_place(out: &mut Vec<u8>, w: u32, h: u32, id: u32, rgba: &[u8]) {
+pub fn encode_direct_place(out: &mut Vec<u8>, w: u32, h: u32, id: u32, rgba: &[u8], cols: u32, rows: u32) {
     debug_assert_eq!(rgba.len(), (w as usize) * (h as usize) * 4);
     let mut enc = flate2::write::ZlibEncoder::new(
         Vec::with_capacity(rgba.len() / 4),
@@ -74,7 +78,7 @@ pub fn encode_direct_place(out: &mut Vec<u8>, w: u32, h: u32, id: u32, rgba: &[u
             let mut ctl = String::new();
             let _ = write!(
                 ctl,
-                "a=T,t=d,o=z,f=32,s={w},v={h},i={id},p={id},C=1,q=2,m={more};"
+                "a=T,t=d,o=z,f=32,s={w},v={h},c={cols},r={rows},i={id},p={id},C=1,q=2,m={more};"
             );
             out.extend_from_slice(ctl.as_bytes());
         } else {
@@ -147,16 +151,17 @@ impl FrameEncoder {
     /// Encode a frame. On the shm transport the pixels must already be in the
     /// object named `shm_name`; on the direct transport they are read from
     /// `rgba`.
-    pub fn encode_frame(&mut self, out: &mut Vec<u8>, w: u32, h: u32, rgba: &[u8], shm_name: Option<&str>) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_frame(&mut self, out: &mut Vec<u8>, w: u32, h: u32, cols: u32, rows: u32, rgba: &[u8], shm_name: Option<&str>) {
         let id = self.next_id();
         out.extend_from_slice(b"\x1b[?2026h");
         out.extend_from_slice(b"\x1b[1;1H");
         match self.transport {
             Transport::Shm => {
                 let name = shm_name.expect("shm transport requires an shm name");
-                encode_shm_place(out, w, h, id, name);
+                encode_shm_place(out, w, h, id, name, cols, rows);
             }
-            Transport::Direct => encode_direct_place(out, w, h, id, rgba),
+            Transport::Direct => encode_direct_place(out, w, h, id, rgba, cols, rows),
         }
         if let Some(old) = self.visible {
             if old != id {
@@ -279,10 +284,10 @@ mod tests {
     #[test]
     fn shm_place_bytes() {
         let mut out = Vec::new();
-        encode_shm_place(&mut out, 640, 480, 1, "/tg-1-1");
+        encode_shm_place(&mut out, 640, 480, 1, "/tg-1-1", 80, 24);
         assert_eq!(
             out,
-            b"\x1b_Ga=T,t=s,f=32,s=640,v=480,i=1,p=1,C=1,q=2;L3RnLTEtMQ==\x1b\\"
+            b"\x1b_Ga=T,t=s,f=32,s=640,v=480,c=80,r=24,i=1,p=1,C=1,q=2;L3RnLTEtMQ==\x1b\\"
         );
     }
 
@@ -316,12 +321,12 @@ mod tests {
         // 2x2 solid image compresses to a handful of bytes: one chunk, m=0.
         let rgba = [200u8, 100, 50, 255].repeat(4);
         let mut out = Vec::new();
-        encode_direct_place(&mut out, 2, 2, 1, &rgba);
+        encode_direct_place(&mut out, 2, 2, 1, &rgba, 1, 1);
         let seqs = split_apcs(&out);
         assert_eq!(seqs.len(), 1);
         let s = String::from_utf8(seqs[0].clone()).unwrap();
         let (ctl, payload) = s.split_once(';').unwrap();
-        assert_eq!(ctl, "a=T,t=d,o=z,f=32,s=2,v=2,i=1,p=1,C=1,q=2,m=0");
+        assert_eq!(ctl, "a=T,t=d,o=z,f=32,s=2,v=2,c=1,r=1,i=1,p=1,C=1,q=2,m=0");
         let z = base64::engine::general_purpose::STANDARD.decode(payload).unwrap();
         let mut dec = flate2::read::ZlibDecoder::new(&z[..]);
         let mut back = Vec::new();
@@ -342,11 +347,11 @@ mod tests {
             rgba.push((x & 0xff) as u8);
         }
         let mut out = Vec::new();
-        encode_direct_place(&mut out, 64, 64, 2, &rgba);
+        encode_direct_place(&mut out, 64, 64, 2, &rgba, 8, 4);
         let seqs = split_apcs(&out);
         assert!(seqs.len() >= 2, "expected several chunks, got {}", seqs.len());
         let first = String::from_utf8(seqs[0].clone()).unwrap();
-        assert!(first.starts_with("a=T,t=d,o=z,f=32,s=64,v=64,i=2,p=2,C=1,q=2,m=1;"));
+        assert!(first.starts_with("a=T,t=d,o=z,f=32,s=64,v=64,c=8,r=4,i=2,p=2,C=1,q=2,m=1;"));
         let mut payload = String::new();
         for (i, s) in seqs.iter().enumerate() {
             let s = String::from_utf8(s.clone()).unwrap();
@@ -369,20 +374,20 @@ mod tests {
     fn frame_sequence_shm() {
         let mut enc = FrameEncoder::new(Transport::Shm, 7);
         let mut out = Vec::new();
-        enc.encode_frame(&mut out, 8, 4, &[], Some("/tg-7-1"));
+        enc.encode_frame(&mut out, 8, 4, 2, 1, &[], Some("/tg-7-1"));
         // base64("/tg-7-1") = "L3RnLTctMQ=="
         assert_eq!(
             out,
-            b"\x1b[?2026h\x1b[1;1H\x1b_Ga=T,t=s,f=32,s=8,v=4,i=1,p=1,C=1,q=2;L3RnLTctMQ==\x1b\\\x1b[?2026l"
+            b"\x1b[?2026h\x1b[1;1H\x1b_Ga=T,t=s,f=32,s=8,v=4,c=2,r=1,i=1,p=1,C=1,q=2;L3RnLTctMQ==\x1b\\\x1b[?2026l"
         );
         out.clear();
-        enc.encode_frame(&mut out, 8, 4, &[], Some("/tg-7-2"));
+        enc.encode_frame(&mut out, 8, 4, 2, 1, &[], Some("/tg-7-2"));
         assert_eq!(
             out,
-            b"\x1b[?2026h\x1b[1;1H\x1b_Ga=T,t=s,f=32,s=8,v=4,i=2,p=2,C=1,q=2;L3RnLTctMg==\x1b\\\x1b_Ga=d,d=i,i=1,p=1,q=2\x1b\\\x1b[?2026l"
+            b"\x1b[?2026h\x1b[1;1H\x1b_Ga=T,t=s,f=32,s=8,v=4,c=2,r=1,i=2,p=2,C=1,q=2;L3RnLTctMg==\x1b\\\x1b_Ga=d,d=i,i=1,p=1,q=2\x1b\\\x1b[?2026l"
         );
         out.clear();
-        enc.encode_frame(&mut out, 8, 4, &[], Some("/tg-7-3"));
+        enc.encode_frame(&mut out, 8, 4, 2, 1, &[], Some("/tg-7-3"));
         assert!(out.windows(7).any(|w| w == b"i=1,p=1"));
         assert!(out.ends_with(b"\x1b_Ga=d,d=i,i=2,p=2,q=2\x1b\\\x1b[?2026l"));
     }
@@ -391,10 +396,10 @@ mod tests {
     fn frame_sequence_reset_skips_delete() {
         let mut enc = FrameEncoder::new(Transport::Shm, 7);
         let mut out = Vec::new();
-        enc.encode_frame(&mut out, 1, 1, &[], Some("/a"));
+        enc.encode_frame(&mut out, 1, 1, 1, 1, &[], Some("/a"));
         enc.reset();
         out.clear();
-        enc.encode_frame(&mut out, 1, 1, &[], Some("/a"));
+        enc.encode_frame(&mut out, 1, 1, 1, 1, &[], Some("/a"));
         assert!(!out.windows(5).any(|w| w == b"a=d,d"));
     }
 

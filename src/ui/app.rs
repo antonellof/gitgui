@@ -31,6 +31,23 @@ pub struct Toast {
     pub at: Instant,
 }
 
+/// A confirmation or input dialog on top of everything else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Modal {
+    Discard(Vec<String>),
+    NewBranch { name: String, from: Oid, from_label: String, checkout: bool },
+    DeleteBranch(String),
+    StashPush { message: String },
+    DropStash(usize),
+}
+
+pub struct NetLog {
+    pub label: &'static str,
+    pub lines: Vec<String>,
+    pub running: bool,
+    pub open: bool,
+}
+
 pub struct App {
     pub theme: Theme,
     pub snapshot: Arc<RepoSnapshot>,
@@ -58,6 +75,16 @@ pub struct App {
     pub scale: f32,
     pub show_debug: bool,
     pub sidebar_selected: Option<String>,
+    pub modal: Option<Modal>,
+    pub net: NetLog,
+    /// Set when the commit box should take keyboard focus this frame.
+    pub focus_commit_msg: bool,
+    /// Last known HEAD message, used when amend is toggled on.
+    pub amend_loaded: bool,
+    /// Pending write ops, to disable buttons while one runs.
+    pub busy: usize,
+    /// Where the Commit button was laid out last pass (tests click it).
+    pub commit_button_rect: Option<egui::Rect>,
 }
 
 impl App {
@@ -88,6 +115,12 @@ impl App {
             scale,
             show_debug: false,
             sidebar_selected: None,
+            modal: None,
+            net: NetLog { label: "", lines: Vec::new(), running: false, open: false },
+            focus_commit_msg: false,
+            amend_loaded: false,
+            busy: 0,
+            commit_button_rect: None,
         }
     }
 
@@ -166,8 +199,77 @@ impl App {
                 }
             }
             Reply::CommitFiles(_, Err(e)) => self.toast(format!("commit files failed: {e}"), true),
+            Reply::Op { label, result } => {
+                self.busy = self.busy.saturating_sub(1);
+                match result {
+                    Ok(msg) => {
+                        if label == "commit" {
+                            self.commit_msg.clear();
+                            self.amend = false;
+                            self.amend_loaded = false;
+                        }
+                        self.toast(msg, false);
+                    }
+                    Err(e) => self.toast(format!("{label} failed: {e}"), true),
+                }
+                if self.net.running && matches!(label, "fetch" | "pull" | "push") {
+                    self.net.running = false;
+                }
+            }
+            Reply::NetStart(label) => {
+                self.net.label = label;
+                self.net.lines.clear();
+                self.net.running = true;
+                self.net.open = true;
+            }
+            Reply::NetLine(line) => {
+                self.net.lines.push(line);
+                if self.net.lines.len() > 2000 {
+                    self.net.lines.drain(..1000);
+                }
+            }
             Reply::Error(e) => self.toast(e, true),
         }
+    }
+
+    /// Queue a write or network command.
+    pub fn run(&mut self, cmd: Command) {
+        self.busy += 1;
+        self.pending.push(cmd);
+    }
+
+    /// The file the detail pane currently shows, as (path, staged?).
+    pub fn selected_worktree_file(&self) -> Option<(String, bool)> {
+        match &self.selected_file {
+            Some(DiffTarget::WorkdirUnstaged(p)) => Some((p.clone(), false)),
+            Some(DiffTarget::Staged(p)) => Some((p.clone(), true)),
+            _ => None,
+        }
+    }
+
+    pub fn stage_selected(&mut self) {
+        if let Some((p, false)) = self.selected_worktree_file() {
+            self.run(Command::Stage(vec![p]));
+        }
+    }
+
+    pub fn unstage_selected(&mut self) {
+        if let Some((p, true)) = self.selected_worktree_file() {
+            self.run(Command::Unstage(vec![p]));
+        }
+    }
+
+    pub fn commit_now(&mut self) {
+        let msg = self.commit_msg.trim().to_owned();
+        if msg.is_empty() {
+            self.toast("commit message is empty", true);
+            return;
+        }
+        if self.snapshot.staged.is_empty() && !self.amend {
+            self.toast("nothing staged", true);
+            return;
+        }
+        self.run(Command::Commit { message: msg, amend: self.amend });
     }
 
     fn worktree_has(&self, t: &DiffTarget) -> bool {
@@ -267,7 +369,11 @@ impl App {
 
     pub fn handle_keys(&mut self, ctx: &egui::Context) {
         if ctx.egui_wants_keyboard_input() {
-            // A text field owns the keyboard. Escape still leaves it.
+            // A text field owns the keyboard. Ctrl+Enter commits from the
+            // commit box, Escape leaves the field.
+            if ctx.input(|i| ctrl(i, egui::Key::Enter)) && self.modal.is_none() {
+                self.commit_now();
+            }
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 ctx.memory_mut(|m| m.request_focus(egui::Id::NULL));
                 if self.filter_active {
@@ -278,21 +384,71 @@ impl App {
             }
             return;
         }
+        if self.modal.is_some() {
+            // Dialogs handle their own keys.
+            return;
+        }
         let (down, up, pgdn, pgup, home, end, slash, esc, tab, r, dbg) = ctx.input(|i| {
             (
-                i.key_pressed(egui::Key::J) || i.key_pressed(egui::Key::ArrowDown),
-                i.key_pressed(egui::Key::K) || i.key_pressed(egui::Key::ArrowUp),
-                i.key_pressed(egui::Key::PageDown),
-                i.key_pressed(egui::Key::PageUp),
-                i.key_pressed(egui::Key::Home),
-                i.key_pressed(egui::Key::End),
-                i.key_pressed(egui::Key::Slash),
-                i.key_pressed(egui::Key::Escape),
-                i.key_pressed(egui::Key::Tab),
-                i.key_pressed(egui::Key::R),
-                i.modifiers.ctrl && i.key_pressed(egui::Key::D),
+                plain(i, egui::Key::J) || plain(i, egui::Key::ArrowDown),
+                plain(i, egui::Key::K) || plain(i, egui::Key::ArrowUp),
+                plain(i, egui::Key::PageDown),
+                plain(i, egui::Key::PageUp),
+                plain(i, egui::Key::Home),
+                plain(i, egui::Key::End),
+                key_press(i, egui::Key::Slash).is_some(),
+                plain(i, egui::Key::Escape),
+                plain(i, egui::Key::Tab),
+                plain(i, egui::Key::R),
+                ctrl(i, egui::Key::D),
             )
         });
+        let (s_key, u_key, a_key, shift_a, c_key, f_key, p_key, shift_p, enter) = ctx.input(|i| {
+            (
+                plain(i, egui::Key::S),
+                plain(i, egui::Key::U),
+                plain(i, egui::Key::A),
+                shifted(i, egui::Key::A),
+                plain(i, egui::Key::C),
+                plain(i, egui::Key::F),
+                plain(i, egui::Key::P),
+                shifted(i, egui::Key::P),
+                plain(i, egui::Key::Enter),
+            )
+        });
+        if s_key {
+            self.stage_selected();
+        }
+        if u_key {
+            self.unstage_selected();
+        }
+        if a_key {
+            self.run(Command::StageAll);
+        }
+        if shift_a {
+            self.run(Command::UnstageAll);
+        }
+        if c_key {
+            self.focus_commit_msg = true;
+            self.selection = Selection::WorkingTree;
+            self.focus = Pane::Detail;
+        }
+        if f_key {
+            self.run(Command::Fetch);
+        }
+        if p_key {
+            self.run(Command::Pull);
+        }
+        if shift_p {
+            self.run(Command::Push);
+        }
+        if enter && self.focus == Pane::Sidebar {
+            if let Some(name) = self.sidebar_selected.clone() {
+                if self.snapshot.branches.iter().any(|b| b.name == name) {
+                    self.run(Command::Checkout(name));
+                }
+            }
+        }
         if self.focus == Pane::Log || self.focus == Pane::Sidebar {
             if down {
                 self.move_selection(1);
@@ -351,6 +507,9 @@ impl App {
             sidebar::show(self, ui);
         });
         egui::Panel::bottom("status").show(root, |ui| self.status_bar(ui));
+        if self.net.open {
+            egui::Panel::bottom("netlog").default_size(140.0).resizable(true).show(root, |ui| self.net_log(ui));
+        }
 
         let avail_h = root.available_height();
         egui::Panel::bottom("detail")
@@ -365,14 +524,167 @@ impl App {
 
         self.show_toasts(&ctx);
         if let Some(cmd) = diff::take_pending(self) {
-            self.pending.push(cmd);
+            self.run(cmd);
+        }
+        self.show_modal(&ctx);
+    }
+
+    fn net_log(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.strong(format!("git {}", self.net.label));
+            if self.net.running {
+                ui.spinner();
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("close").clicked() {
+                    self.net.open = false;
+                }
+            });
+        });
+        egui::ScrollArea::vertical().id_salt("netlog_scroll").auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
+            for l in &self.net.lines {
+                ui.monospace(l);
+            }
+        });
+    }
+
+    fn show_modal(&mut self, ctx: &egui::Context) {
+        let Some(modal) = self.modal.clone() else { return };
+        let mut close = false;
+        let mut cmd: Option<Command> = None;
+        let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+        // Dim the background and swallow clicks outside the dialog.
+        egui::Area::new(egui::Id::new("modal_dim"))
+            .order(egui::Order::Middle)
+            .fixed_pos(egui::pos2(0.0, 0.0))
+            .show(ctx, |ui| {
+                let rect = ctx.content_rect();
+                ui.allocate_rect(rect, egui::Sense::click());
+                ui.painter().rect_filled(rect, 0.0, egui::Color32::from_black_alpha(120));
+            });
+        let title = match &modal {
+            Modal::Discard(_) => "Discard changes",
+            Modal::NewBranch { .. } => "New branch",
+            Modal::DeleteBranch(_) => "Delete branch",
+            Modal::StashPush { .. } => "Stash changes",
+            Modal::DropStash(_) => "Drop stash",
+        };
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(false)
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_min_width(360.0);
+                match modal {
+                    Modal::Discard(paths) => {
+                        ui.label(format!(
+                            "Throw away working tree changes in {} file{}? This cannot be undone.",
+                            paths.len(),
+                            if paths.len() == 1 { "" } else { "s" }
+                        ));
+                        for p in paths.iter().take(8) {
+                            ui.monospace(p);
+                        }
+                        if paths.len() > 8 {
+                            ui.weak(format!("and {} more", paths.len() - 8));
+                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("Discard").clicked() || enter {
+                                cmd = Some(Command::Discard(paths.clone()));
+                                close = true;
+                            }
+                            if ui.button("Cancel").clicked() || esc {
+                                close = true;
+                            }
+                        });
+                    }
+                    Modal::NewBranch { mut name, from, from_label, mut checkout } => {
+                        ui.label(format!("From {from_label}"));
+                        let resp = ui.add(egui::TextEdit::singleline(&mut name).hint_text("branch name").desired_width(f32::INFINITY));
+                        if !resp.has_focus() && !ctx.egui_wants_keyboard_input() {
+                            resp.request_focus();
+                        }
+                        ui.checkbox(&mut checkout, "check out after creating");
+                        let valid = !name.trim().is_empty() && !name.contains(' ');
+                        ui.horizontal(|ui| {
+                            if ui.add_enabled(valid, egui::Button::new("Create")).clicked() || (enter && valid) {
+                                cmd = Some(Command::CreateBranch { name: name.trim().to_owned(), from, checkout });
+                                close = true;
+                            }
+                            if ui.button("Cancel").clicked() || esc {
+                                close = true;
+                            }
+                        });
+                        if !close {
+                            self.modal = Some(Modal::NewBranch { name, from, from_label, checkout });
+                        }
+                    }
+                    Modal::DeleteBranch(name) => {
+                        ui.label(format!("Delete local branch {name}?"));
+                        ui.horizontal(|ui| {
+                            if ui.button("Delete").clicked() || enter {
+                                cmd = Some(Command::DeleteBranch(name.clone()));
+                                close = true;
+                            }
+                            if ui.button("Cancel").clicked() || esc {
+                                close = true;
+                            }
+                        });
+                    }
+                    Modal::StashPush { mut message } => {
+                        let resp = ui.add(egui::TextEdit::singleline(&mut message).hint_text("stash message (optional)").desired_width(f32::INFINITY));
+                        if !resp.has_focus() && !ctx.egui_wants_keyboard_input() {
+                            resp.request_focus();
+                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("Stash").clicked() || enter {
+                                cmd = Some(Command::StashPush { message: message.clone() });
+                                close = true;
+                            }
+                            if ui.button("Cancel").clicked() || esc {
+                                close = true;
+                            }
+                        });
+                        if !close {
+                            self.modal = Some(Modal::StashPush { message });
+                        }
+                    }
+                    Modal::DropStash(i) => {
+                        ui.label(format!("Drop stash {i}? This cannot be undone."));
+                        ui.horizontal(|ui| {
+                            if ui.button("Drop").clicked() || enter {
+                                cmd = Some(Command::StashDrop(i));
+                                close = true;
+                            }
+                            if ui.button("Cancel").clicked() || esc {
+                                close = true;
+                            }
+                        });
+                    }
+                }
+            });
+        if let Some(c) = cmd {
+            self.run(c);
+        }
+        if close {
+            self.modal = None;
+            ctx.memory_mut(|m| m.request_focus(egui::Id::NULL));
         }
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
             let s = &self.snapshot;
-            ui.label(s.path.to_string_lossy().to_string());
+            let path = s.path.to_string_lossy();
+            let shown = match std::env::var("HOME") {
+                Ok(h) if path.starts_with(&h) => format!("~{}", &path[h.len()..]),
+                _ => path.to_string(),
+            };
+            ui.label(shown.trim_end_matches('/').to_owned());
             ui.separator();
             match &s.head {
                 Some(h) => {
@@ -401,7 +713,7 @@ impl App {
                     ui.weak(format!("{:.1} ms {} x{}", self.frame_ms, self.transport, self.scale));
                     ui.separator();
                 }
-                ui.weak("j/k move  Enter open  / filter  Tab pane  r refresh  q quit");
+                ui.weak("j/k move  s/u stage/unstage  a/A all  c commit  f/p/P fetch/pull/push  / filter  q quit");
             });
         });
     }
@@ -423,6 +735,28 @@ impl App {
                 }
             });
     }
+}
+
+/// Modifiers of the first press of `key` in this frame's events, if any.
+/// Terminals deliver modifiers per key event, so this is more reliable
+/// than the global modifier state.
+fn key_press(i: &egui::InputState, key: egui::Key) -> Option<egui::Modifiers> {
+    i.events.iter().find_map(|e| match e {
+        egui::Event::Key { key: k, pressed: true, modifiers, .. } if *k == key => Some(*modifiers),
+        _ => None,
+    })
+}
+
+fn plain(i: &egui::InputState, key: egui::Key) -> bool {
+    key_press(i, key).is_some_and(|m| !m.ctrl && !m.shift && !m.alt)
+}
+
+fn shifted(i: &egui::InputState, key: egui::Key) -> bool {
+    key_press(i, key).is_some_and(|m| m.shift && !m.ctrl && !m.alt)
+}
+
+fn ctrl(i: &egui::InputState, key: egui::Key) -> bool {
+    key_press(i, key).is_some_and(|m| m.ctrl)
 }
 
 /// Human readable age like "3m", "2h", "5d", "3mo", "2y".

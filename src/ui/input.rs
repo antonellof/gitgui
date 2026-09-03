@@ -11,6 +11,8 @@ pub struct Mapper {
     wheel_mods: egui::Modifiers,
     pointer: egui::Pos2,
     down: [bool; 3],
+    /// Modifier state as of the last event, for `RawInput::modifiers`.
+    pub modifiers: egui::Modifiers,
 }
 
 fn modifiers(m: Mods) -> egui::Modifiers {
@@ -68,6 +70,20 @@ impl Mapper {
             wheel_mods: egui::Modifiers::NONE,
             pointer: egui::Pos2::ZERO,
             down: [false; 3],
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    pub fn set_ppp(&mut self, ppp: f32) {
+        self.ppp = ppp;
+    }
+
+    /// egui keeps its own modifier state from `ModifiersChanged` events;
+    /// terminals only tell us the modifiers per key, so derive it there.
+    fn set_modifiers(&mut self, m: egui::Modifiers, out: &mut Vec<egui::Event>) {
+        if m != self.modifiers {
+            self.modifiers = m;
+            out.push(egui::Event::ModifiersChanged(m));
         }
     }
 
@@ -81,6 +97,7 @@ impl Mapper {
         match ev {
             Event::Key { key, mods, text, pressed, repeat } => {
                 let m = modifiers(*mods);
+                self.set_modifiers(m, out);
                 if let Some(k) = egui_key(*key) {
                     out.push(egui::Event::Key {
                         key: k,
@@ -101,6 +118,7 @@ impl Mapper {
                 }
             }
             Event::MouseButton { button, pressed, x, y, mods } => {
+                self.set_modifiers(modifiers(*mods), out);
                 let pos = self.pos(*x, *y);
                 if pos != self.pointer {
                     self.pointer = pos;
@@ -197,6 +215,19 @@ mod tests {
     }
 
     #[test]
+    fn modifier_changes_are_announced_once() {
+        let mut m = Mapper::new(1.0);
+        let mut out = Vec::new();
+        m.map(&key(Key::Char('a'), Mods::CTRL, None), &mut out);
+        assert!(matches!(out[0], egui::Event::ModifiersChanged(mm) if mm.ctrl && mm.command));
+        out.clear();
+        m.map(&key(Key::Char('b'), Mods::CTRL, None), &mut out);
+        assert!(!out.iter().any(|e| matches!(e, egui::Event::ModifiersChanged(_))), "unchanged state is not repeated");
+        m.map(&key(Key::Char('a'), Mods::NONE, Some("a")), &mut out);
+        assert!(out.iter().any(|e| matches!(e, egui::Event::ModifiersChanged(mm) if *mm == egui::Modifiers::NONE)));
+    }
+
+    #[test]
     fn control_keys_give_no_text() {
         let mut m = Mapper::new(1.0);
         let mut out = Vec::new();
@@ -204,7 +235,7 @@ mod tests {
         m.map(&key(Key::Char('c'), Mods::CTRL, None), &mut out);
         m.map(&key(Key::Char('a'), Mods::CTRL, Some("a")), &mut out);
         assert!(out.iter().all(|e| !matches!(e, egui::Event::Text(_))));
-        assert!(matches!(out[1], egui::Event::Key { key: egui::Key::C, modifiers, .. } if modifiers.ctrl && modifiers.command));
+        assert!(out.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::C, modifiers, .. } if modifiers.ctrl && modifiers.command)));
     }
 
     #[test]
@@ -216,7 +247,8 @@ mod tests {
         m.map(&key(Key::Other(57441), Mods::SHIFT, None), &mut out);
         assert!(matches!(out[0], egui::Event::Key { key: egui::Key::Slash, .. }));
         assert!(matches!(out[2], egui::Event::Key { key: egui::Key::F5, .. }));
-        assert_eq!(out.len(), 3, "modifier key alone produces nothing");
+        assert_eq!(out.len(), 4);
+        assert!(matches!(out[3], egui::Event::ModifiersChanged(m) if m.shift), "a modifier key alone only updates the modifier state");
     }
 
     #[test]
@@ -259,6 +291,16 @@ mod tests {
         assert_eq!(out[0], egui::Event::WindowFocused(false));
         assert!(matches!(out[1], egui::Event::PointerButton { pressed: false, .. }));
         assert_eq!(out[2], egui::Event::PointerGone);
+    }
+
+    #[test]
+    fn modifier_state_follows_events() {
+        let mut m = Mapper::new(1.0);
+        let mut out = Vec::new();
+        m.map(&key(Key::Char('a'), Mods::CTRL, None), &mut out);
+        assert!(m.modifiers.ctrl && m.modifiers.command);
+        m.map(&key(Key::Char('a'), Mods::NONE, Some("a")), &mut out);
+        assert_eq!(m.modifiers, egui::Modifiers::NONE);
     }
 
     #[test]

@@ -12,8 +12,8 @@ this file tracks where we are, what was decided, and what is open.
 | 1 rendering | done | 475c593 | rasterizer, framebuffer, egui demo, headless PNG |
 | 2 input | done | eecddce | parser with byte tests, stdin thread, egui mapping, `--dump-input` |
 | 3 read-only git | done | 9b7de3d | git2 0.21.0, snapshot + graph + diff, worker thread, real UI |
-| 4 writes | next | | |
-| 5 integration | | | |
+| 4 writes | done | see git log | stage/unstage files and hunks, commit, amend, checkout, branches, stash, discard, fetch/pull/push via git CLI |
+| 5 integration | next | | |
 
 ## Measurements
 
@@ -41,6 +41,16 @@ watched mtime changed.
 
 ## Decisions
 
+- Unstaging a hunk reverses the HEAD-to-index patch text (swap hunk ranges
+  and +/- prefixes, keep the file headers) and applies it to the index.
+- Network ops run on the git worker thread through the git CLI with
+  `GIT_TERMINAL_PROMPT=0`; output streams into a log panel. A slow push blocks
+  other git commands until it finishes, the UI stays responsive.
+- `commit.gpgsign=true` routes commits through `git commit` so signing works.
+- Manual testing on this machine: never inject mouse events while the user
+  works; `cmux send` targets a specific surface and is safe, screenshots are
+  only meaningful when the gitgui workspace is in front.
+
 - git2 0.21 returns `Result` from most string getters (`shorthand`,
   `summary`, `Signature::name`, `StatusEntry::path`); unwrap to empty strings.
 - Rename detection: the status entry's `path()` is the old path, the delta's
@@ -61,6 +71,20 @@ watched mtime changed.
 - Frame pacing: the loop sleeps on the input channel until the repaint delay
   egui asked for. Idle CPU is zero unless a widget requests animation.
 
+## User requests (2026-09-03)
+
+- UI must be usable at the terminal's own text size: font size now derives
+  from the cell height (`cell_h / ppp * 0.76`), override with `--font-size`.
+  Loading the terminal's font family itself (Ghostty `font-family`, resolved
+  through CoreText / fontconfig) is a follow-up; egui's bundled fonts are
+  used until then.
+- A status bar at the bottom listing the available commands: present, and
+  visible now that the scale bug is fixed.
+- cmux panes resize and move between displays: SIGWINCH re-reads the grid
+  from the ioctl, re-queries the cell size in-band (`CSI 16 t`), and when the
+  cell height changes the scale and font size follow. Window resizes while a
+  frame is in flight are coalesced by the identical-frame skip.
+
 ## Open issues
 
 - SSH manual check not done: Remote Login is off on the dev Mac. The direct
@@ -74,6 +98,17 @@ watched mtime changed.
   Turning it on repaints at 60 fps on purpose.
 
 ## Closed issues
+
+- A gitgui whose pane was closed kept running at 100% CPU: the stdin thread
+  treated EOF like a timeout and spun, and the main loop could sleep up to an
+  hour before looking at the SIGHUP flag. EOF now ends the thread (the loop
+  exits on the closed channel) and the idle wait is capped at 500 ms.
+
+- Phase 3/4: on screen the UI was drawn at 4x (2x too big), clicks landed on
+  the wrong widgets and the status bar was off screen. Cause: egui's
+  `pixels_per_point = zoom_factor * native_pixels_per_point`; the runtime set
+  the zoom via `set_pixels_per_point` AND passed the native scale. Only the
+  native scale is passed now, with a regression test.
 
 - Phase 1: glyph rendering cost 17 ms of a 20 ms full-pane frame. Fixed with
   transparent texel skipping and nearest sampling for pixel-snapped glyphs.
