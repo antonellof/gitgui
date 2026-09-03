@@ -815,7 +815,7 @@ impl App {
                     ui.weak(format!("{:.1} ms {} x{}", self.frame_ms, self.transport, self.scale));
                     ui.separator();
                 }
-                ui.weak("j/k move  s/u stage/unstage  a/A all  c commit  f/p/P fetch/pull/push  / filter  q quit");
+                ui.label(key_hints_label(&self.theme, ui.visuals().weak_text_color()));
             });
         });
     }
@@ -870,6 +870,45 @@ fn shifted(i: &egui::InputState, key: egui::Key) -> bool {
 
 fn ctrl(i: &egui::InputState, key: egui::Key) -> bool {
     key_press(i, key).is_some_and(|m| m.ctrl)
+}
+
+/// Status bar keybinding hints: bright monospace keys, muted descriptions.
+fn key_hints_label(theme: &Theme, desc_color: egui::Color32) -> egui::text::LayoutJob {
+    use egui::text::{LayoutJob, TextFormat};
+    use egui::{FontFamily, FontId};
+
+    let key_format = TextFormat {
+        font_id: FontId::new(12.0, FontFamily::Monospace),
+        color: theme.hunk_fg,
+        ..Default::default()
+    };
+    let desc_format = TextFormat {
+        font_id: FontId::default(),
+        color: desc_color,
+        ..Default::default()
+    };
+    let sep_format = desc_format.clone();
+
+    let hints = [
+        ("j/k", "move"),
+        ("s/u", "stage/unstage"),
+        ("a/A", "all"),
+        ("c", "commit"),
+        ("f/p/P", "fetch/pull/push"),
+        ("/", "filter"),
+        ("q", "quit"),
+    ];
+
+    let mut job = LayoutJob::default();
+    for (i, (keys, desc)) in hints.iter().enumerate() {
+        if i > 0 {
+            job.append("  ", 0.0, sep_format.clone());
+        }
+        job.append(keys, 0.0, key_format.clone());
+        job.append(" ", 0.0, sep_format.clone());
+        job.append(desc, 0.0, desc_format.clone());
+    }
+    job
 }
 
 /// Human readable age like "3m", "2h", "5d", "3mo", "2y".
