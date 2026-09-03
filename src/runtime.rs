@@ -764,6 +764,10 @@ mod tests {
                             self.repo.commit(&message, amend).unwrap();
                             self.finish("commit");
                         }
+                        Command::CommitAndPush { message, amend } => {
+                            self.repo.commit(&message, amend).unwrap();
+                            self.finish("commit");
+                        }
                         other => panic!("unexpected command {other:?}"),
                     }
                 }
@@ -902,6 +906,29 @@ mod tests {
             .any(|c| matches!(c, Command::Commit { .. })));
         h.settle();
         assert_eq!(h.app.snapshot.commits[0].summary, "via button");
+
+        // Commit & Push button queues CommitAndPush.
+        t.write("a.txt", "again\n");
+        h.app.apply(Reply::Snapshot(h.repo.snapshot(100).unwrap()));
+        h.settle();
+        h.app.select(crate::ui::app::Selection::WorkingTree);
+        h.key(b"a");
+        h.settle();
+        h.app.commit_msg = "with push".into();
+        h.frame(Vec::new());
+        let rect = h
+            .app
+            .commit_push_button_rect
+            .expect("commit & push button laid out");
+        h.click(rect.center());
+        assert!(h.app.pending.iter().any(
+            |c| matches!(c, Command::CommitAndPush { message, amend: false } if message == "with push")
+        ));
+        let _ = h.app.pending.drain(..);
+        h.repo.unstage_all().unwrap();
+        t.write("a.txt", "changed\n");
+        h.app.apply(Reply::Snapshot(h.repo.snapshot(100).unwrap()));
+        h.settle();
 
         // Discard: modal asks first, Escape cancels, Enter confirms.
         t.write("a.txt", "junk\n");
