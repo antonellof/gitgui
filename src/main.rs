@@ -2,6 +2,7 @@
 //! This file only parses the CLI and dispatches to a mode.
 
 mod cli;
+mod git;
 mod render;
 mod runtime;
 mod term;
@@ -32,6 +33,7 @@ fn main() -> ExitCode {
         crash: cli.crash,
         scale: cli.scale,
         font_size: cli.font_size,
+        path: cli.path.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into())),
     };
     let result = if cli.probe {
         run_probe(cli.no_shm)

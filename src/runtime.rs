@@ -1,22 +1,23 @@
 //! The interactive loop, `--dump-input`, and the headless frame renderer.
 //! Wires egui, the rasterizer, the framebuffer and the terminal together.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context as _};
 use base64::Engine as _;
 
+use crate::git::ops::{self, Command, Reply};
+use crate::git::repo::{GitError, Repo};
 use crate::render::frame::Framebuffer;
 use crate::render::raster::{Rasterizer, Target};
 use crate::term::input::{Event, Key, Parser};
 use crate::term::{self, kitty, probe};
 use crate::ui::app::App;
 use crate::ui::input::Mapper;
+use crate::ui::theme::Theme;
 
-/// Background color behind everything, matches the egui dark theme panel.
-const CLEAR: [u8; 4] = [0x1b, 0x1b, 0x1b, 0xff];
 const MAX_TEXTURE_SIDE: usize = 8192;
 /// A lone ESC becomes the Escape key after this long without more bytes.
 const ESC_TIMEOUT: Duration = Duration::from_millis(50);
@@ -26,11 +27,19 @@ pub struct Options {
     pub crash: bool,
     pub scale: Option<f32>,
     pub font_size: Option<f32>,
+    pub path: PathBuf,
 }
 
-fn setup_context(ppp: f32, font_size: Option<f32>) -> egui::Context {
+/// Everything the main loop waits on arrives through one channel.
+enum Msg {
+    Input(Vec<u8>),
+    Git(Reply),
+}
+
+fn setup_context(ppp: f32, font_size: Option<f32>, theme: &Theme) -> egui::Context {
     let ctx = egui::Context::default();
     ctx.set_pixels_per_point(ppp);
+    theme.apply(&ctx);
     let body = font_size.unwrap_or(13.0);
     ctx.all_styles_mut(|style| {
         use egui::{FontFamily, FontId, TextStyle};
@@ -96,7 +105,8 @@ fn render_pass(
     let prims = ctx.tessellate(shapes, out.pixels_per_point);
     let t2 = Instant::now();
     raster.apply_set(&textures);
-    fb.clear(CLEAR);
+    let bg = app.theme.background;
+    fb.clear([bg.r(), bg.g(), bg.b(), 255]);
     let (w, h) = (fb.width() as usize, fb.height() as usize);
     raster.paint(&mut Target { w, h, rgba: fb.pixels_mut() }, out.pixels_per_point, &prims);
     raster.apply_free(&textures);
@@ -131,21 +141,50 @@ pub fn encode_osc52_copy(out: &mut Vec<u8>, text: &str) {
 
 pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Result<i32> {
     let ppp = opts.scale.unwrap_or(1.0);
-    let ctx = setup_context(ppp, opts.font_size);
-    let mut app = App::new("headless", ppp);
+    let theme = Theme::dark();
+    let ctx = setup_context(ppp, opts.font_size, &theme);
+    let mut app = App::new(theme, "headless", ppp);
     let mut raster = Rasterizer::new();
     let mut fb = Framebuffer::new(size.0, size.1);
     let mut t = Timings::default();
-    // Two passes: the first one loads fonts and settles layout.
-    for pass in 0..2 {
+
+    // Load the repository synchronously: snapshot, then whatever the app
+    // asks for (commit files, first diff) until it is quiet.
+    let mut repo = match Repo::open(&opts.path) {
+        Ok(r) => r,
+        Err(GitError::NotARepository(p)) => {
+            eprintln!("gitgui: not a git repository: {}", p.display());
+            return Ok(2);
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let t_git = Instant::now();
+    app.apply(Reply::Snapshot(repo.snapshot(ops::COMMIT_LIMIT)?));
+    let git_ms = t_git.elapsed().as_secs_f64() * 1e3;
+    for _ in 0..8 {
+        let cmds = std::mem::take(&mut app.pending);
+        if cmds.is_empty() {
+            break;
+        }
+        for cmd in cmds {
+            match cmd {
+                Command::LoadDiff(target) => app.apply(Reply::Diff(repo.diff(&target))),
+                Command::LoadCommitFiles(oid) => app.apply(Reply::CommitFiles(oid, repo.commit_files(oid))),
+                _ => {}
+            }
+        }
+    }
+    // Three passes: fonts load, layout settles, then the final frame.
+    for pass in 0..3 {
         let input = raw_input(size.0, size.1, ppp, pass as f64 / 60.0, true, Vec::new());
         render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
     }
     fb.save_png(path).with_context(|| format!("writing {}", path.display()))?;
     eprintln!(
-        "headless {}x{} scale {ppp}: ui {:.2} ms, tessellate {:.2} ms, raster {:.2} ms -> {}",
+        "headless {}x{} scale {ppp}: git {git_ms:.1} ms ({} commits), ui {:.2} ms, tessellate {:.2} ms, raster {:.2} ms -> {}",
         size.0,
         size.1,
+        app.snapshot.commits.len(),
         t.ui.as_secs_f64() * 1e3,
         t.tessellate.as_secs_f64() * 1e3,
         t.raster.as_secs_f64() * 1e3,
@@ -156,8 +195,7 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
 
 /// Spawn the stdin reader thread. It blocks in `poll` + `read` and ships
 /// raw byte chunks over the channel until stdin closes.
-fn spawn_stdin_thread() -> mpsc::Receiver<Vec<u8>> {
-    let (tx, rx) = mpsc::channel();
+fn spawn_stdin_thread<T: Send + 'static>(tx: mpsc::Sender<T>, wrap: impl Fn(Vec<u8>) -> T + Send + 'static) {
     std::thread::Builder::new()
         .name("stdin".into())
         .spawn(move || {
@@ -166,7 +204,7 @@ fn spawn_stdin_thread() -> mpsc::Receiver<Vec<u8>> {
                 match term::read_timeout(&mut buf, Duration::from_secs(3600)) {
                     Ok(0) => continue,
                     Ok(n) => {
-                        if tx.send(buf[..n].to_vec()).is_err() {
+                        if tx.send(wrap(buf[..n].to_vec())).is_err() {
                             break;
                         }
                     }
@@ -175,7 +213,6 @@ fn spawn_stdin_thread() -> mpsc::Receiver<Vec<u8>> {
             }
         })
         .expect("spawn stdin thread");
-    rx
 }
 
 struct Probed {
@@ -219,7 +256,8 @@ pub fn run_dump_input() -> anyhow::Result<i32> {
     )
     .into_bytes();
     term::write_all(&line)?;
-    let rx = spawn_stdin_thread();
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    spawn_stdin_thread(tx, |b| b);
     let mut last_byte = Instant::now();
     loop {
         if term::quit_requested() {
@@ -278,16 +316,31 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
         kitty::Transport::Direct => Duration::from_millis(50),
     };
 
+    // Start git before touching the screen so a bad path exits cleanly.
+    let (tx, rx) = mpsc::channel::<Msg>();
+    let git_tx = tx.clone();
+    let worker = match ops::spawn(opts.path.clone(), move |r| {
+        let _ = git_tx.send(Msg::Git(r));
+    }) {
+        Ok(w) => w,
+        Err(GitError::NotARepository(p)) => {
+            eprintln!("gitgui: not a git repository: {}", p.display());
+            return Ok(2);
+        }
+        Err(e) => return Err(e.into()),
+    };
+
     let session = term::Session::enter()?;
     let (w, h) = caps.frame_size();
-    let ctx = setup_context(ppp, opts.font_size);
-    let mut app = App::new(transport_name, ppp);
+    let theme = Theme::from_background(caps.background);
+    let ctx = setup_context(ppp, opts.font_size, &theme);
+    let mut app = App::new(theme, transport_name, ppp);
     let mut raster = Rasterizer::new();
     let mut fb = Framebuffer::new(w, h);
     let mut enc = kitty::FrameEncoder::new(transport, std::process::id());
     let mut parser = Parser::new(caps.pixel_mouse, caps.cell_w, caps.cell_h);
     let mut mapper = Mapper::new(ppp);
-    let rx = spawn_stdin_thread();
+    spawn_stdin_thread(tx, Msg::Input);
 
     let mut out = Vec::with_capacity(1 << 16);
     let mut pending: Vec<egui::Event> = Vec::new();
@@ -353,6 +406,9 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                 }
                 let total = t.ui + t.tessellate + t.raster + t_send.elapsed();
                 app.frame_ms = total.as_secs_f64() as f32 * 1e3;
+                for cmd in app.pending.drain(..) {
+                    let _ = worker.tx.send(cmd);
+                }
                 last_frame = Instant::now();
                 next_deadline = last_frame + pass.repaint_delay.min(Duration::from_secs(3600)).max(min_interval);
             }
@@ -364,9 +420,21 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
             wait = wait.min(ESC_TIMEOUT.saturating_sub(last_byte.elapsed()));
         }
         let events = match rx.recv_timeout(wait) {
-            Ok(bytes) => {
+            Ok(Msg::Input(bytes)) => {
                 last_byte = Instant::now();
                 parser.feed(&bytes)
+            }
+            Ok(Msg::Git(reply)) => {
+                app.apply(reply);
+                // Drain anything else that is already queued.
+                while let Ok(Msg::Git(r)) = rx.try_recv() {
+                    app.apply(r);
+                }
+                for cmd in app.pending.drain(..) {
+                    let _ = worker.tx.send(cmd);
+                }
+                next_deadline = Instant::now();
+                continue;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if parser.has_pending() && last_byte.elapsed() >= ESC_TIMEOUT {
@@ -389,7 +457,10 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                 {
                     quit = true
                 }
-                Event::Focus(f) => focused = *f,
+                Event::Focus(f) => {
+                    focused = *f;
+                    let _ = worker.tx.send(Command::Focus(*f));
+                }
                 _ => {}
             }
             mapper.map(ev, &mut pending);
@@ -399,6 +470,7 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
         }
         next_deadline = Instant::now();
     }
+    let _ = worker.tx.send(Command::Quit);
     drop(session);
     Ok(0)
 }
@@ -417,8 +489,9 @@ mod tests {
     #[test]
     fn headless_frame_has_panel_and_background_pixels() {
         let ppp = 1.0;
-        let ctx = setup_context(ppp, None);
-        let mut app = App::new("test", ppp);
+        let theme = Theme::dark();
+        let ctx = setup_context(ppp, None, &theme);
+        let mut app = App::new(theme, "test", ppp);
         let mut raster = Rasterizer::new();
         let mut fb = Framebuffer::new(400, 300);
         let mut t = Timings::default();
@@ -426,7 +499,9 @@ mod tests {
             let input = raw_input(400, 300, ppp, pass as f64 / 60.0, true, Vec::new());
             render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
         }
-        let clear_count = fb.pixels().as_chunks::<4>().0.iter().filter(|p| **p == CLEAR).count();
+        let bg = app.theme.background;
+        let clear = [bg.r(), bg.g(), bg.b(), 255];
+        let clear_count = fb.pixels().as_chunks::<4>().0.iter().filter(|p| **p == clear).count();
         assert!(clear_count < 400 * 300, "frame is blank");
         let bright = fb.pixels().as_chunks::<4>().0.iter().take(400 * 40).filter(|p| p[0] > 100).count();
         assert!(bright > 20, "no text pixels found in the heading band, got {bright}");
@@ -434,30 +509,38 @@ mod tests {
     }
 
     #[test]
-    fn click_increments_counter() {
-        // Drive the demo app with synthetic egui events through the same
-        // pass function the runtime uses: a click on the Increment button.
+    fn headless_renders_a_real_repo_and_selects_first_commit_file() {
+        use crate::git::repo::testutil::TempRepo;
+        let t = TempRepo::new();
+        t.commit_file("hello.txt", "hello\nworld\n", "first commit");
         let ppp = 1.0;
-        let ctx = setup_context(ppp, None);
-        let mut app = App::new("test", ppp);
+        let theme = Theme::dark();
+        let ctx = setup_context(ppp, None, &theme);
+        let mut app = App::new(theme, "test", ppp);
+        let mut repo = Repo::open(&t.dir).unwrap();
+        app.apply(Reply::Snapshot(repo.snapshot(100).unwrap()));
+        // Clean tree: first commit is selected and its files are requested.
+        assert_eq!(app.selection, crate::ui::app::Selection::Commit(0));
+        let cmds = std::mem::take(&mut app.pending);
+        assert!(matches!(cmds[0], Command::LoadCommitFiles(_)));
+        let Command::LoadCommitFiles(oid) = cmds[0].clone() else { unreachable!() };
+        app.apply(Reply::CommitFiles(oid, repo.commit_files(oid)));
+        let cmds = std::mem::take(&mut app.pending);
+        assert!(matches!(&cmds[0], Command::LoadDiff(crate::git::repo::DiffTarget::Commit(_, p)) if p == "hello.txt"));
+        let Command::LoadDiff(target) = cmds[0].clone() else { unreachable!() };
+        app.apply(Reply::Diff(repo.diff(&target)));
+        assert_eq!(app.diff.as_ref().unwrap().hunks[0].lines.len(), 2);
         let mut raster = Rasterizer::new();
-        let mut fb = Framebuffer::new(600, 400);
-        let mut t = Timings::default();
-        let input = raw_input(600, 400, ppp, 0.0, true, Vec::new());
-        render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
-        let rect = app.increment_rect.expect("increment button rect");
-        let pos = rect.center();
-        let mut mapper = Mapper::new(ppp);
-        let mut events = Vec::new();
-        let (x, y) = ((pos.x * ppp) as i32, (pos.y * ppp) as i32);
-        use crate::term::input::{Mods, MouseButton};
-        mapper.map(&Event::MouseButton { button: MouseButton::Left, pressed: true, x, y, mods: Mods::NONE }, &mut events);
-        let input = raw_input(600, 400, ppp, 0.1, true, events);
-        render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
-        let mut events = Vec::new();
-        mapper.map(&Event::MouseButton { button: MouseButton::Left, pressed: false, x, y, mods: Mods::NONE }, &mut events);
-        let input = raw_input(600, 400, ppp, 0.2, true, events);
-        render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
-        assert_eq!(app.counter, 1);
+        let mut fb = Framebuffer::new(800, 500);
+        let mut tm = Timings::default();
+        for pass in 0..3 {
+            let input = raw_input(800, 500, ppp, pass as f64 / 60.0, true, Vec::new());
+            render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut tm);
+        }
+        // The diff pane paints added-line backgrounds somewhere in the frame.
+        let add = app.theme.add_bg;
+        let add_px = [add.r(), add.g(), add.b(), 255];
+        let n = fb.pixels().as_chunks::<4>().0.iter().filter(|p| **p == add_px).count();
+        assert!(n > 100, "expected added-line background pixels, got {n}");
     }
 }

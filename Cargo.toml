@@ -10,6 +10,7 @@ libc = "0.2"
 base64 = "0.22"
 flate2 = "1"
 anyhow = "1"
+git2 = { version = "=0.21.0", default-features = false }
 png = "0.17"
 
 [dev-dependencies]

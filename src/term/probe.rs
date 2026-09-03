@@ -28,6 +28,8 @@ pub struct Capabilities {
     /// Cell grid.
     pub rows: u32,
     pub cols: u32,
+    /// Terminal background color from OSC 11, if answered.
+    pub background: Option<[u8; 3]>,
     /// Raw primary DA reply parameters, for diagnostics.
     pub da: String,
     /// Environment hints.
@@ -69,6 +71,10 @@ impl fmt::Display for Capabilities {
         writeln!(f, "grid           : {} cols x {} rows", self.cols, self.rows)?;
         let (fw, fh) = self.frame_size();
         writeln!(f, "frame          : {fw}x{fh} px, scale {}", self.pixels_per_point())?;
+        match self.background {
+            Some([r, g, b]) => writeln!(f, "background     : #{r:02x}{g:02x}{b:02x}")?,
+            None => writeln!(f, "background     : unknown")?,
+        }
         writeln!(f, "primary DA     : {}", self.da)?;
         writeln!(f, "ssh            : {}", self.ssh)?;
         writeln!(f, "TERM_PROGRAM   : {}", self.term_program)?;
@@ -90,7 +96,20 @@ pub fn parse_replies(buf: &[u8], caps: &mut Capabilities) -> bool {
             continue;
         }
         let rest = &buf[i + 1..];
-        if rest.starts_with(b"_G") {
+        if rest.starts_with(b"]") {
+            // OSC ... (ST | BEL)
+            let body = &rest[1..];
+            let st = body.windows(2).position(|w| w == b"\x1b\\");
+            let bel = body.iter().position(|&c| c == 0x07);
+            let (end, skip) = match (st, bel) {
+                (Some(s), Some(l)) if l < s => (l, 1),
+                (Some(s), _) => (s, 2),
+                (None, Some(l)) => (l, 1),
+                (None, None) => break,
+            };
+            parse_osc_reply(&body[..end], caps);
+            i += 1 + 1 + end + skip;
+        } else if rest.starts_with(b"_G") {
             // APC G ... ST
             let Some(end) = find(rest, b"\x1b\\") else { break };
             parse_graphics_reply(&rest[2..end], caps);
@@ -156,6 +175,28 @@ pub fn parse_replies(buf: &[u8], caps: &mut Capabilities) -> bool {
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// `11;rgb:rrrr/gggg/bbbb` (16 bit per channel) or `11;rgb:rr/gg/bb`.
+fn parse_osc_reply(body: &[u8], caps: &mut Capabilities) {
+    let text = String::from_utf8_lossy(body);
+    let Some(rest) = text.strip_prefix("11;") else { return };
+    let Some(rgb) = rest.strip_prefix("rgb:") else { return };
+    let parts: Vec<&str> = rgb.split('/').collect();
+    if parts.len() != 3 {
+        return;
+    }
+    let mut out = [0u8; 3];
+    for (i, p) in parts.iter().enumerate() {
+        let Ok(v) = u32::from_str_radix(p, 16) else { return };
+        out[i] = match p.len() {
+            1 => (v * 17) as u8,
+            2 => v as u8,
+            3 => (v >> 4) as u8,
+            _ => (v >> 8) as u8,
+        };
+    }
+    caps.background = Some(out);
 }
 
 fn parse_graphics_reply(body: &[u8], caps: &mut Capabilities) {
@@ -235,7 +276,7 @@ pub fn probe(shm_probe: bool, timeout: Duration) -> std::io::Result<Capabilities
     } else {
         None
     };
-    out.extend_from_slice(b"\x1b[?u\x1b[?1016$p\x1b[16t\x1b[14t\x1b[18t\x1b[c");
+    out.extend_from_slice(b"\x1b[?u\x1b[?1016$p\x1b]11;?\x1b\\\x1b[16t\x1b[14t\x1b[18t\x1b[c");
     super::write_all(&out)?;
 
     let deadline = Instant::now() + timeout;
@@ -329,6 +370,19 @@ mod tests {
         assert!(parse_replies(bytes, &mut caps));
         assert_eq!((caps.cell_w, caps.cell_h), (8, 16));
         assert_eq!(caps.pixels_per_point(), 1.0);
+    }
+
+    #[test]
+    fn osc11_background() {
+        let mut caps = Capabilities::default();
+        assert!(parse_replies(b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\\x1b[?c", &mut caps));
+        assert_eq!(caps.background, Some([0x1e, 0x1e, 0x2e]));
+        let mut caps = Capabilities::default();
+        assert!(parse_replies(b"\x1b]11;rgb:ff/ff/ff\x07\x1b[?c", &mut caps));
+        assert_eq!(caps.background, Some([0xff, 0xff, 0xff]));
+        let mut caps = Capabilities::default();
+        assert!(parse_replies(b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\\x1b[?c", &mut caps));
+        assert_eq!(caps.background, None, "foreground reply is ignored");
     }
 
     #[test]
