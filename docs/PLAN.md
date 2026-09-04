@@ -15,7 +15,7 @@ this file tracks where we are, what was decided, and what is open.
 | 4 writes | done | b4de578 | stage/unstage files and hunks, commit, amend, checkout, branches, stash, discard, fetch/pull/push via git CLI |
 | 5 integration | done | b394bdc | split.rs, agent.rs, skill/SKILL.md, install script, release workflow |
 | post-v0.1 polish | done | ccdf818 | v0.1.1 to v0.1.4: keyboard shortcuts, agent network ops, auto refresh, footer toolbar, branch picker, GitHub publish |
-| review pass | done | (this commit) | 2026-09-04 audit: layout fixes for short and narrow panes, socket permissions, bounds checks; see "Review 2026-09-04" |
+| review pass | done | f38d9a3 | 2026-09-04 audit: layout fixes for short and narrow panes, socket permissions, bounds checks; see "Review 2026-09-04" |
 
 ## Measurements
 
@@ -196,8 +196,9 @@ few sessions, large = a milestone.
 Not planned for v0.x: interactive rebase, bisect, submodules, worktrees,
 sparse checkout, patch export. Use the git CLI in the neighbouring pane.
 
-### Recently shipped (v0.1.1 to v0.1.4)
+### Recently shipped (v0.1.1 to v0.1.5)
 
+- v0.1.5: review pass, see "Review 2026-09-04"
 - v0.1.4: footer toolbar with fetch / pull / push / refresh / quit, branch
   picker with dirty-tree confirm, publish to GitHub via `gh`, init screen
   for non-git folders, compact commit box, wrap-aware diff row heights
