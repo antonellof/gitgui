@@ -192,7 +192,7 @@ Release binaries are built by `.github/workflows/release.yml` on tag push (`v*`)
 - Auto refresh every 2 s when the repo changes (no need to press `r` after edits in another pane)
 - Agent control socket: `gitgui ls`, `gitgui action '{"cmd":"status"}'` (see [skill/SKILL.md](skill/SKILL.md))
 
-Status: **v0.1.5**. Phases 0 to 5 of the roadmap are done. See [Roadmap](#roadmap) and [docs/PLAN.md](docs/PLAN.md) for open issues.
+Status: **v0.1.6**. Phases 0 to 5 of the roadmap are done. See [Roadmap](#roadmap) and [docs/PLAN.md](docs/PLAN.md) for open issues.
 
 ## Architecture
 
@@ -301,6 +301,7 @@ Post v0.1, in priority order (details and sizes in [docs/PLAN.md](docs/PLAN.md))
 - [x] Auto refresh, keyboard shortcuts, agent network ops (v0.1.3)
 - [x] Footer toolbar, branch picker, publish to GitHub, init screen (v0.1.4)
 - [x] Layout fixes for short and narrow panes, owner-only agent socket, filter keeps a visible selection (v0.1.5)
+- [x] Full commit message body in the commit detail (v0.1.6)
 - [ ] Diff search and in-file navigation
 - [ ] Conflict resolution UI: merge and rebase state, ours / theirs per hunk, abort
 - [ ] Commit context menu: cherry-pick, revert, tag, branch here, reset
