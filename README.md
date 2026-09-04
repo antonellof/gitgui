@@ -7,17 +7,31 @@ A git GUI that runs inside your terminal.
 <p align="center">
   <a href="screenshot/gitgui-commits.png"><img src="screenshot/thumb/gitgui-commits.png" width="24%" alt="Commit graph, commit detail with the full message body, and diff"></a>
   <a href="screenshot/gitgui-branches.png"><img src="screenshot/thumb/gitgui-branches.png" width="24%" alt="Branch switcher over a repo with many branches"></a>
-  <a href="screenshot/gitgui-demo-1.mp4"><img src="screenshot/thumb/gitgui-demo-1.png" width="24%" alt="Video: Claude Code opens gitgui in a cmux split and drives a release"></a>
-  <a href="screenshot/gitgui-demo-skill.mp4"><img src="screenshot/thumb/gitgui-demo-skill.png" width="24%" alt="Video: an agent uses the gitgui skill to stage, stash and inspect the repo"></a>
+  <a href="#demo-agent-opens-gitgui-in-a-split"><img src="screenshot/thumb/gitgui-demo-1.png" width="24%" alt="Demo: Claude Code opens gitgui in a cmux split and drives a release"></a>
+  <a href="#demo-agent-drives-gitgui-through-the-skill"><img src="screenshot/thumb/gitgui-demo-skill.png" width="24%" alt="Demo: an agent uses the gitgui skill to stage, stash and inspect the repo"></a>
 </p>
 <p align="center">
   <sub>
     <a href="screenshot/gitgui-commits.png">commits and diff</a> ·
     <a href="screenshot/gitgui-branches.png">branch switcher</a> ·
-    <a href="screenshot/gitgui-demo-1.mp4">video: agent opens gitgui in a split</a> ·
-    <a href="screenshot/gitgui-demo-skill.mp4">video: agent drives gitgui through the skill</a>
+    <a href="#demo-agent-opens-gitgui-in-a-split">demo: agent opens gitgui in a split</a> ·
+    <a href="#demo-agent-drives-gitgui-through-the-skill">demo: agent drives gitgui through the skill</a>
   </sub>
 </p>
+
+### Demo: agent opens gitgui in a split
+
+Claude Code in the left pane runs `gitgui --split right .`, then reviews, commits and cuts a release while gitgui refreshes on its own.
+
+![Claude Code opens gitgui in a cmux split and drives a release](screenshot/gitgui-demo-1.gif)
+
+### Demo: agent drives gitgui through the skill
+
+The agent reads `skill/SKILL.md` and uses `gitgui action` to inspect status, stage files and take screenshots of the pane.
+
+![An agent uses the gitgui skill to stage, stash and inspect the repo](screenshot/gitgui-demo-skill.gif)
+
+<sub>HD versions: <a href="screenshot/gitgui-demo-1.mp4">demo 1 (mp4)</a> · <a href="screenshot/gitgui-demo-skill.mp4">skill demo (mp4)</a>. GitHub does not play repo-hosted video inline, so the README uses GIFs.</sub>
 
 ## Why
 

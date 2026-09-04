@@ -191,7 +191,7 @@ few sessions, large = a milestone.
    sidebar context menu; `Ctrl+U` to set upstream on push.
 8. **Repo switcher** (small): recent repos list, `--repo` history file
    under XDG config.
-9. **README demo**: done 2026-09-04, two mp4 recordings under the hero screenshot (h264, half resolution, 1.6 MB and 0.9 MB; the .mov originals stay out of git).
+9. **README demo**: done 2026-09-04, inline GIFs (960 px, 6 fps, 2.2 MB and 1.6 MB) because GitHub does not play repo-hosted mp4 inline; mp4 and .mov kept alongside.
 
 Not planned for v0.x: interactive rebase, bisect, submodules, worktrees,
 sparse checkout, patch export. Use the git CLI in the neighbouring pane.
