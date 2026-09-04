@@ -27,7 +27,6 @@ The agent reads `skill/SKILL.md` and uses `gitgui action` to inspect status, sta
 
 ![An agent uses the gitgui skill to stage, stash and inspect the repo](screenshot/gitgui-demo-skill.gif)
 
-<sub>HD versions: <a href="screenshot/gitgui-demo-1.mp4">demo 1 (mp4)</a> · <a href="screenshot/gitgui-demo-skill.mp4">skill demo (mp4)</a>. GitHub does not play repo-hosted video inline, so the README uses GIFs.</sub>
 
 ## Why
 
