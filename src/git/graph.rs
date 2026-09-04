@@ -167,6 +167,7 @@ mod tests {
             short: format!("{id:07x}"),
             parents: parents.iter().map(|p| oid(*p)).collect(),
             summary: String::new(),
+            body: String::new(),
             author: String::new(),
             email: String::new(),
             time: 0,

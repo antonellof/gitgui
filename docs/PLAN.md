@@ -198,6 +198,10 @@ sparse checkout, patch export. Use the git CLI in the neighbouring pane.
 
 ### Recently shipped (v0.1.1 to v0.1.5)
 
+- unreleased: commit detail shows the full message body, word-wrapped, above
+  the file list (`CommitRow::body`); footer ahead/behind uses words because
+  the bundled fonts have no arrow glyphs
+
 - v0.1.5: review pass, see "Review 2026-09-04"
 - v0.1.4: footer toolbar with fetch / pull / push / refresh / quit, branch
   picker with dirty-tree confirm, publish to GitHub via `gh`, init screen
