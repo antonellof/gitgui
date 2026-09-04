@@ -11,3 +11,4 @@ Developer helpers for manual checks. Not part of the binary.
   logical screen coordinates. Needs Accessibility permission for the terminal.
   Terminals encode typed text, so raw mouse escape sequences cannot be injected
   with `cmux send`; this tool is the way to exercise the mouse path.
+
