@@ -5,17 +5,13 @@ A git GUI that runs inside your terminal.
 ![gitgui in a cmux split next to pi](screenshot/gitgui-cmux-pi.png)
 
 <p align="center">
-  <a href="screenshot/gitgui-commits.png"><img src="screenshot/thumb/gitgui-commits.png" width="24%" alt="Commit graph, commit detail with the full message body, and diff"></a>
-  <a href="screenshot/gitgui-branches.png"><img src="screenshot/thumb/gitgui-branches.png" width="24%" alt="Branch switcher over a repo with many branches"></a>
-  <a href="#demo-agent-opens-gitgui-in-a-split"><img src="screenshot/thumb/gitgui-demo-1.png" width="24%" alt="Demo: Claude Code opens gitgui in a cmux split and drives a release"></a>
-  <a href="#demo-agent-drives-gitgui-through-the-skill"><img src="screenshot/thumb/gitgui-demo-skill.png" width="24%" alt="Demo: an agent uses the gitgui skill to stage, stash and inspect the repo"></a>
+  <a href="screenshot/gitgui-commits.png"><img src="screenshot/thumb/gitgui-commits.png" width="49%" alt="Commit graph, commit detail with the full message body, and diff"></a>
+  <a href="screenshot/gitgui-branches.png"><img src="screenshot/thumb/gitgui-branches.png" width="49%" alt="Branch switcher over a repo with many branches"></a>
 </p>
 <p align="center">
   <sub>
     <a href="screenshot/gitgui-commits.png">commits and diff</a> ·
-    <a href="screenshot/gitgui-branches.png">branch switcher</a> ·
-    <a href="#demo-agent-opens-gitgui-in-a-split">demo: agent opens gitgui in a split</a> ·
-    <a href="#demo-agent-drives-gitgui-through-the-skill">demo: agent drives gitgui through the skill</a>
+    <a href="screenshot/gitgui-branches.png">branch switcher</a>
   </sub>
 </p>
 
