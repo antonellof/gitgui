@@ -86,6 +86,8 @@ pub struct CommitRow {
     pub short: String,
     pub parents: Vec<Oid>,
     pub summary: String,
+    /// Message after the first paragraph, trimmed. Empty for one-liners.
+    pub body: String,
     pub author: String,
     pub email: String,
     /// Seconds since the epoch, author time.
@@ -495,6 +497,7 @@ impl Repo {
                 short: short_id(oid),
                 parents: c.parent_ids().collect(),
                 summary: c.summary().ok().flatten().unwrap_or("").to_owned(),
+                body: c.body().ok().flatten().unwrap_or("").trim().to_owned(),
                 author: author.name().unwrap_or("").to_owned(),
                 email: author.email().unwrap_or("").to_owned(),
                 time: author.when().seconds(),

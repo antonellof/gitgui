@@ -42,27 +42,43 @@ fn show_commit(app: &mut App, ui: &mut egui::Ui, idx: usize, _focused: bool) {
         ui.weak(&c.email);
         ui.weak(format_time(c.time));
     });
-    ui.label(egui::RichText::new(&c.summary).strong());
+    ui.add(egui::Label::new(egui::RichText::new(&c.summary).strong()).wrap());
     ui.separator();
     let files = app.commit_files.get(&c.oid).cloned();
     let mut clicked: Option<DiffTarget> = None;
-    egui::ScrollArea::vertical().id_salt("commit_files").auto_shrink([false, false]).show(ui, |ui| match files {
-        None => {
-            ui.weak("loading files");
-        }
-        Some(files) => {
-            if files.is_empty() {
-                ui.weak("no changes");
+    // The message body and the file list scroll together: a long body must
+    // not push the files out of a short pane, and a long file list must not
+    // hide the body.
+    egui::ScrollArea::vertical()
+        .id_salt("commit_files")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if !c.body.is_empty() {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&c.body).monospace())
+                        .wrap(),
+                );
+                ui.add_space(4.0);
+                ui.separator();
             }
-            for f in &files {
-                let target = DiffTarget::Commit(c.oid, f.path.clone());
-                let selected = app.selected_file.as_ref() == Some(&target);
-                if file_row(ui, f, selected, &app.theme).clicked() {
-                    clicked = Some(target);
+            match files {
+                None => {
+                    ui.weak("loading files");
+                }
+                Some(files) => {
+                    if files.is_empty() {
+                        ui.weak("no changes");
+                    }
+                    for f in &files {
+                        let target = DiffTarget::Commit(c.oid, f.path.clone());
+                        let selected = app.selected_file.as_ref() == Some(&target);
+                        if file_row(ui, f, selected, &app.theme).clicked() {
+                            clicked = Some(target);
+                        }
+                    }
                 }
             }
-        }
-    });
+        });
     if let Some(t) = clicked {
         app.focus = Pane::Detail;
         app.select_file(Some(t));

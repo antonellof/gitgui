@@ -1168,7 +1168,12 @@ impl App {
                             .iter()
                             .find(|b| b.is_head)
                             .filter(|b| b.ahead > 0 || b.behind > 0)
-                            .map(|b| format!("{}\u{2191} {}\u{2193}", b.ahead, b.behind));
+                            .map(|b| match (b.ahead, b.behind) {
+                                // The bundled fonts have no arrow glyphs.
+                                (a, 0) => format!("{a} ahead"),
+                                (0, b) => format!("{b} behind"),
+                                (a, b) => format!("{a} ahead, {b} behind"),
+                            });
                         (Some(name), ab)
                     }
                     None => (None, None),
