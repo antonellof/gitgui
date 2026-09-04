@@ -124,10 +124,12 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
             "--size" => {
                 let v = value("--size")?;
                 if let Some((w, h)) = v.split_once('x') {
-                    cli.size = (
-                        w.parse().map_err(|_| format!("bad width {w:?}"))?,
-                        h.parse().map_err(|_| format!("bad height {h:?}"))?,
-                    );
+                    let w: u32 = w.parse().map_err(|_| format!("bad width {w:?}"))?;
+                    let h: u32 = h.parse().map_err(|_| format!("bad height {h:?}"))?;
+                    if !(1..=16384).contains(&w) || !(1..=16384).contains(&h) {
+                        return Err(format!("size {w}x{h} out of range 1..16384"));
+                    }
+                    cli.size = (w, h);
                 } else {
                     let f: f32 = v.parse().map_err(|_| format!("bad size {v:?}"))?;
                     if !(0.2..=0.95).contains(&f) {

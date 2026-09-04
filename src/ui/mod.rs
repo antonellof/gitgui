@@ -8,6 +8,7 @@ pub mod icons;
 pub mod input;
 pub mod log;
 pub mod logo;
+pub mod row;
 pub mod sidebar;
 pub mod theme;
 pub mod toolbar;

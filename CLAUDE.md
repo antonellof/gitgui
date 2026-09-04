@@ -22,7 +22,9 @@ No async runtime. One thread for the UI loop, one thread that reads stdin into a
 
 ```
 src/
-  main.rs            CLI parsing, mode dispatch (interactive, headless-frame, dump-input)
+  main.rs            wires modules, mode dispatch (interactive, headless-frame, dump-input, probe)
+  cli.rs             argument parsing and --help
+  runtime.rs         interactive main loop: input channel, egui run, raster, frame send, resize
   term/
     mod.rs           raw mode, alt screen, enable/disable sequences, restore on exit and panic
     probe.rs         capability probing: kitty graphics, kitty keyboard, cell size, pixel size
@@ -36,11 +38,16 @@ src/
     graph.rs         commit graph lane assignment
     ops.rs           slow ops on the worker thread (fetch/pull/push via git CLI)
   ui/
-    app.rs           top-level egui app state and layout
+    app.rs           top-level egui app state, panels, footer, modals, keybindings
     sidebar.rs       branches, remotes, tags, stashes
     log.rs           commit list with graph column
-    changes.rs       working tree: unstaged/staged file lists, commit box
-    diff.rs          diff viewer with per-hunk stage/unstage
+    changes.rs       working tree: unstaged/staged file lists, commit box, layout math
+    diff.rs          diff viewer with per-hunk stage/unstage, wrap toggle
+    toolbar.rs       footer buttons (fetch, pull, push, refresh, quit), icon-only below 560 pt
+    branch_picker.rs branch switcher modal
+    row.rs           row helper: trailing widgets from the right, leading side clipped
+    input.rs         egui RawInput from terminal events
+    icons.rs, logo.rs small painted glyphs
     theme.rs         colors derived from terminal palette (OSC 10/11 query, fallback dark)
   split.rs           open in a terminal split (cmux, Ghostty) with in-place fallback
   agent.rs           unix socket JSON-lines control API (phase 5)

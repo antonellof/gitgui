@@ -10,7 +10,7 @@ use git2::Oid;
 use crate::git::ops::{Command, Reply};
 use crate::git::repo::{DiffTarget, DiffText, FileStatus, RepoSnapshot};
 use crate::ui::theme::Theme;
-use crate::ui::{branch_picker, changes, diff, icons, log, sidebar, toolbar};
+use crate::ui::{branch_picker, changes, diff, icons, log, row, sidebar, toolbar};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selection {
@@ -451,6 +451,16 @@ impl App {
                 .map(|(i, _)| i)
                 .collect()
         };
+        // Keep the selection on a visible row: a commit the filter hid, or
+        // the working tree row while a filter is active, would otherwise make
+        // the next j / k jump to the top.
+        let rows = self.log_rows();
+        if !rows.contains(&self.selection) {
+            if let Some(first) = rows.first().copied() {
+                self.select(first);
+                self.scroll_to_selection = true;
+            }
+        }
     }
 
     pub fn select(&mut self, sel: Selection) {
@@ -684,8 +694,9 @@ impl App {
             return;
         }
 
+        let sidebar_w = (root.available_width() * 0.25).clamp(140.0, 220.0);
         egui::Panel::left("sidebar")
-            .default_size(220.0)
+            .default_size(sidebar_w)
             .resizable(true)
             .show(root, |ui| {
                 sidebar::show(self, ui);
@@ -748,20 +759,24 @@ impl App {
     }
 
     fn status_bar_no_repo(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-            let path = self.repo_path.to_string_lossy();
-            let shown = match std::env::var("HOME") {
-                Ok(h) if path.starts_with(&h) => format!("~{}", &path[h.len()..]),
-                _ => path.to_string(),
-            };
-            ui.label(shown.trim_end_matches('/').to_owned());
-            ui.separator();
-            ui.weak("no git repository");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let repo_path = self.repo_path.clone();
+        row::split(
+            ui,
+            |ui| {
                 toolbar::show(self, ui);
-            });
-        });
+                ui.separator();
+            },
+            |ui| {
+                let path = repo_path.to_string_lossy();
+                let shown = match std::env::var("HOME") {
+                    Ok(h) if path.starts_with(&h) => format!("~{}", &path[h.len()..]),
+                    _ => path.to_string(),
+                };
+                ui.label(shown.trim_end_matches('/').to_owned());
+                ui.separator();
+                ui.weak("no git repository");
+            },
+        );
     }
 
     fn handle_keys_no_repo(&mut self, ctx: &egui::Context) {
@@ -1124,69 +1139,114 @@ impl App {
         let snapshot = self.snapshot.clone();
         let busy = self.busy;
         let modal_open = self.modal.is_some();
-        ui.horizontal(|ui| {
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-            let s = &snapshot;
-            let path = s.path.to_string_lossy();
-            let shown = match std::env::var("HOME") {
-                Ok(h) if path.starts_with(&h) => format!("~{}", &path[h.len()..]),
-                _ => path.to_string(),
-            };
-            ui.label(shown.trim_end_matches('/').to_owned());
-            ui.separator();
-            let can_pick_branch = busy == 0 && !modal_open;
-            if let Some(h) = &s.head {
-                let name = h.branch_name.clone().unwrap_or_else(|| {
-                    h.oid
-                        .map(|o| format!("detached {}", crate::git::repo::short_id(o)))
-                        .unwrap_or_else(|| "no HEAD".into())
-                });
-                let branch_color = ui.visuals().text_color();
-                let mut picked = false;
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 3.0;
-                    if ui
-                        .add(
-                            egui::Label::new(egui::RichText::new(name).strong())
-                                .sense(egui::Sense::click()),
-                        )
-                        .on_hover_text("Switch branch")
-                        .clicked()
-                    {
-                        picked = true;
-                    }
-                    if icons::chevron_down(ui, branch_color)
-                        .on_hover_text("Switch branch")
-                        .clicked()
-                    {
-                        picked = true;
-                    }
-                });
-                if picked && can_pick_branch {
-                    open_picker.set(true);
+        let show_debug = self.show_debug;
+        let debug = format!("{:.1} ms {} x{}", self.frame_ms, self.transport, self.scale);
+        let last_op = self.last_op.clone();
+        row::split(
+            ui,
+            |ui| {
+                toolbar::show(self, ui);
+                if show_debug {
+                    ui.separator();
+                    ui.weak(debug);
                 }
-                if let Some(b) = s.branches.iter().find(|b| b.is_head) {
-                    if b.ahead > 0 || b.behind > 0 {
-                        ui.weak(format!("{}↑ {}↓", b.ahead, b.behind));
-                    }
-                }
-            } else {
-                ui.weak("loading");
-            }
-            ui.separator();
-            ui.weak(format!("{} unstaged, {} staged", s.unstaged.len(), s.staged.len()));
-            if let Some(op) = &self.last_op {
                 ui.separator();
-                ui.weak(op.clone());
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.show_debug {
-                    ui.weak(format!("{:.1} ms {} x{}", self.frame_ms, self.transport, self.scale));
+            },
+            |ui| {
+                let s = &snapshot;
+                let can_pick_branch = busy == 0 && !modal_open;
+                let counts = format!("{} unstaged, {} staged", s.unstaged.len(), s.staged.len());
+                let (name, ahead_behind) = match &s.head {
+                    Some(h) => {
+                        let name = h.branch_name.clone().unwrap_or_else(|| {
+                            h.oid
+                                .map(|o| format!("detached {}", crate::git::repo::short_id(o)))
+                                .unwrap_or_else(|| "no HEAD".into())
+                        });
+                        let ab = s
+                            .branches
+                            .iter()
+                            .find(|b| b.is_head)
+                            .filter(|b| b.ahead > 0 || b.behind > 0)
+                            .map(|b| format!("{}\u{2191} {}\u{2193}", b.ahead, b.behind));
+                        (Some(name), ab)
+                    }
+                    None => (None, None),
+                };
+                // The path is the least important item: give it only what the
+                // branch and the counts leave over, so those two stay visible.
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                let measure = |t: &str| {
+                    ui.painter()
+                        .layout_no_wrap(t.to_owned(), font.clone(), egui::Color32::WHITE)
+                        .size()
+                        .x
+                };
+                let spacing = ui.spacing().item_spacing.x;
+                let mut reserved = measure(name.as_deref().unwrap_or("loading")) + 16.0 + spacing * 4.0 + 8.0;
+                reserved += measure(&counts) + spacing * 2.0 + 8.0;
+                if let Some(ab) = &ahead_behind {
+                    reserved += measure(ab) + spacing;
+                }
+                if let Some(op) = &last_op {
+                    reserved += measure(op) + spacing * 2.0 + 8.0;
+                }
+                let path = s.path.to_string_lossy();
+                let shown = match std::env::var("HOME") {
+                    Ok(h) if path.starts_with(&h) => format!("~{}", &path[h.len()..]),
+                    _ => path.to_string(),
+                };
+                let shown = shown.trim_end_matches('/').to_owned();
+                let path_w = (ui.available_width() - reserved).min(measure(&shown) + 2.0);
+                if path_w > 24.0 {
+                    ui.add_sized(
+                        [path_w, ui.spacing().interact_size.y],
+                        egui::Label::new(shown).truncate(),
+                    );
                     ui.separator();
                 }
-                toolbar::show(self, ui);
-            });
-        });
+                match name {
+                    Some(name) => {
+                        let branch_color = ui.visuals().text_color();
+                        let mut picked = false;
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 3.0;
+                            if ui
+                                .add(
+                                    egui::Label::new(egui::RichText::new(name).strong())
+                                        .sense(egui::Sense::click()),
+                                )
+                                .on_hover_text("Switch branch")
+                                .clicked()
+                            {
+                                picked = true;
+                            }
+                            if icons::chevron_down(ui, branch_color)
+                                .on_hover_text("Switch branch")
+                                .clicked()
+                            {
+                                picked = true;
+                            }
+                        });
+                        if picked && can_pick_branch {
+                            open_picker.set(true);
+                        }
+                        if let Some(ab) = ahead_behind {
+                            ui.weak(ab);
+                        }
+                    }
+                    None => {
+                        ui.weak("loading");
+                    }
+                }
+                ui.separator();
+                ui.weak(counts);
+                if let Some(op) = last_op {
+                    ui.separator();
+                    ui.weak(op);
+                }
+            },
+        );
         if open_picker.get() {
             self.open_branch_picker();
         }

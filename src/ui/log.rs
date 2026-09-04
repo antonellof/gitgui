@@ -125,7 +125,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     );
                 }
                 Selection::Commit(ci) => {
-                    let c = &app.snapshot.commits[ci];
+                    let Some(c) = app.snapshot.commits.get(ci) else { continue };
                     if let Some(layout) = app.snapshot.graph.rows.get(ci) {
                         let next = app.snapshot.graph.rows.get(ci + 1);
                         draw_graph_row(painter, graph_rect, layout, next, &theme, lanes);
@@ -150,7 +150,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     let summary_w = (rect.max.x - right_w - x).max(40.0);
                     let body = egui::TextStyle::Body.resolve(ui.style());
                     let color = ui.visuals().text_color();
-                    let galley = painter.layout(c.summary.clone(), body.clone(), color, summary_w);
+                    let galley = painter.layout_no_wrap(c.summary.clone(), body.clone(), color);
                     let clip =
                         Rect::from_min_max(pos2(x, rect.min.y), pos2(x + summary_w, rect.max.y));
                     painter.with_clip_rect(clip).galley(

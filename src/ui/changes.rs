@@ -84,22 +84,41 @@ fn show_worktree(app: &mut App, ui: &mut egui::Ui, _focused: bool) {
         modal: None,
     };
 
-    let total_h = ui.available_height();
-    let commit_h = commit_box_height(total_h);
+    // Hard split: the commit box owns the bottom `commit_h` points no matter
+    // how tall the lists want to be, so it never gets pushed off screen in a
+    // short pane. Each half is clipped to its own rect.
+    let mut full = ui.available_rect_before_wrap();
+    if ui.is_sizing_pass() || !full.height().is_finite() {
+        // The panel measures its content before it has a stored size; report
+        // a modest height instead of filling whatever it offers.
+        full.max.y = full.min.y + 260.0;
+    }
+    let total_h = full.height();
+    let commit_h = commit_box_height(total_h).min(total_h);
     let lists_h = (total_h - commit_h).max(0.0);
+    let lists_rect =
+        egui::Rect::from_min_size(full.min, egui::vec2(full.width(), lists_h));
+    let commit_rect = egui::Rect::from_min_max(
+        egui::pos2(full.min.x, full.max.y - commit_h),
+        full.max,
+    );
 
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), lists_h),
-        egui::Layout::top_down(egui::Align::LEFT),
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(lists_rect)
+            .layout(egui::Layout::top_down(egui::Align::LEFT)),
         |ui| {
+            ui.set_clip_rect(lists_rect.intersect(ui.clip_rect()));
             show_worktree_lists(app, ui, &s, lists_h, busy, &mut action);
         },
     );
 
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), commit_h),
-        egui::Layout::top_down(egui::Align::LEFT),
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(commit_rect)
+            .layout(egui::Layout::top_down(egui::Align::LEFT)),
         |ui| {
+            ui.set_clip_rect(commit_rect.intersect(ui.clip_rect()));
             show_commit_box(app, ui, &s, commit_h, busy);
         },
     );
@@ -137,15 +156,23 @@ pub fn commit_message_rows(box_h: f32) -> usize {
     }
 }
 
-/// Split the list column between unstaged and staged scroll areas.
-pub fn list_scroll_heights(lists_h: f32) -> (f32, f32) {
+/// Height of one file row in the unstaged / staged lists.
+pub const FILE_ROW_H: f32 = 22.0;
+
+/// Split the list column between the unstaged and staged scroll areas.
+/// A list only takes what its rows need; the other list gets the rest, so
+/// an empty "nothing staged" section does not waste half of a short pane.
+pub fn list_scroll_heights(lists_h: f32, unstaged_rows: usize, staged_rows: usize) -> (f32, f32) {
     const UNSTAGED_CHROME: f32 = 52.0;
     const STAGED_CHROME: f32 = 28.0;
     const SEPARATOR: f32 = 8.0;
-    let scroll_total =
-        (lists_h - UNSTAGED_CHROME - STAGED_CHROME - SEPARATOR).max(0.0);
-    let each = scroll_total / 2.0;
-    (each, each)
+    let total = (lists_h - UNSTAGED_CHROME - STAGED_CHROME - SEPARATOR).max(0.0);
+    let need = |rows: usize| rows.max(1) as f32 * FILE_ROW_H + 4.0;
+    let (need_u, need_s) = (need(unstaged_rows), need(staged_rows));
+    let half = total / 2.0;
+    let u = need_u.min(total - need_s.min(half)).max(0.0);
+    let s = (total - u).max(0.0);
+    (u, s)
 }
 
 fn show_commit_box(app: &mut App, ui: &mut egui::Ui, s: &crate::git::repo::RepoSnapshot, box_h: f32, busy: bool) {
@@ -178,45 +205,58 @@ fn show_commit_box(app: &mut App, ui: &mut egui::Ui, s: &crate::git::repo::RepoS
     } else {
         commit_tip
     };
-    ui.horizontal(|ui| {
-        let before = app.amend;
-        let author = format!("{} <{}>", s.user_name, s.user_email);
-        ui.checkbox(&mut app.amend, "Amend")
-            .on_hover_text(author);
-        if app.amend && !before && app.commit_msg.trim().is_empty() {
-            app.amend_loaded = true;
-            if let Some(m) = &s.head_message {
-                app.commit_msg = m.trim_end().to_owned();
-            }
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    // Buttons first, from the right; the amend checkbox takes what is left and
+    // is clipped instead of overlapping in a narrow column. Both closures
+    // need the app, so clicks are collected and applied afterwards.
+    let amend = app.amend;
+    let mut new_amend = amend;
+    let clicked_commit = std::cell::Cell::new(false);
+    let clicked_push = std::cell::Cell::new(false);
+    let commit_rect = std::cell::Cell::new(None);
+    let push_rect = std::cell::Cell::new(None);
+    let author = format!("{} <{}>", s.user_name, s.user_email);
+    crate::ui::row::split(
+        ui,
+        |ui| {
             let commit = ui
                 .add_enabled(
                     can_commit,
-                    egui::Button::new(if app.amend { "Amend" } else { "Commit" }).small(),
+                    egui::Button::new(if amend { "Amend" } else { "Commit" }).small(),
                 )
                 .on_hover_text(commit_tip);
-            app.commit_button_rect = Some(commit.rect);
-            if commit.clicked() {
-                app.commit_now();
-            }
+            commit_rect.set(Some(commit.rect));
+            clicked_commit.set(commit.clicked());
             let commit_push = ui
                 .add_enabled(
                     can_commit,
-                    egui::Button::new(if app.amend {
-                        "Amend & Push"
-                    } else {
-                        "Commit & Push"
-                    })
-                    .small(),
+                    egui::Button::new(if amend { "Amend & Push" } else { "Commit & Push" })
+                        .small(),
                 )
                 .on_hover_text(push_tip);
-            app.commit_push_button_rect = Some(commit_push.rect);
-            if commit_push.clicked() {
-                app.commit_and_push_now();
-            }
-        });
-    });
+            push_rect.set(Some(commit_push.rect));
+            clicked_push.set(commit_push.clicked());
+        },
+        |ui| {
+            // In a narrow column the label would truncate to a stray dot.
+            let label = if ui.available_width() < 72.0 { "" } else { "Amend" };
+            ui.checkbox(&mut new_amend, label)
+                .on_hover_text(format!("Amend the last commit\n{author}"));
+        },
+    );
+    app.commit_button_rect = commit_rect.get();
+    app.commit_push_button_rect = push_rect.get();
+    app.amend = new_amend;
+    if new_amend && !amend && app.commit_msg.trim().is_empty() {
+        app.amend_loaded = true;
+        if let Some(m) = &s.head_message {
+            app.commit_msg = m.trim_end().to_owned();
+        }
+    }
+    if clicked_commit.get() {
+        app.commit_now();
+    } else if clicked_push.get() {
+        app.commit_and_push_now();
+    }
 }
 
 fn show_worktree_lists(
@@ -227,7 +267,11 @@ fn show_worktree_lists(
     busy: bool,
     action: &mut WorktreeListAction,
 ) {
-    let (unstaged_h, staged_h) = list_scroll_heights(lists_h);
+    let (unstaged_h, staged_h) = list_scroll_heights(
+        lists_h,
+        s.unstaged.len() + s.conflicted.len(),
+        s.staged.len(),
+    );
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.strong(format!("Unstaged ({})", s.unstaged.len() + s.conflicted.len()));
@@ -248,6 +292,7 @@ fn show_worktree_lists(
     egui::ScrollArea::vertical()
         .id_salt("unstaged")
         .max_height(unstaged_h)
+        .min_scrolled_height(0.0)
         .auto_shrink([false, false])
         .show(ui, |ui| {
             for f in s.conflicted.iter().chain(s.unstaged.iter()) {
@@ -276,6 +321,7 @@ fn show_worktree_lists(
     egui::ScrollArea::vertical()
         .id_salt("staged")
         .max_height(staged_h)
+        .min_scrolled_height(0.0)
         .auto_shrink([false, false])
         .show(ui, |ui| {
             for f in &s.staged {
@@ -333,7 +379,7 @@ mod tests {
         let total = 225.0;
         let commit = commit_box_height(total);
         let lists = total - commit;
-        let (u, s) = list_scroll_heights(lists);
+        let (u, s) = list_scroll_heights(lists, 3, 3);
         const UNSTAGED_CHROME: f32 = 52.0;
         const STAGED_CHROME: f32 = 28.0;
         const SEPARATOR: f32 = 8.0;
@@ -344,6 +390,17 @@ mod tests {
         );
         assert_eq!(commit, 88.0);
         assert!(u >= 0.0 && s >= 0.0);
+    }
+
+    #[test]
+    fn empty_list_yields_space_to_the_other() {
+        let (u, s) = list_scroll_heights(200.0, 6, 0);
+        assert!(s < u, "empty staged list took {s} pt, unstaged got {u}");
+        assert!(u + s <= 200.0 - 88.0 + 0.5);
+        let (u, s) = list_scroll_heights(200.0, 0, 6);
+        assert!(u < s);
+        let (u, s) = list_scroll_heights(200.0, 20, 20);
+        assert!((u - s).abs() < 0.5, "both full lists split evenly: {u} {s}");
     }
 
     #[test]
