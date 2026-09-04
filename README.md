@@ -5,8 +5,8 @@ A git GUI that runs inside your terminal.
 ![gitgui in a cmux split next to pi](screenshot/gitgui-cmux-pi.png)
 
 <p align="center">
-  <a href="screenshot/gitgui-commits.png"><img src="screenshot/thumb/gitgui-commits.png" width="49%" alt="Commit graph, commit detail with the full message body, and diff"></a>
-  <a href="screenshot/gitgui-branches.png"><img src="screenshot/thumb/gitgui-branches.png" width="49%" alt="Branch switcher over a repo with many branches"></a>
+  <a href="screenshot/gitgui-commits.png"><img src="screenshot/gitgui-commits.png" width="49%" alt="Commit graph, commit detail with the full message body, and diff"></a>
+  <a href="screenshot/gitgui-branches.png"><img src="screenshot/gitgui-branches.png" width="49%" alt="Branch switcher over a repo with many branches"></a>
 </p>
 <p align="center">
   <sub>
