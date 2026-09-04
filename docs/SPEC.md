@@ -143,8 +143,26 @@ Layout, egui:
 │ Tags          │  working tree selected: unstaged | staged | diff   │
 │ Stashes       │                          commit message + button   │
 └───────────────┴────────────────────────────────────────────────────┘
-status bar: repo path, branch, ahead/behind, last op result, key hints
+footer: repo path, branch switcher, ahead/behind, counts, last op | fetch pull push | refresh | quit
 ```
+
+Layout rules learned the hard way (see PLAN, "Review 2026-09-04"):
+
+- A row with trailing widgets (buttons on the right, text on the left) goes
+  through `ui/row.rs`: trailing side first from the right edge, leading side
+  clipped to what is left. Never put a `right_to_left` layout after the
+  leading widgets in a `horizontal`; it overflows to the left when the pane
+  is narrow.
+- Anything that must stay visible at the bottom of a panel (the commit box)
+  gets a hard rect from the panel's bottom edge, and the content above it is
+  clipped. `allocate_ui_with_layout` is a minimum size, not a maximum.
+- `ScrollArea` defaults to a 64 pt minimum; short panes need
+  `min_scrolled_height(0.0)`.
+- Egui panels run a sizing pass before they have a stored size. Report a
+  fixed height in that pass (`ui.is_sizing_pass()`) instead of filling the
+  offered rect.
+- Below 560 pt of footer width the toolbar drops its labels. The sidebar
+  defaults to 25 % of the width, clamped to 140..220 pt.
 
 Behaviors:
 
@@ -165,11 +183,16 @@ Single keys and Ctrl combos the terminal does not claim:
 j / k, Down / Up      move selection          Enter          open / checkout
 s / u                 stage / unstage         a / Shift+A    stage all / unstage all
 c                     focus commit message    Ctrl+Enter     commit
+Shift+S               stash                   Ctrl+Shift+Enter  commit and push
 /                     filter                  Escape         clear filter / close modal
 f / p / Shift+P       fetch / pull / push     r              refresh
 Tab                   cycle focus between sidebar, list, detail
 q, Ctrl+C             quit
 ```
+
+Single keys are ignored while a text field has focus; `Ctrl+Enter`,
+`Ctrl+Shift+Enter` and `Escape` still work there. `Ctrl+Shift+Enter` is the
+one `Ctrl+Shift` binding we claim; terminals do not use it.
 
 ### Theme
 

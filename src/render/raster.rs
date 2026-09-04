@@ -157,6 +157,9 @@ impl Rasterizer {
                     }
                     Some([px, py]) => {
                         if let Some(t) = self.textures.get_mut(id) {
+                            if px >= t.w {
+                                continue;
+                            }
                             for row in 0..ih {
                                 let ty = py + row;
                                 if ty >= t.h {

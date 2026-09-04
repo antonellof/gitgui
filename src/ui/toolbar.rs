@@ -14,24 +14,29 @@ enum Icon {
     Refresh,
 }
 
+/// Below this width the buttons drop their labels and show icons only.
+pub const COMPACT_BELOW: f32 = 560.0;
+
 pub fn show(app: &mut App, ui: &mut Ui) {
     let busy = app.busy > 0;
+    let compact = ui.available_width() < COMPACT_BELOW;
+    let label = |s: &'static str| if compact { "" } else { s };
 
     ui.horizontal(|ui| {
         ui.add_space(4.0);
-        if labeled_button(ui, &app.theme, Icon::Fetch, "Fetch", "Fetch (f)", !busy).clicked() {
+        if labeled_button(ui, &app.theme, Icon::Fetch, label("Fetch"), "Fetch (f)", !busy).clicked() {
             app.run(Command::Fetch);
         }
-        if labeled_button(ui, &app.theme, Icon::Pull, "Pull", "Pull (p)", !busy).clicked() {
+        if labeled_button(ui, &app.theme, Icon::Pull, label("Pull"), "Pull (p)", !busy).clicked() {
             app.run(Command::Pull);
         }
-        if labeled_button(ui, &app.theme, Icon::Push, "Push", "Push (Shift+P)", !busy).clicked() {
+        if labeled_button(ui, &app.theme, Icon::Push, label("Push"), "Push (Shift+P)", !busy).clicked() {
             app.run(Command::Push);
         }
         ui.add_space(6.0);
         ui.separator();
         ui.add_space(6.0);
-        if labeled_button(ui, &app.theme, Icon::Refresh, "Refresh", "Refresh (r)", !busy)
+        if labeled_button(ui, &app.theme, Icon::Refresh, label("Refresh"), "Refresh (r)", !busy)
             .clicked()
         {
             app.pending.push(Command::Refresh);
@@ -57,7 +62,7 @@ fn labeled_button(
     let h = ui.spacing().interact_size.y;
     let icon_w = 16.0;
     let pad_x = 8.0;
-    let gap = 5.0;
+    let gap = if label.is_empty() { 0.0 } else { 5.0 };
     let text_w = ui
         .painter()
         .layout_no_wrap(

@@ -282,7 +282,7 @@ Run `gitgui` on the remote machine inside an SSH session in a supported terminal
 | Cycle panes | `Tab` |
 | Quit | `q`, `Ctrl+C` |
 
-Mouse: click files to view diffs, `+` / `-` to stage or unstage, `Stage hunk` on a hunk header, double-click a branch to check it out, right-click branches, tags and stashes for more.
+Mouse: click files to view diffs, `+` / `-` to stage or unstage, `Stage hunk` on a hunk header, double-click a branch to check it out, right-click branches, tags and stashes for more. The footer shows the branch switcher, dirty counts, and the fetch / pull / push / refresh / quit buttons; in panes narrower than about 560 pt the buttons show icons only.
 
 gitgui never binds `Cmd+*`. Most `Ctrl+Shift+*` combos stay with your terminal; the exception is `Ctrl+Shift+Enter` to commit and push from the commit box.
 
@@ -295,15 +295,23 @@ gitgui never binds `Cmd+*`. Most `Ctrl+Shift+*` combos stay with your terminal; 
 - [x] Phase 4: writes. Stage and unstage by file and hunk, commit, amend, branches, stash, fetch, pull, push.
 - [x] Phase 5: integration. Split panes (cmux, kitty), agent control socket, install script, release workflow, agent skill file.
 
-Post v0.1 (see [docs/PLAN.md](docs/PLAN.md)):
+Post v0.1, in priority order (details and sizes in [docs/PLAN.md](docs/PLAN.md)):
 
-- [ ] Terminal font family matching (Ghostty `font-family` via CoreText / fontconfig)
+- [x] Commit and push button and agent command (v0.1.1)
+- [x] Auto refresh, keyboard shortcuts, agent network ops (v0.1.3)
+- [x] Footer toolbar, branch picker, publish to GitHub, init screen (v0.1.4)
+- [x] Layout fixes for short and narrow panes, owner-only agent socket, filter keeps a visible selection (unreleased)
 - [ ] Diff search and in-file navigation
-- [ ] Conflict resolution UI for merge conflicts
+- [ ] Conflict resolution UI: merge and rebase state, ours / theirs per hunk, abort
+- [ ] Commit context menu: cherry-pick, revert, tag, branch here, reset
+- [ ] Terminal font family matching (Ghostty `font-family` via CoreText / fontconfig)
+- [ ] File history and blame
 - [ ] tmux / Zellij graphics passthrough
+- [ ] Remote add / remove, set upstream on push
+- [ ] Recent repos switcher
 - [ ] README demo recording
-- [x] Commit and push button and agent command
-- [x] Status bar key hint styling
+
+Not planned: interactive rebase, bisect, submodules, worktrees. Use the git CLI in the neighbouring pane.
 
 ## Development
 

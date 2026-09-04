@@ -23,6 +23,14 @@ pub fn socket_dir() -> PathBuf {
     std::env::temp_dir().join("gitgui")
 }
 
+/// Best effort chmod so other local users cannot drive our repository
+/// through the control socket. Errors are ignored: the directory may live on
+/// a filesystem without POSIX permissions.
+fn restrict_to_owner(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstanceMeta {
     pub pid: u32,
@@ -66,6 +74,7 @@ impl Server {
     pub fn bind(repo: &Path, tx: mpsc::Sender<AgentJob>) -> Result<Self> {
         let dir = socket_dir();
         fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+        restrict_to_owner(&dir, 0o700);
         let pid = std::process::id();
         let sock_path = dir.join(format!("{pid}.sock"));
         let meta_path = dir.join(format!("{pid}.json"));
@@ -78,6 +87,7 @@ impl Server {
         fs::write(&meta_path, serde_json::to_vec_pretty(&meta)?)?;
         let listener = UnixListener::bind(&sock_path)
             .with_context(|| format!("bind {}", sock_path.display()))?;
+        restrict_to_owner(&sock_path, 0o600);
         listener
             .set_nonblocking(true)
             .context("set_nonblocking on agent socket")?;

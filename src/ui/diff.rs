@@ -25,6 +25,9 @@ struct PaintCtx<'a> {
     busy: bool,
 }
 
+/// Width of the stage / unstage button drawn on the right of a hunk header.
+const HUNK_BUTTON_W: f32 = 100.0;
+
 thread_local! {
     static PENDING: std::cell::RefCell<Option<Command>> = const { std::cell::RefCell::new(None) };
 }
@@ -36,8 +39,13 @@ pub fn take_pending(_app: &mut App) -> Option<Command> {
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let theme = app.theme.clone();
-    ui.horizontal(|ui| {
-        match &app.selected_file {
+    let selected = app.selected_file.clone();
+    crate::ui::row::split(
+        ui,
+        |ui| {
+            ui.checkbox(&mut app.wrap, "wrap");
+        },
+        |ui| match &selected {
             Some(t) => {
                 let kind = match t {
                     DiffTarget::WorkdirUnstaged(_) => "unstaged",
@@ -50,11 +58,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             None => {
                 ui.weak("no file selected");
             }
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.checkbox(&mut app.wrap, "wrap");
-        });
-    });
+        },
+    );
     ui.separator();
     let Some(d) = app.diff.as_ref() else {
         if app.diff_loading {
@@ -159,11 +164,16 @@ fn paint_row(
     match row {
         Row::Hunk(hunk_index, header) => {
             let header_galley = if wrap {
+                let reserved = if ctx.hunk_action.is_some() {
+                    HUNK_BUTTON_W + 20.0
+                } else {
+                    12.0
+                };
                 Some(p.layout(
                     (*header).to_owned(),
                     ctx.font.clone(),
                     ctx.theme.hunk_fg,
-                    (view_w - 12.0).max(1.0),
+                    (view_w - reserved).max(1.0),
                 ))
             } else {
                 None
@@ -174,6 +184,14 @@ fn paint_row(
                 .unwrap_or(ctx.row_h);
             let (rect, _resp) = ui.allocate_exact_size(vec2(content_w, height), Sense::hover());
             p.rect_filled(rect, 0.0, ctx.theme.hunk_bg);
+            let text_right = if ctx.hunk_action.is_some() {
+                rect.min.x + view_w - HUNK_BUTTON_W - 14.0
+            } else {
+                rect.min.x + view_w
+            };
+            let p = p.with_clip_rect(
+                Rect::from_min_max(rect.min, pos2(text_right, rect.max.y)).intersect(p.clip_rect()),
+            );
             if let Some(galley) = &header_galley {
                 p.galley(
                     pos2(rect.min.x + 6.0, rect.min.y + 1.0),
@@ -191,7 +209,7 @@ fn paint_row(
             }
             if let Some((path, stage)) = &ctx.hunk_action {
                 let label = if *stage { "Stage hunk" } else { "Unstage hunk" };
-                let bw = 100.0;
+                let bw = HUNK_BUTTON_W;
                 let brect = Rect::from_min_size(
                     pos2(rect.min.x + view_w - bw - 8.0, rect.min.y + 1.0),
                     vec2(bw, ctx.row_h - 2.0),
