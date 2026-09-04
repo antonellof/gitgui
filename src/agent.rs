@@ -81,7 +81,7 @@ impl Server {
         let _ = fs::remove_file(&sock_path);
         let meta = InstanceMeta {
             pid,
-            repo: repo.to_path_buf(),
+            repo: repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf()),
             tty: controlling_tty(),
         };
         fs::write(&meta_path, serde_json::to_vec_pretty(&meta)?)?;
