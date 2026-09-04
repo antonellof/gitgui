@@ -4,6 +4,21 @@ A git GUI that runs inside your terminal.
 
 ![gitgui in a cmux split next to pi](screenshot/gitgui-cmux-pi.png)
 
+<p align="center">
+  <a href="screenshot/gitgui-commits.png"><img src="screenshot/thumb/gitgui-commits.png" width="24%" alt="Commit graph, commit detail with the full message body, and diff"></a>
+  <a href="screenshot/gitgui-branches.png"><img src="screenshot/thumb/gitgui-branches.png" width="24%" alt="Branch switcher over a repo with many branches"></a>
+  <a href="screenshot/gitgui-demo-1.mp4"><img src="screenshot/thumb/gitgui-demo-1.png" width="24%" alt="Video: Claude Code opens gitgui in a cmux split and drives a release"></a>
+  <a href="screenshot/gitgui-demo-skill.mp4"><img src="screenshot/thumb/gitgui-demo-skill.png" width="24%" alt="Video: an agent uses the gitgui skill to stage, stash and inspect the repo"></a>
+</p>
+<p align="center">
+  <sub>
+    <a href="screenshot/gitgui-commits.png">commits and diff</a> ·
+    <a href="screenshot/gitgui-branches.png">branch switcher</a> ·
+    <a href="screenshot/gitgui-demo-1.mp4">video: agent opens gitgui in a split</a> ·
+    <a href="screenshot/gitgui-demo-skill.mp4">video: agent drives gitgui through the skill</a>
+  </sub>
+</p>
+
 ## Why
 
 I live in [cmux](https://cmux.dev) (Ghostty-based terminal workspaces) and wanted a real git GUI in a pane next to my coding agent, not a separate Electron app or a text-mode TUI. gitgui renders pixels inside the terminal: commit graph, staging area, diff viewer, hunk staging, all in the same window as [pi](https://pi.dev) or any other CLI agent. One small Rust binary, no browser engine, works over SSH.
@@ -310,7 +325,7 @@ Post v0.1, in priority order (details and sizes in [docs/PLAN.md](docs/PLAN.md))
 - [ ] tmux / Zellij graphics passthrough
 - [ ] Remote add / remove, set upstream on push
 - [ ] Recent repos switcher
-- [ ] README demo recording
+- [x] README demo recordings (two videos under the hero screenshot)
 
 Not planned: interactive rebase, bisect, submodules, worktrees. Use the git CLI in the neighbouring pane.
 
