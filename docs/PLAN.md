@@ -16,7 +16,8 @@ this file tracks where we are, what was decided, and what is open.
 | 5 integration | done | b394bdc | split.rs, agent.rs, skill/SKILL.md, install script, release workflow |
 | post-v0.1 polish | done | ccdf818 | v0.1.1 to v0.1.4: keyboard shortcuts, agent network ops, auto refresh, footer toolbar, branch picker, GitHub publish |
 | review pass | done | f38d9a3 | 2026-09-04 audit: layout fixes for short and narrow panes, socket permissions, bounds checks; see "Review 2026-09-04" |
-| feature parity pass | done | (this commit) | 2026-09-05: line staging, diff search / context / whitespace, commit menu, history rewriting, merge / rebase state and conflicts, branch / remote / tag / stash operations, help; see "Feature audit 2026-09-05" |
+| feature parity pass | done | a2c3498 | 2026-09-05: line staging, diff search / context / whitespace, commit menu, history rewriting, merge / rebase state and conflicts, branch / remote / tag / stash operations, help; see "Feature audit 2026-09-05" |
+| editor and file tree | done | (this commit) | 2026-09-05: built-in editor with syntax colors (`ui/editor.rs`, `ui/highlight.rs`), `Shift+E` external editor in a split with `--editor` / `gitgui.editor`, `Shift+O` cmux file preview, sidebar file tree (`ui/tree.rs`, lazy `Command::ListDir`), `--open` |
 
 ## Measurements
 
@@ -73,6 +74,17 @@ watched mtime changed.
   paste arrives through bracketed paste.
 - Frame pacing: the loop sleeps on the input channel until the repaint delay
   egui asked for. Idle CPU is zero unless a widget requests animation.
+
+- Editor: the galley for the highlighted text is cached on a hash of the
+  buffer, recomputed inside the layouter because `TextEdit` lays out again
+  after each edit in the same frame. `Escape` that opens the unsaved-changes
+  dialog is consumed so the dialog does not see it and close at once.
+- Editor resolution for `Shift+E`: `--editor`, `git config gitgui.editor`,
+  `$GITGUI_EDITOR`, `$VISUAL`, `$EDITOR`, `vi`. GUI editors run detached,
+  matched on the basename of the first word; everything else gets a split.
+- File tree: directories are listed by the worker on demand (`ListDir`),
+  never walked eagerly; a snapshot re-lists the root and open folders. `.git`
+  is skipped, ignored entries stay visible but dimmed.
 
 ## User requests (2026-09-03)
 
@@ -280,7 +292,18 @@ neighbouring pane.
 - Agent API: `fetch`, `pull`, `push`, `commit_and_push`
 - **Auto refresh**: git worker polls every 2 s; refreshes when worktree fingerprint or `.git/` mtimes change, even when the gitgui pane is unfocused (edits from pi in a neighboring cmux pane show up without pressing `r`)
 
+### Editor and tree follow-ups
+
+- Keyboard navigation inside the file tree (j / k, Enter, Left / Right).
+- Editor: search (`Ctrl+F` currently belongs to the diff), go to line,
+  soft wrap toggle, tab width from `.editorconfig`.
+- Highlighter: string interpolation, doc comments, more languages on demand.
+
 ### Manual verification still owed
+
+- File tree clicks, folder expansion and the file menu in a real pane
+  (2026-09-05: tree rendering and `e` verified on screen, clicks only in the
+  harness test).
 
 Commit via button, Stage hunk, branch context menus, fetch/pull/push log,
 branch picker, publish to GitHub. The 2026-09-04 layout fixes were verified

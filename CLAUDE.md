@@ -45,6 +45,9 @@ src/
     log.rs           commit list with graph column
     changes.rs       working tree: unstaged/staged file lists, commit box, layout math
     diff.rs          diff viewer: hunk and line staging, discard, search, context, whitespace, wrap
+    editor.rs        built-in file editor in the diff pane: gutter, save, close dialog, $EDITOR / cmux hand-off
+    highlight.rs     dependency-free syntax highlighter for the editor (per-language rules by extension)
+    tree.rs          sidebar file tree of the whole working tree, lazy listings via Command::ListDir
     toolbar.rs       footer buttons (fetch, pull, push, refresh, quit), icon-only below 560 pt
     branch_picker.rs branch switcher modal
     menus.rs         commit right-click menu

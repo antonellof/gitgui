@@ -466,6 +466,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         ui.weak("  none");
                     }
                 });
+
+            crate::ui::tree::show(app, ui);
         });
 
     if let Some((name, oid)) = clicked {

@@ -93,6 +93,8 @@ fn main() -> ExitCode {
         crash: cli.crash,
         scale: cli.scale,
         font_size: cli.font_size,
+        editor: cli.editor.clone(),
+        open: cli.open.clone(),
         path: repo,
     };
     let result = if cli.probe {
