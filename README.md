@@ -209,14 +209,20 @@ Release binaries are built by `.github/workflows/release.yml` on tag push (`v*`)
 
 ## What you get
 
-- Commit graph with branch lanes, sidebar (branches, tags, stashes)
-- Stage and unstage files and hunks, commit, amend
-- Branch checkout, create, delete; stash push, pop, drop
-- Fetch, pull, push (via your `git` CLI and credential helpers)
+- Commit graph with branch lanes, sidebar (branches, remotes, tags, stashes)
+- Stage and unstage files, hunks and individual lines; discard by file, hunk or line; commit, amend
+- Commit menu: cherry-pick, revert, tag, branch here, checkout detached, reset soft / mixed / hard, copy hash, open in browser
+- History rewriting from the commit menu: reword, squash, fixup, drop, move up / down, edit, autosquash (runs `git rebase` for you, no editor pops up)
+- Branches: checkout, create, rename, delete, merge, rebase onto, fast-forward, set upstream, open pull request; delete on the remote
+- Merge, rebase, cherry-pick and revert state in the footer with continue / abort / skip; conflicted files show their markers and resolve with ours / theirs
+- Remotes: add, rename, edit URL, remove, fetch one; tags: create (annotated or light), delete, push; stashes: apply, pop, drop, keep index, branch from stash
+- Diff search, adjustable context, whitespace toggle, word wrap
+- Fetch, pull, pull with rebase, push, force push with lease (via your `git` CLI and credential helpers)
 - Auto refresh every 2 s when the repo changes (no need to press `r` after edits in another pane)
+- `?` shows every shortcut; right-click anything for the rest
 - Agent control socket: `gitgui ls`, `gitgui action '{"cmd":"status"}'` (see [skill/SKILL.md](skill/SKILL.md))
 
-Status: **v0.1.6**. Phases 0 to 5 of the roadmap are done. See [Roadmap](#roadmap) and [docs/PLAN.md](docs/PLAN.md) for open issues.
+Status: **v0.2.0**. Phases 0 to 5 of the roadmap and the feature parity pass are done. See [Roadmap](#roadmap) and [docs/PLAN.md](docs/PLAN.md) for open issues.
 
 ## Architecture
 
@@ -289,24 +295,36 @@ Run `gitgui` on the remote machine inside an SSH session in a supported terminal
 
 ## Shortcuts
 
+Press `?` inside gitgui for the full list. The main ones:
+
 | Action | Key |
 |---|---|
 | Move selection | `j` / `k`, `Down` / `Up` |
 | Open, checkout | `Enter` |
-| Stage, unstage | `s` / `u` |
+| Stage, unstage (file or selected lines) | `s` / `u` |
+| Toggle staged | `Space` |
 | Stage all, unstage all | `a` / `Shift+A` |
+| Discard file or selected lines, discard everything | `d` / `Shift+D` |
+| Ignore the selected untracked file | `i` |
 | Focus commit message | `c` |
 | Commit | `Ctrl+Enter` |
 | Commit and push | `Ctrl+Shift+Enter` |
 | Stash | `Shift+S` |
 | Filter commits | `/` |
-| Clear filter, close modal | `Escape` |
+| Search in the diff, next / previous match | `Ctrl+F`, `n` / `Shift+N` |
+| Diff context, whitespace | `{` / `}`, `Ctrl+W` |
+| New branch, tag, cherry-pick, revert, reset at the selected commit | `n`, `Shift+T`, `Shift+C`, `t`, `g` |
+| Reword, drop, move the selected commit | `Shift+R`, `d`, `Shift+K` / `Shift+J` |
+| Copy hash, open commit in browser | `y`, `o` |
+| Continue, abort or skip a merge / rebase | `m` |
+| Clear filter, search or selection; close dialog | `Escape` |
 | Fetch, pull, push | `f` / `p` / `Shift+P` |
 | Refresh | `r` |
 | Cycle panes | `Tab` |
+| Help | `?` |
 | Quit | `q`, `Ctrl+C` |
 
-Mouse: click files to view diffs, `+` / `-` to stage or unstage, `Stage hunk` on a hunk header, double-click a branch to check it out, right-click branches, tags and stashes for more. The footer shows the branch switcher, dirty counts, and the fetch / pull / push / refresh / quit buttons; in panes narrower than about 560 pt the buttons show icons only.
+Mouse: click files to view diffs, `+` / `-` to stage or unstage, `Stage hunk` and `Discard hunk` on a hunk header, click / Shift+click / drag diff lines to select them for line staging, double-click a branch to check it out, right-click commits, branches, remotes, tags, stashes and files for everything else. Right-click the Push button for a force push, Pull for pull with rebase, Fetch for a single remote. The footer shows the branch switcher, dirty counts, a merge / rebase banner with continue and abort when one is in progress, and the fetch / pull / push / refresh / quit buttons; in panes narrower than about 560 pt the buttons show icons only.
 
 gitgui never binds `Cmd+*`. Most `Ctrl+Shift+*` combos stay with your terminal; the exception is `Ctrl+Shift+Enter` to commit and push from the commit box.
 
@@ -326,17 +344,16 @@ Post v0.1, in priority order (details and sizes in [docs/PLAN.md](docs/PLAN.md))
 - [x] Footer toolbar, branch picker, publish to GitHub, init screen (v0.1.4)
 - [x] Layout fixes for short and narrow panes, owner-only agent socket, filter keeps a visible selection (v0.1.5)
 - [x] Full commit message body in the commit detail (v0.1.6)
-- [ ] Diff search and in-file navigation
-- [ ] Conflict resolution UI: merge and rebase state, ours / theirs per hunk, abort
-- [ ] Commit context menu: cherry-pick, revert, tag, branch here, reset
+- [x] README demo recordings (two videos under the hero screenshot)
+- [x] Feature parity pass (v0.2.0): line staging, diff search / context / whitespace, commit menu with cherry-pick, revert, tag, reset, history rewriting (reword, squash, fixup, drop, move, edit, autosquash), merge / rebase state with continue, abort, skip and ours / theirs conflict resolution, branch merge / rebase / fast-forward / rename / upstream, remotes, tags, stash options, force push, pull with rebase, help dialog
 - [ ] Terminal font family matching (Ghostty `font-family` via CoreText / fontconfig)
 - [ ] File history and blame
 - [ ] tmux / Zellij graphics passthrough
-- [ ] Remote add / remove, set upstream on push
 - [ ] Recent repos switcher
-- [x] README demo recordings (two videos under the hero screenshot)
+- [ ] Multi-select in file lists, file tree view
+- [ ] Undo / redo from the reflog, reflog view
 
-Not planned: interactive rebase, bisect, submodules, worktrees. Use the git CLI in the neighbouring pane.
+Not planned: an interactive rebase editor (single-commit rewrites are in the commit menu), bisect, submodules, worktrees. Use the git CLI in the neighbouring pane.
 
 ## Development
 

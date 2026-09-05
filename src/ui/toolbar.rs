@@ -22,17 +22,58 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     let compact = ui.available_width() < COMPACT_BELOW;
     let label = |s: &'static str| if compact { "" } else { s };
 
+    let remotes = app.snapshot.remotes.clone();
+    let mut cmd: Option<Command> = None;
+    let mut force_push = false;
     ui.horizontal(|ui| {
         ui.add_space(4.0);
-        if labeled_button(ui, &app.theme, Icon::Fetch, label("Fetch"), "Fetch (f)", !busy).clicked() {
-            app.run(Command::Fetch);
+        let fetch = labeled_button(ui, &app.theme, Icon::Fetch, label("Fetch"), "Fetch (f); right click for one remote", !busy);
+        if fetch.clicked() {
+            cmd = Some(Command::Fetch);
         }
-        if labeled_button(ui, &app.theme, Icon::Pull, label("Pull"), "Pull (p)", !busy).clicked() {
-            app.run(Command::Pull);
+        fetch.context_menu(|ui| {
+            for r in &remotes {
+                if ui.add_enabled(!busy, egui::Button::new(format!("Fetch {r}"))).clicked() {
+                    cmd = Some(Command::FetchRemote(r.clone()));
+                    ui.close();
+                }
+            }
+            if remotes.is_empty() {
+                ui.weak("no remotes");
+            }
+        });
+        let pull = labeled_button(ui, &app.theme, Icon::Pull, label("Pull"), "Pull (p); right click for pull --rebase", !busy);
+        if pull.clicked() {
+            cmd = Some(Command::Pull);
         }
-        if labeled_button(ui, &app.theme, Icon::Push, label("Push"), "Push (Shift+P)", !busy).clicked() {
-            app.run(Command::Push);
+        pull.context_menu(|ui| {
+            if ui.add_enabled(!busy, egui::Button::new("Pull (merge)")).clicked() {
+                cmd = Some(Command::Pull);
+                ui.close();
+            }
+            if ui.add_enabled(!busy, egui::Button::new("Pull with rebase")).clicked() {
+                cmd = Some(Command::PullRebase);
+                ui.close();
+            }
+        });
+        let push = labeled_button(ui, &app.theme, Icon::Push, label("Push"), "Push (Shift+P); right click to force", !busy);
+        if push.clicked() {
+            cmd = Some(Command::Push);
         }
+        push.context_menu(|ui| {
+            if ui.add_enabled(!busy, egui::Button::new("Push")).clicked() {
+                cmd = Some(Command::Push);
+                ui.close();
+            }
+            if ui
+                .add_enabled(!busy, egui::Button::new("Force push (with lease)"))
+                .on_hover_text("git push --force-with-lease, asks for confirmation")
+                .clicked()
+            {
+                force_push = true;
+                ui.close();
+            }
+        });
         ui.add_space(6.0);
         ui.separator();
         ui.add_space(6.0);
@@ -49,6 +90,17 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             app.request_quit();
         }
     });
+    if let Some(c) = cmd {
+        app.run(c);
+    }
+    if force_push {
+        app.confirm(
+            "Force push",
+            "Overwrite the remote branch with the local one? --force-with-lease refuses when the remote moved since your last fetch.".into(),
+            "Force push",
+            Command::ForcePush,
+        );
+    }
 }
 
 fn labeled_button(

@@ -46,6 +46,24 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
         },
+        cli::Mode::SequenceEditor(file) => {
+            return match git::rebase::run_sequence_editor(&file) {
+                Ok(code) => ExitCode::from(code as u8),
+                Err(e) => {
+                    eprintln!("gitgui: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        cli::Mode::CommitEditor(file) => {
+            return match git::rebase::run_commit_editor(&file) {
+                Ok(code) => ExitCode::from(code as u8),
+                Err(e) => {
+                    eprintln!("gitgui: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         cli::Mode::Run => {}
     }
     let repo = cli

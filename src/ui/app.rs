@@ -7,10 +7,12 @@ use std::time::Instant;
 
 use git2::Oid;
 
-use crate::git::ops::{Command, Reply};
-use crate::git::repo::{DiffTarget, DiffText, FileStatus, RepoSnapshot};
+use crate::git::actions::{ConflictSide, ResetKind};
+use crate::git::ops::{Command, Reply, StateAction};
+use crate::git::rebase::TodoAction;
+use crate::git::repo::{DiffOpts, DiffTarget, DiffText, FileStatus, RepoSnapshot, RepoState};
 use crate::ui::theme::Theme;
-use crate::ui::{branch_picker, changes, diff, icons, log, row, sidebar, toolbar};
+use crate::ui::{branch_picker, changes, diff, help, icons, log, row, sidebar, toolbar};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selection {
@@ -43,9 +45,6 @@ pub enum Modal {
         checkout: bool,
     },
     DeleteBranch(String),
-    StashPush {
-        message: String,
-    },
     DropStash(usize),
     /// Pick a branch to switch to (click current branch in the status bar).
     BranchPicker {
@@ -61,6 +60,177 @@ pub enum Modal {
         description: String,
         private: bool,
     },
+    /// Yes / no before a command that is hard to undo.
+    Confirm {
+        title: &'static str,
+        body: String,
+        button: &'static str,
+        cmd: Command,
+    },
+    /// One or two text fields that build a command.
+    Input {
+        kind: InputKind,
+        value: String,
+        extra: String,
+    },
+    /// Soft / mixed / hard reset of the current branch to a commit.
+    Reset {
+        oid: Oid,
+        label: String,
+    },
+    /// Stash with options.
+    StashOpts {
+        message: String,
+        keep_index: bool,
+        include_untracked: bool,
+    },
+    /// Continue / abort / skip the in-progress operation.
+    StateMenu,
+    /// Keyboard reference.
+    Help,
+}
+
+/// What an [`Modal::Input`] dialog is for. `value` is the first field,
+/// `extra` the optional second one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputKind {
+    /// Tag name, optional annotation message.
+    Tag { oid: Oid, label: String },
+    RenameBranch { old: String },
+    /// Multiline commit message.
+    Reword { oid: Oid, is_root: bool },
+    /// Remote name and URL.
+    RemoteAdd,
+    RemoteUrl { name: String },
+    RemoteRename { old: String },
+    /// Remote branch like `origin/main`.
+    SetUpstream { branch: String },
+    BranchFromStash { index: usize },
+    /// Pattern for .gitignore.
+    Ignore,
+}
+
+impl InputKind {
+    pub fn title(&self) -> &'static str {
+        match self {
+            InputKind::Tag { .. } => "New tag",
+            InputKind::RenameBranch { .. } => "Rename branch",
+            InputKind::Reword { .. } => "Reword commit",
+            InputKind::RemoteAdd => "Add remote",
+            InputKind::RemoteUrl { .. } => "Remote URL",
+            InputKind::RemoteRename { .. } => "Rename remote",
+            InputKind::SetUpstream { .. } => "Set upstream",
+            InputKind::BranchFromStash { .. } => "Branch from stash",
+            InputKind::Ignore => "Ignore",
+        }
+    }
+
+    /// (first field hint, second field hint or None).
+    pub fn hints(&self) -> (&'static str, Option<&'static str>) {
+        match self {
+            InputKind::Tag { .. } => ("tag name", Some("message (optional, makes an annotated tag)")),
+            InputKind::RenameBranch { .. } => ("new name", None),
+            InputKind::Reword { .. } => ("commit message", None),
+            InputKind::RemoteAdd => ("name", Some("url")),
+            InputKind::RemoteUrl { .. } => ("url", None),
+            InputKind::RemoteRename { .. } => ("new name", None),
+            InputKind::SetUpstream { .. } => ("remote/branch", None),
+            InputKind::BranchFromStash { .. } => ("branch name", None),
+            InputKind::Ignore => ("pattern", None),
+        }
+    }
+
+    pub fn multiline(&self) -> bool {
+        matches!(self, InputKind::Reword { .. })
+    }
+
+    pub fn valid(&self, value: &str, extra: &str) -> bool {
+        let v = value.trim();
+        match self {
+            InputKind::RemoteAdd => !v.is_empty() && !v.contains(' ') && !extra.trim().is_empty(),
+            InputKind::Reword { .. } | InputKind::Ignore | InputKind::RemoteUrl { .. } => {
+                !v.is_empty()
+            }
+            _ => !v.is_empty() && !v.contains(' '),
+        }
+    }
+
+    pub fn command(&self, value: &str, extra: &str) -> Command {
+        let v = value.trim().to_owned();
+        match self {
+            InputKind::Tag { oid, .. } => Command::CreateTag {
+                name: v,
+                oid: *oid,
+                message: extra.trim().to_owned(),
+            },
+            InputKind::RenameBranch { old } => Command::RenameBranch {
+                old: old.clone(),
+                new: v,
+            },
+            InputKind::Reword { oid, is_root } => Command::RewriteCommit {
+                oid: *oid,
+                action: TodoAction::Reword,
+                message: Some(v),
+                is_root: *is_root,
+            },
+            InputKind::RemoteAdd => Command::RemoteAdd {
+                name: v,
+                url: extra.trim().to_owned(),
+            },
+            InputKind::RemoteUrl { name } => Command::RemoteSetUrl {
+                name: name.clone(),
+                url: v,
+            },
+            InputKind::RemoteRename { old } => Command::RemoteRename {
+                old: old.clone(),
+                new: v,
+            },
+            InputKind::SetUpstream { branch } => Command::SetUpstream {
+                branch: branch.clone(),
+                upstream: Some(v),
+            },
+            InputKind::BranchFromStash { index } => Command::BranchFromStash {
+                index: *index,
+                name: v,
+            },
+            InputKind::Ignore => Command::Ignore(v),
+        }
+    }
+}
+
+/// A range of lines selected in one hunk of the diff viewer. Indices are
+/// into `Hunk::lines`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineSel {
+    pub hunk: usize,
+    pub anchor: usize,
+    pub end: usize,
+}
+
+impl LineSel {
+    pub fn range(&self) -> (usize, usize) {
+        (self.anchor.min(self.end), self.anchor.max(self.end))
+    }
+
+    pub fn contains(&self, hunk: usize, line: usize) -> bool {
+        let (a, b) = self.range();
+        hunk == self.hunk && (a..=b).contains(&line)
+    }
+
+    pub fn lines(&self) -> Vec<usize> {
+        let (a, b) = self.range();
+        (a..=b).collect()
+    }
+}
+
+/// Whether a commit can be rewritten with a rebase from the current branch:
+/// it sits on the first-parent chain below HEAD with no merge in between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RewriteInfo {
+    pub is_root: bool,
+    pub is_head: bool,
+    /// A plain (non-merge) commit exists right below, for squash / fixup / move down.
+    pub has_older: bool,
 }
 
 pub struct NetLog {
@@ -114,6 +284,20 @@ pub struct App {
     pub no_repo: bool,
     /// Path the user opened (may become a repo after init).
     pub repo_path: PathBuf,
+    /// Context lines and whitespace handling, mirrored to the worker.
+    pub diff_opts: DiffOpts,
+    /// Search in the diff pane.
+    pub diff_search: String,
+    pub diff_search_active: bool,
+    pub diff_search_focus: bool,
+    /// Index into the current match list.
+    pub diff_match: usize,
+    /// Scroll the diff to the current match on the next frame.
+    pub diff_jump: bool,
+    /// Lines selected in the diff for line-level staging.
+    pub line_sel: Option<LineSel>,
+    /// A drag that started on a diff line extends the selection.
+    pub line_drag: bool,
 }
 
 impl App {
@@ -159,6 +343,14 @@ impl App {
             quit: false,
             no_repo: false,
             repo_path,
+            diff_opts: DiffOpts::default(),
+            diff_search: String::new(),
+            diff_search_active: false,
+            diff_search_focus: false,
+            diff_match: 0,
+            diff_jump: false,
+            line_sel: None,
+            line_drag: false,
         }
     }
 
@@ -238,6 +430,9 @@ impl App {
             }
             Reply::Diff(Ok(d)) => {
                 if self.selected_file.as_ref() == Some(&d.target) {
+                    if self.diff.as_ref().map(|old| old.hunks.len()) != Some(d.hunks.len()) {
+                        self.line_sel = None;
+                    }
                     self.diff = Some(d);
                     self.diff_loading = false;
                 }
@@ -360,6 +555,554 @@ impl App {
             message: msg,
             amend: self.amend,
         });
+    }
+
+    /// The selected commit, if the selection is a commit.
+    pub fn selected_commit(&self) -> Option<usize> {
+        match self.selection {
+            Selection::Commit(i) if i < self.snapshot.commits.len() => Some(i),
+            _ => None,
+        }
+    }
+
+    /// Whether commit `idx` can be rewritten by rebasing the current branch.
+    pub fn rewrite_info(&self, idx: usize) -> Option<RewriteInfo> {
+        let s = &self.snapshot;
+        let head = s.head.as_ref()?;
+        if head.detached || s.state != RepoState::Clean {
+            return None;
+        }
+        let target = s.commits.get(idx)?;
+        if target.parents.len() > 1 {
+            return None;
+        }
+        let mut cur = head.oid?;
+        let mut is_head = true;
+        loop {
+            let ci = s.commits.iter().position(|c| c.oid == cur)?;
+            if ci == idx {
+                let has_older = target
+                    .parents
+                    .first()
+                    .and_then(|p| s.commits.iter().find(|c| c.oid == *p))
+                    .is_some_and(|p| p.parents.len() <= 1);
+                return Some(RewriteInfo {
+                    is_root: target.parents.is_empty(),
+                    is_head,
+                    has_older,
+                });
+            }
+            let c = &s.commits[ci];
+            if c.parents.len() != 1 {
+                return None;
+            }
+            cur = c.parents[0];
+            is_head = false;
+        }
+    }
+
+    /// Rebase refuses to start on a dirty tree; say so instead of failing later.
+    fn clean_for_rebase(&mut self) -> bool {
+        if self.snapshot.state != RepoState::Clean {
+            self.toast("finish the current operation first", true);
+            return false;
+        }
+        if self.snapshot.is_dirty() {
+            self.toast("commit or stash your changes before rewriting history", true);
+            return false;
+        }
+        true
+    }
+
+    pub fn confirm(&mut self, title: &'static str, body: String, button: &'static str, cmd: Command) {
+        if self.busy > 0 {
+            return;
+        }
+        self.modal = Some(Modal::Confirm {
+            title,
+            body,
+            button,
+            cmd,
+        });
+    }
+
+    pub fn input(&mut self, kind: InputKind, value: String, extra: String) {
+        if self.busy > 0 {
+            return;
+        }
+        self.modal = Some(Modal::Input { kind, value, extra });
+    }
+
+    fn commit_label(&self, idx: usize) -> String {
+        self.snapshot
+            .commits
+            .get(idx)
+            .map(|c| format!("{} {}", c.short, c.summary))
+            .unwrap_or_default()
+    }
+
+    pub fn commit_new_branch(&mut self, idx: usize) {
+        let Some(c) = self.snapshot.commits.get(idx) else { return };
+        self.modal = Some(Modal::NewBranch {
+            name: String::new(),
+            from: c.oid,
+            from_label: c.short.clone(),
+            checkout: true,
+        });
+    }
+
+    pub fn commit_tag(&mut self, idx: usize) {
+        let Some(c) = self.snapshot.commits.get(idx) else { return };
+        let (oid, label) = (c.oid, self.commit_label(idx));
+        self.input(InputKind::Tag { oid, label }, String::new(), String::new());
+    }
+
+    pub fn commit_cherry_pick(&mut self, idx: usize) {
+        let Some(c) = self.snapshot.commits.get(idx) else { return };
+        let oid = c.oid;
+        let body = format!("Apply {} on top of HEAD as a new commit?", self.commit_label(idx));
+        self.confirm("Cherry-pick", body, "Cherry-pick", Command::CherryPick(oid));
+    }
+
+    pub fn commit_revert(&mut self, idx: usize) {
+        let Some(c) = self.snapshot.commits.get(idx) else { return };
+        let oid = c.oid;
+        let body = format!("Create a commit that undoes {}?", self.commit_label(idx));
+        self.confirm("Revert", body, "Revert", Command::Revert(oid));
+    }
+
+    pub fn commit_reset(&mut self, idx: usize) {
+        let Some(c) = self.snapshot.commits.get(idx) else { return };
+        if self.busy > 0 {
+            return;
+        }
+        self.modal = Some(Modal::Reset {
+            oid: c.oid,
+            label: self.commit_label(idx),
+        });
+    }
+
+    pub fn commit_checkout_detached(&mut self, idx: usize) {
+        let Some(c) = self.snapshot.commits.get(idx) else { return };
+        let oid = c.oid;
+        if self.snapshot.is_dirty() {
+            self.toast("commit or stash your changes before checking out a commit", true);
+            return;
+        }
+        self.run(Command::CheckoutDetached(oid));
+    }
+
+    /// Drop, squash, fixup, edit or move a commit through a rebase.
+    pub fn commit_rewrite(&mut self, idx: usize, action: TodoAction) {
+        let Some(info) = self.rewrite_info(idx) else {
+            self.toast("only commits on the current branch below HEAD can be rewritten", true);
+            return;
+        };
+        if !self.clean_for_rebase() {
+            return;
+        }
+        let oid = self.snapshot.commits[idx].oid;
+        let label = self.commit_label(idx);
+        let cmd = Command::RewriteCommit {
+            oid,
+            action,
+            message: None,
+            is_root: info.is_root,
+        };
+        match action {
+            TodoAction::Drop => {
+                self.confirm("Drop commit", format!("Remove {label} from the branch? Later commits are replayed on top."), "Drop", cmd)
+            }
+            TodoAction::Squash => self.confirm(
+                "Squash",
+                format!("Squash {label} into the commit below it? Both messages are kept."),
+                "Squash",
+                cmd,
+            ),
+            TodoAction::Fixup => self.confirm(
+                "Fixup",
+                format!("Meld {label} into the commit below it and discard its message?"),
+                "Fixup",
+                cmd,
+            ),
+            _ => self.run(cmd),
+        }
+    }
+
+    pub fn commit_reword(&mut self, idx: usize) {
+        let Some(info) = self.rewrite_info(idx) else {
+            self.toast("only commits on the current branch below HEAD can be reworded", true);
+            return;
+        };
+        if info.is_head {
+            // The HEAD commit needs no rebase: amend keeps everything else.
+            let c = &self.snapshot.commits[idx];
+            let mut msg = c.summary.clone();
+            if !c.body.is_empty() {
+                msg.push_str("\n\n");
+                msg.push_str(&c.body);
+            }
+            self.commit_msg = msg;
+            self.amend = true;
+            self.amend_loaded = true;
+            self.selection = Selection::WorkingTree;
+            self.focus_commit_msg = true;
+            self.focus = Pane::Detail;
+            return;
+        }
+        if !self.clean_for_rebase() {
+            return;
+        }
+        let c = &self.snapshot.commits[idx];
+        let mut msg = c.summary.clone();
+        if !c.body.is_empty() {
+            msg.push_str("\n\n");
+            msg.push_str(&c.body);
+        }
+        let oid = c.oid;
+        self.input(
+            InputKind::Reword {
+                oid,
+                is_root: info.is_root,
+            },
+            msg,
+            String::new(),
+        );
+    }
+
+    /// Squash the `fixup!` / `squash!` commits above `idx` into their targets.
+    pub fn commit_autosquash(&mut self, idx: usize) {
+        let Some(info) = self.rewrite_info(idx) else {
+            self.toast("only commits on the current branch can be autosquashed", true);
+            return;
+        };
+        if !self.clean_for_rebase() {
+            return;
+        }
+        let oid = self.snapshot.commits[idx].oid;
+        self.run(Command::Autosquash {
+            oid,
+            is_root: info.is_root,
+        });
+    }
+
+    /// Commit the staged changes as `fixup! <summary of idx>`.
+    pub fn commit_create_fixup(&mut self, idx: usize) {
+        let Some(c) = self.snapshot.commits.get(idx) else { return };
+        if self.snapshot.staged.is_empty() {
+            self.toast("stage the changes for the fixup first", true);
+            return;
+        }
+        let message = format!("fixup! {}", c.summary);
+        self.run(Command::Commit {
+            message,
+            amend: false,
+        });
+    }
+
+    pub fn commit_copy_hash(&mut self, ctx: &egui::Context, idx: usize) {
+        if let Some(c) = self.snapshot.commits.get(idx) {
+            ctx.copy_text(c.oid.to_string());
+            self.toast(format!("copied {}", c.short), false);
+        }
+    }
+
+    pub fn commit_copy_message(&mut self, ctx: &egui::Context, idx: usize) {
+        if let Some(c) = self.snapshot.commits.get(idx) {
+            let mut msg = c.summary.clone();
+            if !c.body.is_empty() {
+                msg.push_str("\n\n");
+                msg.push_str(&c.body);
+            }
+            ctx.copy_text(msg);
+            self.toast("copied commit message", false);
+        }
+    }
+
+    /// URL of the first remote's web host, origin preferred.
+    pub fn web_remote(&self) -> Option<&str> {
+        let s = &self.snapshot;
+        s.remote_urls
+            .iter()
+            .find(|(n, _)| n == "origin")
+            .or_else(|| s.remote_urls.first())
+            .map(|(_, u)| u.as_str())
+    }
+
+    pub fn commit_open_in_browser(&mut self, idx: usize) {
+        let Some(c) = self.snapshot.commits.get(idx) else { return };
+        let url = self
+            .web_remote()
+            .and_then(|r| crate::git::actions::commit_url(r, c.oid));
+        match url {
+            Some(u) => self.open_url(&u),
+            None => self.toast("no web remote for this repository", true),
+        }
+    }
+
+    pub fn open_pull_request(&mut self, branch: &str) {
+        let url = self
+            .web_remote()
+            .and_then(|r| crate::git::actions::pull_request_url(r, branch));
+        match url {
+            Some(u) => self.open_url(&u),
+            None => self.toast("no web remote for this repository", true),
+        }
+    }
+
+    pub fn open_url(&mut self, url: &str) {
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        match std::process::Command::new(opener)
+            .arg(url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(_) => self.toast(format!("opened {url}"), false),
+            Err(e) => self.toast(format!("cannot open browser: {e}"), true),
+        }
+    }
+
+    // ---- diff options, search and line selection ----
+
+    fn push_diff_opts(&mut self) {
+        self.pending.push(Command::SetDiffOpts(self.diff_opts));
+        self.line_sel = None;
+        if let Some(t) = self.selected_file.clone() {
+            self.diff_loading = true;
+            self.pending.push(Command::LoadDiff(t));
+        }
+    }
+
+    pub fn change_diff_context(&mut self, delta: i32) {
+        let cur = self.diff_opts.context as i32;
+        let next = (cur + delta).clamp(0, DiffOpts::MAX_CONTEXT as i32) as u32;
+        if next != self.diff_opts.context {
+            self.diff_opts.context = next;
+            self.push_diff_opts();
+            self.toast(format!("{next} context lines"), false);
+        }
+    }
+
+    pub fn toggle_whitespace(&mut self) {
+        self.diff_opts.ignore_whitespace = !self.diff_opts.ignore_whitespace;
+        self.push_diff_opts();
+        self.toast(
+            if self.diff_opts.ignore_whitespace {
+                "ignoring whitespace"
+            } else {
+                "showing whitespace changes"
+            },
+            false,
+        );
+    }
+
+    pub fn open_diff_search(&mut self) {
+        self.diff_search_active = true;
+        self.diff_search_focus = true;
+        self.focus = Pane::Detail;
+    }
+
+    pub fn close_diff_search(&mut self) {
+        self.diff_search_active = false;
+        self.diff_search.clear();
+        self.diff_match = 0;
+    }
+
+    pub fn diff_next_match(&mut self, dir: i32) {
+        if self.diff_search.is_empty() {
+            return;
+        }
+        let n = diff::match_count(self);
+        if n == 0 {
+            self.toast("no matches", true);
+            return;
+        }
+        let cur = self.diff_match as i32;
+        self.diff_match = (cur + dir).rem_euclid(n as i32) as usize;
+        self.diff_jump = true;
+    }
+
+    /// Selected lines, with the hunk they belong to, when they can be acted on.
+    fn line_action_target(&self) -> Option<(String, bool, usize, Vec<usize>)> {
+        let sel = self.line_sel?;
+        let d = self.diff.as_ref()?;
+        let (path, unstaged) = match &d.target {
+            DiffTarget::WorkdirUnstaged(p) => (p.clone(), true),
+            DiffTarget::Staged(p) => (p.clone(), false),
+            DiffTarget::Commit(..) => return None,
+        };
+        let hunk = d.hunks.get(sel.hunk)?;
+        let lines: Vec<usize> = sel
+            .lines()
+            .into_iter()
+            .filter(|i| hunk.lines.get(*i).is_some_and(|l| l.origin != ' '))
+            .collect();
+        if lines.is_empty() {
+            return None;
+        }
+        Some((path, unstaged, sel.hunk, lines))
+    }
+
+    /// True when a line selection with changes exists in a working tree diff.
+    pub fn has_line_selection(&self) -> bool {
+        self.line_action_target().is_some()
+    }
+
+    pub fn stage_selected_lines(&mut self) -> bool {
+        match self.line_action_target() {
+            Some((path, true, hunk_index, lines)) => {
+                self.run(Command::StageLines {
+                    path,
+                    hunk_index,
+                    lines,
+                });
+                self.line_sel = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn unstage_selected_lines(&mut self) -> bool {
+        match self.line_action_target() {
+            Some((path, false, hunk_index, lines)) => {
+                self.run(Command::UnstageLines {
+                    path,
+                    hunk_index,
+                    lines,
+                });
+                self.line_sel = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn discard_selected_lines(&mut self) -> bool {
+        match self.line_action_target() {
+            Some((path, true, hunk_index, lines)) => {
+                let n = lines.len();
+                self.confirm(
+                    "Discard lines",
+                    format!("Throw away {n} changed line{} of {path}? This cannot be undone.", if n == 1 { "" } else { "s" }),
+                    "Discard",
+                    Command::DiscardLines {
+                        path,
+                        hunk_index,
+                        lines,
+                    },
+                );
+                true
+            }
+            _ => false,
+        }
+    }
+
+    // ---- working tree ----
+
+    pub fn toggle_stage_selected(&mut self) {
+        match self.selected_worktree_file() {
+            Some((p, false)) => self.run(Command::Stage(vec![p])),
+            Some((p, true)) => self.run(Command::Unstage(vec![p])),
+            None => {}
+        }
+    }
+
+    pub fn discard_selected(&mut self) {
+        if let Some((p, false)) = self.selected_worktree_file() {
+            if self.busy == 0 {
+                self.modal = Some(Modal::Discard(vec![p]));
+            }
+        }
+    }
+
+    pub fn discard_all(&mut self) {
+        let s = &self.snapshot;
+        if !s.is_dirty() {
+            return;
+        }
+        let body = format!(
+            "Reset the index and working tree to HEAD and delete untracked files? {} unstaged, {} staged, {} conflicted. This cannot be undone.",
+            s.unstaged.len(),
+            s.staged.len(),
+            s.conflicted.len()
+        );
+        self.confirm("Discard all changes", body, "Discard everything", Command::DiscardAll);
+    }
+
+    pub fn ignore_selected(&mut self) {
+        let Some((p, false)) = self.selected_worktree_file() else { return };
+        let untracked = self
+            .snapshot
+            .unstaged
+            .iter()
+            .any(|f| f.path == p && f.kind == crate::git::repo::FileKind::Untracked);
+        if !untracked {
+            self.toast("only untracked files can be ignored", true);
+            return;
+        }
+        self.input(InputKind::Ignore, format!("/{p}"), String::new());
+    }
+
+    pub fn resolve_selected(&mut self, side: ConflictSide) {
+        if let Some((p, false)) = self.selected_worktree_file() {
+            self.run(Command::Resolve { path: p, side });
+        }
+    }
+
+    pub fn state_action(&mut self, action: StateAction) {
+        let Some(sub) = self.snapshot.state.git_subcommand() else {
+            self.toast("no operation in progress", true);
+            return;
+        };
+        if action == StateAction::Continue && !self.snapshot.conflicted.is_empty() {
+            self.toast(
+                format!("{} conflicted file(s) left, resolve them first", self.snapshot.conflicted.len()),
+                true,
+            );
+            return;
+        }
+        let cmd = Command::State {
+            action,
+            subcommand: sub,
+        };
+        if action == StateAction::Abort {
+            self.confirm(
+                "Abort",
+                format!("Abort the {} and go back to where it started?", self.snapshot.state.label()),
+                "Abort",
+                cmd,
+            );
+        } else {
+            self.modal = None;
+            self.run(cmd);
+        }
+    }
+
+    pub fn open_state_menu(&mut self) {
+        if self.snapshot.state != RepoState::Clean && self.busy == 0 {
+            self.modal = Some(Modal::StateMenu);
+        }
+    }
+
+    pub fn open_stash_dialog(&mut self) {
+        if self.snapshot.is_dirty() && self.busy == 0 {
+            self.modal = Some(Modal::StashOpts {
+                message: String::new(),
+                keep_index: false,
+                include_untracked: true,
+            });
+        }
+    }
+
+    pub fn open_help(&mut self) {
+        self.modal = Some(Modal::Help);
     }
 
     pub fn open_branch_picker(&mut self) {
@@ -507,6 +1250,9 @@ impl App {
     }
 
     pub fn select_file(&mut self, target: Option<DiffTarget>) {
+        if self.selected_file != target {
+            self.line_sel = None;
+        }
         self.selected_file = target.clone();
         self.diff = None;
         if let Some(t) = target {
@@ -557,11 +1303,18 @@ impl App {
                     self.filter.clear();
                     self.rebuild_filter();
                 }
+                if self.diff_search_active && self.diff_search.is_empty() {
+                    self.close_diff_search();
+                }
             }
             return;
         }
         if self.modal.is_some() {
             // Dialogs handle their own keys.
+            return;
+        }
+        if ctx.input(|i| key_press(i, egui::Key::Questionmark).is_some()) {
+            self.open_help();
             return;
         }
         let (down, up, pgdn, pgup, home, end, slash, esc, tab, r, dbg) = ctx.input(|i| {
@@ -593,11 +1346,46 @@ impl App {
                 plain(i, egui::Key::Enter),
             )
         });
-        if s_key {
+        let (space, d_key, shift_d, i_key, n_key, shift_n, t_key, shift_t, shift_c, g_key) =
+            ctx.input(|i| {
+                (
+                    plain(i, egui::Key::Space),
+                    plain(i, egui::Key::D),
+                    shifted(i, egui::Key::D),
+                    plain(i, egui::Key::I),
+                    plain(i, egui::Key::N),
+                    shifted(i, egui::Key::N),
+                    plain(i, egui::Key::T),
+                    shifted(i, egui::Key::T),
+                    shifted(i, egui::Key::C),
+                    plain(i, egui::Key::G),
+                )
+            });
+        let (shift_r, shift_k, shift_j, y_key, o_key, m_key, ctrl_f, ctrl_w, ctx_less, ctx_more) =
+            ctx.input(|i| {
+                (
+                    shifted(i, egui::Key::R),
+                    shifted(i, egui::Key::K),
+                    shifted(i, egui::Key::J),
+                    plain(i, egui::Key::Y),
+                    plain(i, egui::Key::O),
+                    plain(i, egui::Key::M),
+                    ctrl(i, egui::Key::F),
+                    ctrl(i, egui::Key::W),
+                    key_press(i, egui::Key::OpenCurlyBracket).is_some(),
+                    key_press(i, egui::Key::CloseCurlyBracket).is_some(),
+                )
+            });
+        let commit = self.selected_commit();
+        let searching = !self.diff_search.is_empty();
+        if s_key && !self.stage_selected_lines() {
             self.stage_selected();
         }
-        if u_key {
+        if u_key && !self.unstage_selected_lines() {
             self.unstage_selected();
+        }
+        if space {
+            self.toggle_stage_selected();
         }
         if a_key {
             self.run(Command::StageAll);
@@ -605,8 +1393,78 @@ impl App {
         if shift_a {
             self.run(Command::UnstageAll);
         }
-        if shift_s && self.snapshot.is_dirty() && self.modal.is_none() {
-            self.modal = Some(Modal::StashPush { message: String::new() });
+        if shift_s {
+            self.open_stash_dialog();
+        }
+        if shift_d {
+            self.discard_all();
+        }
+        if i_key {
+            self.ignore_selected();
+        }
+        if d_key {
+            match commit {
+                Some(idx) => self.commit_rewrite(idx, TodoAction::Drop),
+                None => {
+                    if !self.discard_selected_lines() {
+                        self.discard_selected();
+                    }
+                }
+            }
+        }
+        if n_key {
+            if searching {
+                self.diff_next_match(1);
+            } else if let Some(idx) = commit {
+                self.commit_new_branch(idx);
+            }
+        }
+        if shift_n && searching {
+            self.diff_next_match(-1);
+        }
+        if let Some(idx) = commit {
+            if shift_t {
+                self.commit_tag(idx);
+            }
+            if t_key {
+                self.commit_revert(idx);
+            }
+            if shift_c {
+                self.commit_cherry_pick(idx);
+            }
+            if g_key {
+                self.commit_reset(idx);
+            }
+            if shift_r {
+                self.commit_reword(idx);
+            }
+            if shift_k {
+                self.commit_rewrite(idx, TodoAction::MoveUp);
+            }
+            if shift_j {
+                self.commit_rewrite(idx, TodoAction::MoveDown);
+            }
+            if y_key {
+                self.commit_copy_hash(ctx, idx);
+            }
+            if o_key {
+                self.commit_open_in_browser(idx);
+            }
+        }
+        if m_key {
+            self.open_state_menu();
+        }
+        if ctrl_f {
+            self.open_diff_search();
+        }
+        if ctrl_w {
+            self.toggle_whitespace();
+        }
+        if ctx_less {
+            self.change_diff_context(-1);
+        }
+        if ctx_more {
+            self.change_diff_context(1);
         }
         if c_key {
             self.focus_commit_msg = true;
@@ -654,10 +1512,16 @@ impl App {
             self.filter_focus_requested = true;
             self.focus = Pane::Log;
         }
-        if esc && self.filter_active {
-            self.filter_active = false;
-            self.filter.clear();
-            self.rebuild_filter();
+        if esc {
+            if self.line_sel.is_some() {
+                self.line_sel = None;
+            } else if self.diff_search_active {
+                self.close_diff_search();
+            } else if self.filter_active {
+                self.filter_active = false;
+                self.filter.clear();
+                self.rebuild_filter();
+            }
         }
         if tab {
             self.focus = match self.focus {
@@ -839,11 +1703,16 @@ impl App {
             Modal::Discard(_) => "Discard changes",
             Modal::NewBranch { .. } => "New branch",
             Modal::DeleteBranch(_) => "Delete branch",
-            Modal::StashPush { .. } => "Stash changes",
             Modal::DropStash(_) => "Drop stash",
             Modal::BranchPicker { .. } => "Switch branch",
             Modal::CheckoutConfirm { .. } => "Uncommitted changes",
             Modal::PublishGithub { .. } => "Publish to GitHub",
+            Modal::Confirm { title, .. } => title,
+            Modal::Input { kind, .. } => kind.title(),
+            Modal::Reset { .. } => "Reset current branch",
+            Modal::StashOpts { .. } => "Stash changes",
+            Modal::StateMenu => "Operation in progress",
+            Modal::Help => "Keyboard shortcuts",
         };
         egui::Window::new(title)
             .collapsible(false)
@@ -851,10 +1720,9 @@ impl App {
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.set_min_width(if matches!(modal, Modal::BranchPicker { .. }) {
-                    460.0
-                } else {
-                    360.0
+                ui.set_min_width(match modal {
+                    Modal::BranchPicker { .. } | Modal::Help => 460.0,
+                    _ => 360.0,
                 });
                 match modal {
                     Modal::Discard(paths) => {
@@ -931,30 +1799,6 @@ impl App {
                                 close = true;
                             }
                         });
-                    }
-                    Modal::StashPush { mut message } => {
-                        let resp = ui.add(
-                            egui::TextEdit::singleline(&mut message)
-                                .hint_text("stash message (optional)")
-                                .desired_width(f32::INFINITY),
-                        );
-                        if !resp.has_focus() && !ctx.egui_wants_keyboard_input() {
-                            resp.request_focus();
-                        }
-                        ui.horizontal(|ui| {
-                            if ui.button("Stash").clicked() || enter {
-                                cmd = Some(Command::StashPush {
-                                    message: message.clone(),
-                                });
-                                close = true;
-                            }
-                            if ui.button("Cancel").clicked() || esc {
-                                close = true;
-                            }
-                        });
-                        if !close {
-                            self.modal = Some(Modal::StashPush { message });
-                        }
                     }
                     Modal::DropStash(i) => {
                         ui.label(format!("Drop stash {i}? This cannot be undone."));
@@ -1081,6 +1925,192 @@ impl App {
                             });
                         }
                     }
+                    Modal::Confirm {
+                        body,
+                        button,
+                        cmd: action,
+                        ..
+                    } => {
+                        ui.add(egui::Label::new(body).wrap());
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if ui.button(button).clicked() || enter {
+                                cmd = Some(action.clone());
+                                close = true;
+                            }
+                            if ui.button("Cancel").clicked() || esc {
+                                close = true;
+                            }
+                        });
+                    }
+                    Modal::Input {
+                        kind,
+                        mut value,
+                        mut extra,
+                    } => {
+                        let (hint, hint2) = kind.hints();
+                        if let InputKind::Tag { label, .. } = &kind {
+                            ui.label(format!("At {label}"));
+                        }
+                        let edit = if kind.multiline() {
+                            egui::TextEdit::multiline(&mut value)
+                                .hint_text(hint)
+                                .desired_rows(4)
+                                .desired_width(f32::INFINITY)
+                        } else {
+                            egui::TextEdit::singleline(&mut value)
+                                .hint_text(hint)
+                                .desired_width(f32::INFINITY)
+                        };
+                        let resp = ui.add(edit);
+                        if !resp.has_focus() && !ctx.egui_wants_keyboard_input() {
+                            resp.request_focus();
+                        }
+                        if let Some(h2) = hint2 {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut extra)
+                                    .hint_text(h2)
+                                    .desired_width(f32::INFINITY),
+                            );
+                        }
+                        if matches!(kind, InputKind::Reword { .. }) {
+                            ui.weak("Rewrites history from this commit up to HEAD.");
+                        }
+                        let valid = kind.valid(&value, &extra);
+                        // Enter confirms single-line inputs; multiline needs Ctrl+Enter.
+                        let confirm_key = if kind.multiline() {
+                            ctx.input(|i| ctrl(i, egui::Key::Enter))
+                        } else {
+                            enter
+                        };
+                        ui.horizontal(|ui| {
+                            if ui.add_enabled(valid, egui::Button::new("OK")).clicked()
+                                || (confirm_key && valid)
+                            {
+                                cmd = Some(kind.command(&value, &extra));
+                                close = true;
+                            }
+                            if ui.button("Cancel").clicked() || esc {
+                                close = true;
+                            }
+                        });
+                        if !close {
+                            self.modal = Some(Modal::Input { kind, value, extra });
+                        }
+                    }
+                    Modal::Reset { oid, label } => {
+                        ui.label(format!("Move the current branch to {label}"));
+                        ui.add_space(4.0);
+                        let mut pick = |kind: ResetKind, text: &str, tip: &str| {
+                            if ui.button(text).on_hover_text(tip).clicked() {
+                                cmd = Some(Command::Reset { oid, kind });
+                                close = true;
+                            }
+                        };
+                        pick(
+                            ResetKind::Soft,
+                            "Soft: keep changes staged",
+                            "Index and working tree stay as they are",
+                        );
+                        pick(
+                            ResetKind::Mixed,
+                            "Mixed: keep changes unstaged",
+                            "Index is reset, the working tree stays",
+                        );
+                        pick(
+                            ResetKind::Hard,
+                            "Hard: discard changes",
+                            "Index and working tree are reset. Cannot be undone.",
+                        );
+                        if esc {
+                            close = true;
+                        }
+                    }
+                    Modal::StashOpts {
+                        mut message,
+                        mut keep_index,
+                        mut include_untracked,
+                    } => {
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut message)
+                                .hint_text("stash message (optional)")
+                                .desired_width(f32::INFINITY),
+                        );
+                        if !resp.has_focus() && !ctx.egui_wants_keyboard_input() {
+                            resp.request_focus();
+                        }
+                        ui.checkbox(&mut keep_index, "keep staged changes in the index");
+                        ui.checkbox(&mut include_untracked, "include untracked files");
+                        ui.horizontal(|ui| {
+                            if ui.button("Stash").clicked() || enter {
+                                cmd = Some(Command::StashPushOpts {
+                                    message: message.clone(),
+                                    keep_index,
+                                    include_untracked,
+                                });
+                                close = true;
+                            }
+                            if ui.button("Cancel").clicked() || esc {
+                                close = true;
+                            }
+                        });
+                        if !close {
+                            self.modal = Some(Modal::StashOpts {
+                                message,
+                                keep_index,
+                                include_untracked,
+                            });
+                        }
+                    }
+                    Modal::StateMenu => {
+                        let s = &self.snapshot;
+                        let what = s.state.label();
+                        let progress = s
+                            .rebase_progress
+                            .map(|(d, t)| format!(" ({d} of {t})"))
+                            .unwrap_or_default();
+                        ui.label(format!("A {what} is in progress{progress}."));
+                        if !s.conflicted.is_empty() {
+                            ui.colored_label(
+                                self.theme.error,
+                                format!("{} conflicted file(s) to resolve", s.conflicted.len()),
+                            );
+                        }
+                        ui.add_space(4.0);
+                        let mut action = None;
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(s.conflicted.is_empty(), egui::Button::new("Continue"))
+                                .clicked()
+                            {
+                                action = Some(StateAction::Continue);
+                            }
+                            if s.state != RepoState::Merge && ui.button("Skip this commit").clicked() {
+                                action = Some(StateAction::Skip);
+                            }
+                            if ui.button("Abort").clicked() {
+                                action = Some(StateAction::Abort);
+                            }
+                            if ui.button("Cancel").clicked() || esc {
+                                close = true;
+                            }
+                        });
+                        if let Some(a) = action {
+                            close = true;
+                            self.modal = None;
+                            self.state_action(a);
+                            if self.modal.is_some() {
+                                // state_action opened a confirmation; keep it.
+                                return;
+                            }
+                        }
+                    }
+                    Modal::Help => {
+                        help::show(ui);
+                        if esc {
+                            close = true;
+                        }
+                    }
                 }
                 if !close {
                     ui.separator();
@@ -1136,6 +2166,9 @@ impl App {
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         let open_picker = std::cell::Cell::new(false);
+        let state_action: std::cell::Cell<Option<StateAction>> = std::cell::Cell::new(None);
+        let open_state = std::cell::Cell::new(false);
+        let error_color = self.theme.error;
         let snapshot = self.snapshot.clone();
         let busy = self.busy;
         let modal_open = self.modal.is_some();
@@ -1202,12 +2235,56 @@ impl App {
                     _ => path.to_string(),
                 };
                 let shown = shown.trim_end_matches('/').to_owned();
+                let in_progress = s.state != crate::git::repo::RepoState::Clean;
+                let state_text = if in_progress {
+                    let progress = s
+                        .rebase_progress
+                        .map(|(d, t)| format!(" {d}/{t}"))
+                        .unwrap_or_default();
+                    format!("{}{progress}", s.state.label().to_uppercase())
+                } else {
+                    String::new()
+                };
+                if in_progress {
+                    reserved += measure(&state_text) + 190.0 + spacing * 5.0;
+                }
                 let path_w = (ui.available_width() - reserved).min(measure(&shown) + 2.0);
-                if path_w > 24.0 {
+                if path_w > 24.0 && !in_progress {
                     ui.add_sized(
                         [path_w, ui.spacing().interact_size.y],
                         egui::Label::new(shown).truncate(),
                     );
+                    ui.separator();
+                }
+                if in_progress {
+                    let can_continue = s.conflicted.is_empty() && busy == 0 && !modal_open;
+                    if ui
+                        .add(
+                            egui::Label::new(egui::RichText::new(&state_text).strong().color(error_color))
+                                .sense(egui::Sense::click()),
+                        )
+                        .on_hover_text("m: continue, abort or skip")
+                        .clicked()
+                    {
+                        open_state.set(true);
+                    }
+                    if ui
+                        .add_enabled(can_continue, egui::Button::new("Continue").small())
+                        .on_hover_text(if s.conflicted.is_empty() {
+                            "git --continue".to_owned()
+                        } else {
+                            format!("{} conflicted file(s) left", s.conflicted.len())
+                        })
+                        .clicked()
+                    {
+                        state_action.set(Some(StateAction::Continue));
+                    }
+                    if ui
+                        .add_enabled(busy == 0 && !modal_open, egui::Button::new("Abort").small())
+                        .clicked()
+                    {
+                        state_action.set(Some(StateAction::Abort));
+                    }
                     ui.separator();
                 }
                 match name {
@@ -1254,6 +2331,12 @@ impl App {
         );
         if open_picker.get() {
             self.open_branch_picker();
+        }
+        if open_state.get() {
+            self.open_state_menu();
+        }
+        if let Some(a) = state_action.get() {
+            self.state_action(a);
         }
     }
 

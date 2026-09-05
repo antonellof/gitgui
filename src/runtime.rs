@@ -216,7 +216,7 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
             }
             for cmd in cmds {
                 match cmd {
-                    Command::LoadDiff(target) => app.apply(Reply::Diff(repo.diff(&target))),
+                    Command::LoadDiff(target) => app.apply(Reply::Diff(repo.diff(&target, crate::git::repo::DiffOpts::default()))),
                     Command::LoadCommitFiles(oid) => {
                         app.apply(Reply::CommitFiles(oid, repo.commit_files(oid)))
                     }
@@ -735,7 +735,7 @@ mod tests {
                 for cmd in cmds {
                     match cmd {
                         Command::LoadDiff(target) => {
-                            self.app.apply(Reply::Diff(self.repo.diff(&target)))
+                            self.app.apply(Reply::Diff(self.repo.diff(&target, crate::git::repo::DiffOpts::default())))
                         }
                         Command::LoadCommitFiles(oid) => self
                             .app
@@ -757,9 +757,25 @@ mod tests {
                             self.finish("discard");
                         }
                         Command::StageHunk { path, hunk_index } => {
-                            self.repo.stage_hunk(&path, hunk_index).unwrap();
+                            self.repo.stage_hunk(&path, hunk_index, crate::git::repo::DiffOpts::default()).unwrap();
                             self.finish("stage");
                         }
+                        Command::StageLines {
+                            path,
+                            hunk_index,
+                            lines,
+                        } => {
+                            self.repo
+                                .stage_lines(&path, hunk_index, &lines, crate::git::repo::DiffOpts::default())
+                                .unwrap();
+                            self.finish("stage");
+                        }
+                        Command::DiscardAll => {
+                            self.repo.discard_all().unwrap();
+                            self.finish("discard");
+                        }
+                        Command::SetDiffOpts(_) => {}
+                        Command::Refresh => self.finish(""),
                         Command::Commit { message, amend } => {
                             self.repo.commit(&message, amend).unwrap();
                             self.finish("commit");
@@ -957,6 +973,125 @@ assert!(h
     }
 
     #[test]
+    fn help_discard_all_search_and_line_staging_keys() {
+        use crate::git::repo::testutil::TempRepo;
+        use crate::ui::app::{LineSel, Modal};
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\ntwo\nthree\n", "init");
+        t.write("a.txt", "ONE\ntwo\nTHREE\n");
+        let mut h = Harness::new(&t.dir);
+        // `?` opens the help dialog, Escape closes it.
+        h.key(b"?");
+        assert!(matches!(h.app.modal, Some(Modal::Help)));
+        h.key(b"\x1b");
+        assert!(h.app.modal.is_none());
+        // Context and whitespace keys change the diff options and reload.
+        h.key(b"}");
+        assert_eq!(h.app.diff_opts.context, 4);
+        assert!(h.app.pending.iter().any(|c| matches!(c, Command::SetDiffOpts(o) if o.context == 4)));
+        h.settle();
+        h.key(b"{");
+        assert_eq!(h.app.diff_opts.context, 3);
+        h.key(b"\x17"); // Ctrl+W
+        assert!(h.app.diff_opts.ignore_whitespace);
+        h.key(b"\x17");
+        h.settle();
+        // Ctrl+F opens the search box and gives it focus; typing filters.
+        h.key(b"\x06");
+        assert!(h.app.diff_search_active);
+        assert!(h.ctx.egui_wants_keyboard_input());
+        h.key(b"THREE");
+        assert_eq!(h.app.diff_search, "THREE");
+        assert_eq!(crate::ui::diff::match_count(&h.app), 2, "case-insensitive: three and THREE");
+        h.key(b"\x1b");
+        h.key(b"\x1b");
+        assert!(!h.app.diff_search_active, "second Escape closes the search");
+        // A line selection plus `s` stages only those lines.
+        let d = h.app.diff.clone().expect("unstaged diff loaded");
+        let add_three = d.hunks[0]
+            .lines
+            .iter()
+            .position(|l| l.origin == '+' && l.text == "THREE")
+            .unwrap();
+        let del_three = d.hunks[0]
+            .lines
+            .iter()
+            .position(|l| l.origin == '-' && l.text == "three")
+            .unwrap();
+        h.app.line_sel = Some(LineSel {
+            hunk: 0,
+            anchor: del_three,
+            end: add_three,
+        });
+        h.frame(Vec::new());
+        h.key(b"s");
+        assert!(h.app.pending.iter().any(|c| matches!(c, Command::StageLines { lines, .. } if lines.len() == 2)));
+        h.settle();
+        let staged = h.repo.diff(&crate::git::repo::DiffTarget::Staged("a.txt".into()), crate::git::repo::DiffOpts::default()).unwrap();
+        let changes: Vec<String> = staged.hunks[0].lines.iter().filter(|l| l.origin != ' ').map(|l| l.text.clone()).collect();
+        assert_eq!(changes, vec!["three", "THREE"]);
+        assert!(h.app.snapshot.unstaged.iter().any(|f| f.path == "a.txt"), "ONE is still unstaged");
+        // Shift+D asks, Enter discards everything.
+        h.key(b"\x1b[100;2u");
+        assert!(matches!(h.app.modal, Some(Modal::Confirm { cmd: Command::DiscardAll, .. })));
+        h.key(b"\r");
+        assert!(h.app.pending.iter().any(|c| matches!(c, Command::DiscardAll)));
+        h.settle();
+        assert!(!h.app.snapshot.is_dirty());
+        assert_eq!(std::fs::read_to_string(t.dir.join("a.txt")).unwrap(), "one\ntwo\nthree\n");
+    }
+
+    #[test]
+    fn commit_keys_open_dialogs_and_rewrite_info() {
+        use crate::git::repo::testutil::TempRepo;
+        use crate::ui::app::{InputKind, Modal, Selection};
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "1\n", "one");
+        t.commit_file("a.txt", "2\n", "two");
+        t.commit_file("a.txt", "3\n", "three");
+        let mut h = Harness::new(&t.dir);
+        assert_eq!(h.app.selection, Selection::Commit(0));
+        let head = h.app.rewrite_info(0).unwrap();
+        assert!(head.is_head && head.has_older && !head.is_root);
+        let root = h.app.rewrite_info(2).unwrap();
+        assert!(root.is_root && !root.has_older && !root.is_head);
+        // Shift+T (kitty encoded: shift is a modifier, not an uppercase byte).
+        h.key(b"\x1b[116;2u");
+        assert!(matches!(h.app.modal, Some(Modal::Input { kind: InputKind::Tag { .. }, .. })));
+        h.key(b"v9");
+        h.key(b"\r");
+        assert!(h.app.pending.iter().any(|c| matches!(c, Command::CreateTag { name, .. } if name == "v9")));
+        h.app.pending.clear();
+        h.app.apply(crate::git::ops::Reply::Op { label: "new tag", result: Ok("ok".into()) });
+        // g: reset dialog; Escape cancels.
+        h.key(b"g");
+        assert!(matches!(h.app.modal, Some(Modal::Reset { .. })));
+        h.key(b"\x1b");
+        assert!(h.app.modal.is_none());
+        // Shift+R on HEAD turns into an amend with the old message loaded.
+        h.key(b"\x1b[114;2u");
+        assert!(h.app.amend);
+        assert_eq!(h.app.commit_msg, "three");
+        assert!(h.ctx.egui_wants_keyboard_input());
+        h.key(b"\x1b");
+        h.app.amend = false;
+        h.app.commit_msg.clear();
+        // Select the middle commit: d asks to drop it, cancel.
+        h.app.select(Selection::Commit(1));
+        h.settle();
+        h.key(b"d");
+        assert!(matches!(h.app.modal, Some(Modal::Confirm { cmd: Command::RewriteCommit { .. }, .. })));
+        h.key(b"\x1b");
+        // n: new branch from the selected commit.
+        h.key(b"n");
+        assert!(matches!(h.app.modal, Some(Modal::NewBranch { .. })));
+        h.key(b"\x1b");
+        // y copies the hash (no dialog, a toast).
+        h.key(b"y");
+        assert!(h.app.last_op.as_deref().is_some_and(|m| m.starts_with("copied")));
+    }
+
+    #[test]
     fn osc52_bytes() {
         let mut out = Vec::new();
         encode_osc52_copy(&mut out, "hi");
@@ -1027,7 +1162,7 @@ assert!(h
         let Command::LoadDiff(target) = cmds[0].clone() else {
             unreachable!()
         };
-        app.apply(Reply::Diff(repo.diff(&target)));
+        app.apply(Reply::Diff(repo.diff(&target, crate::git::repo::DiffOpts::default())));
         assert_eq!(app.diff.as_ref().unwrap().hunks[0].lines.len(), 2);
         let mut raster = Rasterizer::new();
         let mut fb = Framebuffer::new(800, 500);

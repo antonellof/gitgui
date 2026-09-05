@@ -16,6 +16,7 @@ this file tracks where we are, what was decided, and what is open.
 | 5 integration | done | b394bdc | split.rs, agent.rs, skill/SKILL.md, install script, release workflow |
 | post-v0.1 polish | done | ccdf818 | v0.1.1 to v0.1.4: keyboard shortcuts, agent network ops, auto refresh, footer toolbar, branch picker, GitHub publish |
 | review pass | done | f38d9a3 | 2026-09-04 audit: layout fixes for short and narrow panes, socket permissions, bounds checks; see "Review 2026-09-04" |
+| feature parity pass | done | (this commit) | 2026-09-05: line staging, diff search / context / whitespace, commit menu, history rewriting, merge / rebase state and conflicts, branch / remote / tag / stash operations, help; see "Feature audit 2026-09-05" |
 
 ## Measurements
 
@@ -165,6 +166,67 @@ Robustness:
 - Test gaps: paste containing ESC, kitty super modifier, malformed SGR
   mouse, escape split at odd byte boundaries, atlas update past bounds.
 
+## Feature audit 2026-09-05
+
+The feature set of the most used terminal git client was mapped against
+gitgui, panel by panel. Everything below was missing and is now in. The
+git layer gained `git/actions.rs` (git2) and `git/rebase.rs` (rebase todo
+rewriting); the worker got `SetDiffOpts` and the CLI-backed sequencer
+commands; the UI got a commit menu (`ui/menus.rs`), a help table
+(`ui/help.rs`), generic confirm and input dialogs, and a diff viewer with
+line selection and search.
+
+Added:
+
+- Working tree: line-level stage / unstage / discard (click, Shift+click,
+  drag), discard hunk, discard all, ignore file, copy path, toggle staged
+  with Space, stash with keep-index and include-untracked options, stash
+  apply, branch from stash.
+- Diff: search with highlighted matches and next / previous, context lines
+  `{` / `}` (0 to 20), ignore whitespace. Hunk indices always come from a
+  diff produced with the same options, so hunk staging stays consistent.
+- Commits: new branch, tag (light or annotated), checkout detached,
+  cherry-pick, revert, reset soft / mixed / hard, copy hash / message, open
+  in browser (GitHub, GitLab, Bitbucket style URLs). History rewriting on
+  the current branch: reword (amend for HEAD, rebase otherwise), squash,
+  fixup, drop, move up / down, edit, create fixup commit, autosquash. All
+  through `git rebase -i` with gitgui as the sequence editor; nothing
+  interactive ever opens.
+- Branches: rename, merge into current (fast-forward when possible, merge
+  commit otherwise), rebase current onto, fast-forward from upstream, set /
+  unset upstream, open pull request, delete on remote. Push sets the
+  upstream automatically when the branch has none and an origin exists.
+  Force push with lease and pull with rebase from the toolbar menus.
+- Remotes: add, rename, edit URL, remove, fetch one. Tags: delete, push.
+- State: merge, rebase (with progress), cherry-pick and revert show a
+  footer banner with Continue / Abort, `m` adds Skip. Conflicted files show
+  the file with its markers (ours as removed, theirs as added) and resolve
+  with Use ours / Use theirs / Mark resolved from the file menu or the diff
+  header.
+- `?` help dialog generated from one table.
+
+Left out on purpose (still available in the git CLI next door):
+
+- Range selection in lists, file tree view, custom patches across commits,
+  reflog undo / redo, bisect, worktrees, submodules, git-flow, editing
+  files in an external editor (it would fight over the terminal),
+  amending a non-HEAD commit with staged changes, reset author, moving
+  commits to a new branch, commit filtering by path, screen modes.
+
+Bugs found on the way:
+
+- libgit2 caches the index per repository and does not re-read it before
+  most operations. When another process (the test helper, the CLI, an
+  agent) wrote the index, writes used stale entries. `Repo::index()` now
+  re-reads it before every write; rule 11 in CLAUDE.md.
+- libgit2's cherry-pick and revert leave their result in the in-memory
+  index and their safe checkout neither creates new files nor deletes
+  removed ones in this version. `finish_pick` writes the index, commits
+  from it and syncs the touched paths from HEAD with a forced checkout
+  limited to those paths.
+- Stash apply in libgit2 refuses a dirty index, unlike the CLI. The error
+  is shown as is.
+
 ## Next steps (resume here)
 
 ### Post v0.1 feature backlog
@@ -172,31 +234,34 @@ Robustness:
 Priority order for the next releases. Sizes: small = an evening, medium = a
 few sessions, large = a milestone.
 
-1. **Diff search** (medium): `/` or `Ctrl+F` in the diff pane, `n` / `N`
-   for next match, match highlight. High value when reviewing large patches.
-2. **Conflict UI** (large): show the merge / rebase state in the footer,
-   list conflicted files, pick ours / theirs per hunk, mark resolved,
-   `git merge --abort` / `rebase --abort` buttons. Needed for merge-heavy
-   workflows and the most requested gap from the review.
-3. **Commit context menu** (medium): cherry-pick, revert, create tag, create
-   branch here, copy hash, reset soft / mixed / hard with confirmation. All
-   plain `git2` calls, the UI is the work.
-4. **Terminal fonts** (medium): load Ghostty `font-family` via CoreText /
+1. **Terminal fonts** (medium): load Ghostty `font-family` via CoreText /
    fontconfig so UI text matches the terminal face at the computed size.
-5. **File history and blame** (medium): `h` on a file opens its log,
+2. **File history and blame** (medium): `h` on a file opens its log,
    `b` opens blame in the diff pane. Read-only, `git2` has both.
-6. **tmux / Zellij passthrough** (medium): detect and enable kitty graphics
+3. **tmux / Zellij passthrough** (medium): detect and enable kitty graphics
    passthrough instead of hard exit.
-7. **Remote management** (small): add / remove / rename remotes from the
-   sidebar context menu; `Ctrl+U` to set upstream on push.
-8. **Repo switcher** (small): recent repos list, `--repo` history file
-   under XDG config.
-9. **README demo**: done 2026-09-04, inline GIFs (960 px, 6 fps, 2.2 MB and 1.6 MB) because GitHub does not play repo-hosted mp4 inline; mp4 and .mov kept alongside.
+4. **Repo switcher** (small): recent repos list, `--repo` history file
+   under XDG config, `Ctrl+R` picker; needs a worker `OpenRepo` command.
+5. **Multi-select** (medium): Shift+click ranges in the file lists, stage /
+   unstage / discard the range; file tree view with collapsing directories.
+6. **Reflog** (medium): read-only reflog list in the sidebar, undo / redo of
+   the last ref move.
+7. **Agent API parity** (small): expose checkout, branch, tag, cherry-pick,
+   revert, reset and state actions on the socket.
+8. **Per-hunk ours / theirs** (medium): resolve one conflict block at a time
+   in the conflict view instead of the whole file.
 
-Not planned for v0.x: interactive rebase, bisect, submodules, worktrees,
-sparse checkout, patch export. Use the git CLI in the neighbouring pane.
+Done 2026-09-04: README demo (inline GIFs, 960 px, 6 fps). Done 2026-09-05:
+diff search, conflict UI, commit menu, remote management (see "Feature
+audit 2026-09-05").
 
-### Recently shipped (v0.1.1 to v0.1.6)
+Not planned for v0.x: an interactive rebase editor, bisect, submodules,
+worktrees, sparse checkout, patch export. Use the git CLI in the
+neighbouring pane.
+
+### Recently shipped (v0.1.1 to v0.2.0)
+
+- v0.2.0: feature parity pass, see "Feature audit 2026-09-05"
 
 - v0.1.6: commit detail shows the full message body, word-wrapped, above
   the file list (`CommitRow::body`); footer ahead/behind uses words because
@@ -222,6 +287,17 @@ branch picker, publish to GitHub. The 2026-09-04 layout fixes were verified
 with headless frames at three sizes; a real cmux pane check of the narrow
 (icon-only) footer and the short detail pane is still owed. Harness tests
 cover the commit button; layout math is unit-tested in `changes.rs`.
+
+2026-09-05 additions verified headless (1600x1000, 1100x700, 3344x1870 at
+scale 2, and a merge-conflict fixture at 1200x760) and through harness
+tests for the keys (`?`, `{` `}`, `Ctrl+W`, `Ctrl+F`, `s` on a line
+selection, `Shift+D`, `Shift+T`, `g`, `Shift+R`, `d`, `n`, `y`). The git
+layer has tests for every new operation including a real `git rebase` and
+`--abort` through the worker. Still owed in a real pane: right-click menus
+(egui context menus need a real secondary click), drag selection in the
+diff, the rebase editor round trip (`gitgui --sequence-editor` needs the
+installed binary, the test binary cannot play that role), and the footer
+banner during a rebase.
 
 ## Open issues
 

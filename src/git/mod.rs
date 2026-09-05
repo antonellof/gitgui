@@ -1,6 +1,7 @@
-//! Git layer. Reads and index writes through git2; network through the git
-//! CLI (Phase 4). The UI only ever sees an immutable [`RepoSnapshot`].
+//! Git layer: repository reads and writes, graph layout, worker thread.
 
+pub mod actions;
 pub mod graph;
 pub mod ops;
+pub mod rebase;
 pub mod repo;
