@@ -14,6 +14,9 @@ pub const USAGE: &str = "usage: gitgui [options] [path]
   --size <WxH>               frame size for --headless-frame (default 1600x1000)
   --scale <1|1.5|2>          override pixels per point
   --font-size <N>            UI font size in points (default 13)
+  --open <file>              open a file in the built-in editor at startup
+  --editor <cmd>             editor for Shift+E (default: git config gitgui.editor,
+                             then $GITGUI_EDITOR, $VISUAL, $EDITOR, vi)
   --repo <path>              same as the positional path
   --no-shm                   force the direct (base64 + zlib) transport
   -h, --help                 show this help";
@@ -40,6 +43,10 @@ pub struct Cli {
     pub split_size: Option<f32>,
     pub scale: Option<f32>,
     pub font_size: Option<f32>,
+    /// Editor for `e`, overrides `gitgui.editor`, `$VISUAL` and `$EDITOR`.
+    pub editor: Option<String>,
+    /// Open this file in the built-in editor at startup.
+    pub open: Option<String>,
     pub path: Option<PathBuf>,
 }
 
@@ -58,6 +65,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
             split_size: None,
             scale: None,
             font_size: None,
+            editor: None,
+            open: None,
             path: None,
         });
     }
@@ -92,6 +101,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
             split_size: None,
             scale: None,
             font_size: None,
+            editor: None,
+            open: None,
             path: None,
         });
     }
@@ -115,6 +126,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                 split_size: None,
                 scale: None,
                 font_size: None,
+                editor: None,
+                open: None,
                 path: None,
             });
         }
@@ -132,6 +145,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
         split_size: None,
         scale: None,
         font_size: None,
+        editor: None,
+        open: None,
         path: None,
     };
     let mut it = args.into_iter();
@@ -178,6 +193,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                 let v = value("--font-size")?;
                 cli.font_size = Some(v.parse().map_err(|_| format!("bad font size {v:?}"))?);
             }
+            "--editor" => cli.editor = Some(value("--editor")?),
+            "--open" => cli.open = Some(value("--open")?),
             "-h" | "--help" => return Err(USAGE.to_owned()),
             other if other.starts_with('-') => {
                 return Err(format!("unknown argument {other:?}\n{USAGE}"))

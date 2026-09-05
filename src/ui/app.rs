@@ -1,6 +1,6 @@
 //! Top-level application state and layout (docs/SPEC.md section 4).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -88,6 +88,8 @@ pub enum Modal {
     StateMenu,
     /// Keyboard reference.
     Help,
+    /// Escape in the editor with unsaved changes.
+    CloseEditor,
 }
 
 /// What an [`Modal::Input`] dialog is for. `value` is the first field,
@@ -294,6 +296,18 @@ pub struct App {
     pub diff_match: usize,
     /// Scroll the diff to the current match on the next frame.
     pub diff_jump: bool,
+    /// Built-in file editor, shown in place of the diff while open.
+    pub editor: Option<crate::ui::editor::Editor>,
+    /// `--editor` override for Shift+E.
+    pub editor_cmd: Option<String>,
+    /// `--open`: file for the built-in editor once the first snapshot is in.
+    pub open_on_start: Option<String>,
+    /// Sidebar file tree: listing per directory ("" is the root).
+    pub tree: HashMap<String, Vec<crate::git::repo::DirEntry>>,
+    pub tree_open: HashSet<String>,
+    pub tree_selected: Option<String>,
+    /// Directories with a listing in flight.
+    pub tree_requested: HashSet<String>,
     /// Lines selected in the diff for line-level staging.
     pub line_sel: Option<LineSel>,
     /// A drag that started on a diff line extends the selection.
@@ -349,6 +363,13 @@ impl App {
             diff_search_focus: false,
             diff_match: 0,
             diff_jump: false,
+            editor: None,
+            editor_cmd: None,
+            open_on_start: None,
+            tree: HashMap::new(),
+            tree_open: HashSet::new(),
+            tree_selected: None,
+            tree_requested: HashSet::new(),
             line_sel: None,
             line_drag: false,
         }
@@ -387,6 +408,7 @@ impl App {
                 self.have_snapshot = true;
                 self.commit_files.clear();
                 self.rebuild_filter();
+                self.refresh_tree();
                 if first {
                     self.selection = if self.has_worktree_row() || self.snapshot.commits.is_empty()
                     {
@@ -457,6 +479,18 @@ impl App {
                 }
             }
             Reply::CommitFiles(_, Err(e)) => self.toast(format!("commit files failed: {e}"), true),
+            Reply::DirEntries(dir, result) => {
+                self.tree_requested.remove(&dir);
+                match result {
+                    Ok(entries) => {
+                        self.tree.insert(dir, entries);
+                    }
+                    Err(e) => {
+                        self.tree_open.remove(&dir);
+                        self.toast(format!("cannot list {dir}: {e}"), true);
+                    }
+                }
+            }
             Reply::Op { label, result } => {
                 self.busy = self.busy.saturating_sub(1);
                 match result {
@@ -1252,6 +1286,7 @@ impl App {
     pub fn select_file(&mut self, target: Option<DiffTarget>) {
         if self.selected_file != target {
             self.line_sel = None;
+            self.follow_selection_in_editor(target.as_ref());
         }
         self.selected_file = target.clone();
         self.diff = None;
@@ -1261,6 +1296,68 @@ impl App {
         } else {
             self.diff_loading = false;
         }
+    }
+
+    /// Ask the worker for a directory listing once.
+    pub fn request_dir(&mut self, dir: &str) {
+        if self.tree_requested.insert(dir.to_owned()) {
+            self.pending.push(Command::ListDir(dir.to_owned()));
+        }
+    }
+
+    /// Re-list the root and every expanded directory after a snapshot.
+    fn refresh_tree(&mut self) {
+        self.tree_requested.clear();
+        let mut dirs: Vec<String> = self.tree_open.iter().cloned().collect();
+        dirs.push(String::new());
+        for d in dirs {
+            self.request_dir(&d);
+        }
+    }
+
+    pub fn toggle_dir(&mut self, dir: &str) {
+        if self.tree_open.remove(dir) {
+            return;
+        }
+        self.tree_open.insert(dir.to_owned());
+        if !self.tree.contains_key(dir) {
+            self.request_dir(dir);
+        }
+    }
+
+    /// The file the file commands (e, Shift+E, Shift+O) act on: the open
+    /// editor's file, else the tree selection while the sidebar has focus,
+    /// else the file selected in the change lists.
+    pub fn current_file(&self) -> Option<String> {
+        if let Some(ed) = &self.editor {
+            return Some(ed.path.clone());
+        }
+        if self.focus == Pane::Sidebar {
+            if let Some(p) = &self.tree_selected {
+                return Some(p.clone());
+            }
+        }
+        self.selected_file.as_ref().map(|t| t.path().to_owned())
+    }
+
+    /// A clean editor switches to the newly selected file; a dirty one stays.
+    fn follow_selection_in_editor(&mut self, target: Option<&DiffTarget>) {
+        let Some(ed) = &self.editor else { return };
+        if ed.dirty() {
+            return;
+        }
+        let Some(t) = target else {
+            self.editor = None;
+            return;
+        };
+        if ed.path == t.path() {
+            return;
+        }
+        let workdir = self.snapshot.path.clone();
+        self.editor = crate::ui::editor::Editor::open(&workdir, t.path()).ok().map(|mut e| {
+            e.quiet();
+            e
+        });
     }
 
     /// Move the log selection by `delta` rows (keyboard navigation).
@@ -1289,6 +1386,20 @@ impl App {
         if ctx.egui_wants_keyboard_input() {
             // A text field owns the keyboard. Ctrl+Enter commits from the
             // commit box, Ctrl+Shift+Enter commits and pushes, Escape leaves.
+            if self.editor_focused() && self.modal.is_none() {
+                if ctx.input(|i| ctrl(i, egui::Key::S)) {
+                    self.save_editor();
+                }
+                if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    ctx.memory_mut(|m| m.request_focus(egui::Id::NULL));
+                    self.close_editor();
+                    if self.modal.is_some() {
+                        // The dialog must not see the same Escape and close.
+                        ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+                    }
+                }
+                return;
+            }
             if ctx.input(|i| ctrl(i, egui::Key::Enter)) && self.modal.is_none() {
                 if ctx.input(|i| i.modifiers.shift) {
                     self.commit_and_push_now();
@@ -1361,7 +1472,7 @@ impl App {
                     plain(i, egui::Key::G),
                 )
             });
-        let (shift_r, shift_k, shift_j, y_key, o_key, m_key, ctrl_f, ctrl_w, ctx_less, ctx_more) =
+        let (shift_r, shift_k, shift_j, y_key, o_key, m_key, ctrl_f, ctrl_w, ctx_less, ctx_more, e_key) =
             ctx.input(|i| {
                 (
                     shifted(i, egui::Key::R),
@@ -1374,8 +1485,10 @@ impl App {
                     ctrl(i, egui::Key::W),
                     key_press(i, egui::Key::OpenCurlyBracket).is_some(),
                     key_press(i, egui::Key::CloseCurlyBracket).is_some(),
+                    plain(i, egui::Key::E),
                 )
             });
+        let (shift_e, shift_o) = ctx.input(|i| (shifted(i, egui::Key::E), shifted(i, egui::Key::O)));
         let commit = self.selected_commit();
         let searching = !self.diff_search.is_empty();
         if s_key && !self.stage_selected_lines() {
@@ -1454,6 +1567,15 @@ impl App {
         if m_key {
             self.open_state_menu();
         }
+        if e_key {
+            self.edit_selected();
+        }
+        if shift_e {
+            self.edit_selected_external();
+        }
+        if shift_o {
+            self.preview_selected_in_cmux();
+        }
         if ctrl_f {
             self.open_diff_search();
         }
@@ -1513,7 +1635,12 @@ impl App {
             self.focus = Pane::Log;
         }
         if esc {
-            if self.line_sel.is_some() {
+            if self.editor.is_some() {
+                self.close_editor();
+                if self.modal.is_some() {
+                    ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+                }
+            } else if self.line_sel.is_some() {
                 self.line_sel = None;
             } else if self.diff_search_active {
                 self.close_diff_search();
@@ -1540,6 +1667,11 @@ impl App {
     }
 
     pub fn ui(&mut self, root: &mut egui::Ui) {
+        if self.have_snapshot {
+            if let Some(path) = self.open_on_start.take() {
+                self.open_editor(path);
+            }
+        }
         let ctx = root.ctx().clone();
         if !self.no_repo {
             self.handle_keys(&ctx);
@@ -1687,6 +1819,7 @@ impl App {
         let mut switch_branch: Option<String> = None;
         let mut open_new_branch = false;
         let mut open_publish = false;
+        let mut discard_editor = false;
         let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
         let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
         // Dim the background and swallow clicks outside the dialog.
@@ -1713,6 +1846,7 @@ impl App {
             Modal::StashOpts { .. } => "Stash changes",
             Modal::StateMenu => "Operation in progress",
             Modal::Help => "Keyboard shortcuts",
+            Modal::CloseEditor => "Unsaved changes",
         };
         egui::Window::new(title)
             .collapsible(false)
@@ -2115,6 +2249,25 @@ impl App {
                             close = true;
                         }
                     }
+                    Modal::CloseEditor => {
+                        let path = self.editor.as_ref().map(|e| e.path.clone()).unwrap_or_default();
+                        ui.add(egui::Label::new(format!("{path} has unsaved changes.")).wrap());
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Save and close").on_hover_text("Enter").clicked() || enter {
+                                self.save_editor();
+                                discard_editor = !self.editor.as_ref().is_some_and(|e| e.dirty());
+                                close = true;
+                            }
+                            if ui.button("Discard changes").clicked() {
+                                discard_editor = true;
+                                close = true;
+                            }
+                            if ui.button("Cancel").clicked() || esc {
+                                close = true;
+                            }
+                        });
+                    }
                 }
                 if !close {
                     ui.separator();
@@ -2132,6 +2285,9 @@ impl App {
             });
         if let Some(c) = cmd {
             self.run(c);
+        }
+        if discard_editor {
+            self.editor = None;
         }
         if let Some(target) = switch_branch {
             self.try_switch_branch(target);

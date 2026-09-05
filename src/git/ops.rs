@@ -10,7 +10,7 @@ use git2::Oid;
 
 use super::actions::{ConflictSide, MergeOutcome, ResetKind};
 use super::rebase::{self, TodoAction};
-use super::repo::{DiffOpts, DiffTarget, DiffText, FileStatus, GitError, Repo, RepoSnapshot};
+use super::repo::{DiffOpts, DiffTarget, DiffText, FileStatus, GitError, Repo, RepoSnapshot, DirEntry};
 
 pub const COMMIT_LIMIT: usize = 2000;
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -40,6 +40,8 @@ pub enum Command {
     LoadMore(usize),
     LoadDiff(DiffTarget),
     LoadCommitFiles(Oid),
+    /// Working tree directory listing for the sidebar file tree.
+    ListDir(String),
     /// Context lines and whitespace handling for every diff from now on.
     SetDiffOpts(DiffOpts),
     /// Whether the UI is focused (reserved; auto-refresh polls regardless).
@@ -220,6 +222,7 @@ impl Command {
             | Command::LoadMore(_)
             | Command::LoadDiff(_)
             | Command::LoadCommitFiles(_)
+            | Command::ListDir(_)
             | Command::SetDiffOpts(_)
             | Command::Focus(_)
             | Command::Quit => "",
@@ -314,6 +317,7 @@ pub enum Reply {
     Snapshot(Arc<RepoSnapshot>),
     Diff(Result<DiffText, GitError>),
     CommitFiles(Oid, Result<Vec<FileStatus>, GitError>),
+    DirEntries(String, Result<Vec<DirEntry>, GitError>),
     /// A write or network operation finished.
     Op {
         label: &'static str,
@@ -428,6 +432,10 @@ pub fn spawn(path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Worker {
                             oid,
                             repo.as_ref().expect("checked").commit_files(oid),
                         ));
+                    }
+                    Ok(Command::ListDir(dir)) if repo.is_some() => {
+                        let r = repo.as_ref().expect("checked").list_dir(&dir);
+                        reply(Reply::DirEntries(dir, r));
                     }
                     Ok(Command::Focus(_)) => {}
                     Ok(Command::CommitAndPush { message, amend }) if repo.is_some() => {

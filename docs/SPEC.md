@@ -157,6 +157,7 @@ Layout, egui:
 │  origin/main  │  commit selected: files list | diff                │
 │ Tags          │  working tree selected: unstaged | staged | diff   │
 │ Stashes       │                          commit message + button   │
+│ Files (tree)  │  tree file clicked: built-in editor replaces diff  │
 └───────────────┴────────────────────────────────────────────────────┘
 footer: repo path, branch switcher, ahead/behind, counts, last op | fetch pull push | refresh | quit
 ```
@@ -183,8 +184,10 @@ Behaviors:
 
 - Click a branch: select its tip in the list. Double click or `Enter`: checkout. Right click: checkout, new branch from here, rename, delete, merge into current, rebase current onto it, fast-forward, set / unset upstream, open pull request, copy name. Remote branches add checkout detached, set as upstream, delete on remote. Remotes: fetch, edit URL, rename, remove, plus an `Add remote` button. Tags: checkout detached, new branch, push to a remote, delete, plus `New tag at HEAD`. Stashes: apply, pop, branch from stash, drop.
 - Click a commit: load files and diff for the first file. Refs render as colored pills before the summary. Right click: new branch, tag, checkout detached, cherry-pick, revert, reset (soft / mixed / hard), reword, squash, fixup, drop, move up / down, edit, create fixup commit, autosquash, copy hash / message, open in browser. Rewrites are enabled only for commits the current branch can rebase (`App::rewrite_info`).
+- Files: a `Files` section under Stashes lists the whole working tree, not only changed files. Directories are listed lazily by the git worker (`Command::ListDir`), `.git` is skipped, ignored entries are dimmed, changed files take their status color and a collapsed folder with changes shows a dot. Click a file to open it in the built-in editor; right click: edit, open in `$EDITOR`, preview in cmux, show changes, stage, copy path.
+- Editor (`ui/editor.rs`): replaces the diff pane while open. Plain `TextEdit` with a line-number gutter and the hand-written highlighter in `ui/highlight.rs` (comments, strings, numbers, keywords, types for the common languages, picked from the extension). `Ctrl+S` saves with the file's original line endings and triggers a refresh; `Escape` closes, asking first when the buffer is dirty (save and close, discard, cancel). A clean editor follows the file selection; a dirty one stays. Files over 1 MB or binary are refused with a hint to use `Shift+E`. `--open <path>` opens a file at startup (also for headless frames).
 - Working tree row: unstaged and staged lists side by side; click a file to show its diff; click the `+` / `-` icon or press `s` / `u` to stage or unstage; `Stage all` / `Unstage all` / `Discard all` buttons; `Discard` with a confirmation modal. Right click a file: stage / unstage, discard, add to .gitignore, copy path; conflicted files offer use ours / use theirs / mark resolved.
-- Diff view: monospace, line numbers for old and new, colored backgrounds for + and - lines, hunk headers with `Stage hunk` / `Unstage hunk` and `Discard hunk` buttons, horizontal scroll, word-wrap toggle. Click, Shift+click or drag lines to select them; the header then offers `Stage N lines` / `Unstage N lines` / `Discard N lines` (also `s` / `u` / `d`). `Ctrl+F` searches with match highlighting, `n` / `Shift+N` step; `{` / `}` change context lines, `Ctrl+W` toggles whitespace. Syntax highlighting is out of scope.
+- Diff view: monospace, line numbers for old and new, colored backgrounds for + and - lines, hunk headers with `Stage hunk` / `Unstage hunk` and `Discard hunk` buttons, horizontal scroll, word-wrap toggle. Click, Shift+click or drag lines to select them; the header then offers `Stage N lines` / `Unstage N lines` / `Discard N lines` (also `s` / `u` / `d`). `Ctrl+F` searches with match highlighting, `n` / `Shift+N` step; `{` / `}` change context lines, `Ctrl+W` toggles whitespace. Syntax highlighting in the diff is out of scope; the editor has it.
 - Commit box: multiline text edit, `Ctrl+Enter` commits, amend checkbox, shows the author from config.
 - Search: `/` focuses a filter box over the commit list (summary, author, short hash).
 - Footer: while a merge, rebase, cherry-pick or revert is in progress a red banner names it (with rebase progress) and offers `Continue` and `Abort`; `m` opens the same choices plus `Skip`.
@@ -202,6 +205,8 @@ s / u                 stage / unstage file or selected lines
 Space                 toggle staged           a / Shift+A    stage all / unstage all
 d / Shift+D           discard file or lines / discard everything (both ask)
 i                     ignore untracked file   c              focus commit message
+e / Shift+E / Shift+O edit file (built-in) / open in $EDITOR / cmux file preview
+Ctrl+S                save in the editor      Escape         close the editor (asks when dirty)
 Ctrl+Enter            commit                  Ctrl+Shift+Enter  commit and push
 Shift+S               stash (with options)    /              filter commits
 Ctrl+F, n / Shift+N   search diff, next / previous match
@@ -236,6 +241,8 @@ gitgui [path]                     open repo at path (default: discover from cwd)
   --size 0.2..0.95                      fraction of the pane the split takes
   --scale 1|1.5|2                       override pixels_per_point
   --font-size N
+  --open path                           open a file in the built-in editor at startup
+  --editor cmd                          editor for Shift+E (then git config gitgui.editor, $GITGUI_EDITOR, $VISUAL, $EDITOR, vi)
   --probe                               print terminal capabilities and exit
   --headless-frame out.png [--size WxH] render one frame to PNG and exit (used by tests and by the agent)
   --dump-input                          print decoded events
@@ -251,6 +258,8 @@ Detect the host:
 - cmux: `CMUX_*` environment variables or `TERM_PROGRAM=cmux`. cmux ships a CLI for pane control; check `cmux --help` at build time and use its split command, passing the current binary path and arguments. Verify in a real cmux session, do not guess flag names.
 - Ghostty: `TERM_PROGRAM=ghostty`. Ghostty does not expose a stable CLI for splits from a child process at the time of writing. Try in this order: the `ghostty` binary's `+action` support if present in the installed version, otherwise print the keybinding hint and run in place.
 - kitty: `kitty @ launch --location=vsplit --cwd=current <argv>` when remote control is enabled.
+- `Shift+E` on a file reuses the same integration to open the user's editor in a new split to the right: `cd <workdir> && <editor> <path>`. The editor is `--editor`, then `git config gitgui.editor`, then `$GITGUI_EDITOR`, `$VISUAL`, `$EDITOR`, then `vi`. GUI editors (`code`, `cursor`, `subl`, `zed`, `mate`, `idea` and friends, matched on the command's basename) are spawned detached instead of in a split. gitgui keeps running. Ghostty gets a toast with the command line instead.
+- `Shift+O` runs `cmux open <file>`: cmux's own file preview tab (rendered markdown, syntax colors) in the pane gitgui runs in. Only offered when cmux is detected.
 
 Fallback: run in the current pane and print one line explaining why.
 

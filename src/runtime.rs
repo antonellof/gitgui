@@ -28,6 +28,9 @@ pub struct Options {
     pub crash: bool,
     pub scale: Option<f32>,
     pub font_size: Option<f32>,
+    pub editor: Option<String>,
+    /// File to open in the built-in editor at startup.
+    pub open: Option<String>,
     pub path: PathBuf,
 }
 
@@ -189,6 +192,8 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
     let theme = Theme::dark();
     let ctx = setup_context(opts.font_size.unwrap_or(13.0), &theme);
     let mut app = App::new(theme, "headless", ppp, opts.path.to_path_buf());
+    app.editor_cmd = opts.editor.clone();
+    app.open_on_start = opts.open.clone();
     let mut raster = Rasterizer::new();
     let mut fb = Framebuffer::new(size.0, size.1);
     let mut t = Timings::default();
@@ -219,6 +224,10 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
                     Command::LoadDiff(target) => app.apply(Reply::Diff(repo.diff(&target, crate::git::repo::DiffOpts::default()))),
                     Command::LoadCommitFiles(oid) => {
                         app.apply(Reply::CommitFiles(oid, repo.commit_files(oid)))
+                    }
+                    Command::ListDir(dir) => {
+                        let r = repo.list_dir(&dir);
+                        app.apply(Reply::DirEntries(dir, r))
                     }
                     _ => {}
                 }
@@ -407,6 +416,8 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
         .unwrap_or_else(|| font_size_for_cell(caps.cell_h, ppp));
     let ctx = setup_context(font_size, &theme);
     let mut app = App::new(theme, transport_name, ppp, opts.path.clone());
+    app.editor_cmd = opts.editor.clone();
+    app.open_on_start = opts.open.clone();
     let mut raster = Rasterizer::new();
     let mut fb = Framebuffer::new(w, h);
     let mut enc = kitty::FrameEncoder::new(transport, std::process::id());
@@ -740,6 +751,10 @@ mod tests {
                         Command::LoadCommitFiles(oid) => self
                             .app
                             .apply(Reply::CommitFiles(oid, self.repo.commit_files(oid))),
+                        Command::ListDir(dir) => {
+                            let r = self.repo.list_dir(&dir);
+                            self.app.apply(Reply::DirEntries(dir, r))
+                        }
                         Command::Stage(p) => {
                             self.repo.stage(&p).unwrap();
                             self.finish("stage");
@@ -900,6 +915,101 @@ mod tests {
         // Escape leaves the text field so single-key bindings work again.
         h.key(b"\x1b");
         assert!(!h.ctx.egui_wants_keyboard_input());
+    }
+
+    #[test]
+    fn builtin_editor_edits_and_saves() {
+        use crate::git::repo::testutil::TempRepo;
+        let t = TempRepo::new();
+        t.commit_file("a.rs", "fn main() {}\n", "init");
+        t.write("a.rs", "fn main() {}\n// change\n");
+        let mut h = Harness::new(&t.dir);
+        assert_eq!(h.app.selected_file.as_ref().map(|f| f.path()), Some("a.rs"));
+
+        // `e` opens the built-in editor on the selected file and focuses it.
+        h.key(b"e");
+        h.frame(Vec::new());
+        let ed = h.app.editor.as_ref().expect("editor open");
+        assert_eq!(ed.path, "a.rs");
+        assert_eq!(ed.lang, crate::ui::highlight::Lang::Rust);
+        assert!(h.ctx.egui_wants_keyboard_input(), "editor has keyboard focus");
+        assert!(h.app.editor_focused());
+
+        // Typed text lands in the buffer, single-key bindings are off.
+        h.key(b"q");
+        assert!(!h.app.quit);
+        assert!(h.app.editor.as_ref().unwrap().text.ends_with("\nq"), "cursor starts at the end");
+        assert!(h.app.editor.as_ref().unwrap().dirty());
+
+        // Ctrl+S writes the file with the edit.
+        h.key(b"\x1b[115;5u");
+        assert!(!h.app.editor.as_ref().unwrap().dirty());
+        let on_disk = std::fs::read_to_string(t.dir.join("a.rs")).unwrap();
+        assert_eq!(on_disk, "fn main() {}\n// change\nq");
+        assert!(h.app.pending.iter().any(|c| matches!(c, Command::Refresh)));
+
+        // Escape closes a clean editor; the diff pane is back.
+        h.key(b"\x1b");
+        h.frame(Vec::new());
+        assert!(h.app.editor.is_none());
+        assert!(!h.ctx.egui_wants_keyboard_input());
+
+        // A dirty editor asks before closing; Enter saves and closes.
+        h.key(b"e");
+        h.frame(Vec::new());
+        h.key(b"x");
+        h.key(b"\x1b");
+        h.frame(Vec::new());
+        assert!(matches!(h.app.modal, Some(crate::ui::app::Modal::CloseEditor)));
+        assert!(h.app.editor.is_some());
+        h.key(b"\r");
+        h.frame(Vec::new());
+        assert!(h.app.modal.is_none());
+        assert!(h.app.editor.is_none());
+        assert!(std::fs::read_to_string(t.dir.join("a.rs")).unwrap().ends_with("\nqx"));
+    }
+
+    #[test]
+    fn sidebar_tree_lists_lazily_and_opens_files() {
+        use crate::git::repo::testutil::TempRepo;
+        let t = TempRepo::new();
+        t.commit_file("src/lib.rs", "pub fn f() {}\n", "init");
+        t.write("README.md", "# hi\n");
+        let mut h = Harness::new(&t.dir);
+        // The root listing arrives with the first snapshot; nothing else yet.
+        let root = h.app.tree.get("").expect("root listed");
+        let names: Vec<&str> = root.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["src", "README.md"]);
+        assert!(!h.app.tree.contains_key("src"));
+
+        // Expanding a folder requests its listing once.
+        h.app.toggle_dir("src");
+        assert!(h.app.pending.iter().any(|c| matches!(c, Command::ListDir(d) if d == "src")));
+        h.settle();
+        assert_eq!(h.app.tree.get("src").unwrap()[0].path, "src/lib.rs");
+        h.frame(Vec::new());
+
+        // Selecting a tree file makes it the target of `e` even though it is
+        // not in the change lists.
+        h.app.tree_selected = Some("src/lib.rs".into());
+        h.app.focus = crate::ui::app::Pane::Sidebar;
+        assert_eq!(h.app.current_file().as_deref(), Some("src/lib.rs"));
+        h.key(b"e");
+        h.frame(Vec::new());
+        assert_eq!(h.app.editor.as_ref().map(|e| e.path.as_str()), Some("src/lib.rs"));
+
+        // A refresh re-lists the root and every open folder.
+        h.app.apply(Reply::Snapshot(h.repo.snapshot(100).unwrap()));
+        let dirs: Vec<String> = h
+            .app
+            .pending
+            .iter()
+            .filter_map(|c| match c {
+                Command::ListDir(d) => Some(d.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(dirs.contains(&String::new()) && dirs.contains(&"src".to_owned()));
     }
 
     #[test]

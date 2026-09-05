@@ -16,7 +16,13 @@ pub fn show_detail(app: &mut App, ui: &mut egui::Ui) {
             Selection::WorkingTree => show_worktree(app, ui, focused),
             Selection::Commit(i) => show_commit(app, ui, i, focused),
         });
-    egui::CentralPanel::default().show(ui, |ui| diff::show(app, ui));
+    egui::CentralPanel::default().show(ui, |ui| {
+        if app.editor.is_some() {
+            crate::ui::editor::show(app, ui);
+        } else {
+            diff::show(app, ui);
+        }
+    });
 }
 
 fn file_row(ui: &mut egui::Ui, f: &FileStatus, selected: bool, theme: &crate::ui::theme::Theme) -> egui::Response {
@@ -92,6 +98,9 @@ struct WorktreeListAction {
     modal: Option<Modal>,
     ignore: Option<String>,
     copy: Option<String>,
+    edit: bool,
+    edit_external: bool,
+    preview: bool,
     discard_all: bool,
 }
 
@@ -104,6 +113,9 @@ fn show_worktree(app: &mut App, ui: &mut egui::Ui, _focused: bool) {
         modal: None,
         ignore: None,
         copy: None,
+        edit: false,
+        edit_external: false,
+        preview: false,
         discard_all: false,
     };
 
@@ -163,6 +175,15 @@ fn show_worktree(app: &mut App, ui: &mut egui::Ui, _focused: bool) {
         ui.ctx().copy_text(p);
         app.toast("copied path", false);
     }
+    if action.edit {
+        app.edit_selected();
+    }
+    if action.edit_external {
+        app.edit_selected_external();
+    }
+    if action.preview {
+        app.preview_selected_in_cmux();
+    }
     if action.discard_all {
         app.discard_all();
     }
@@ -211,6 +232,23 @@ fn file_menu(ui: &mut egui::Ui, f: &FileStatus, staged: bool, busy: bool, action
         if f.kind == FileKind::Untracked && item(ui, true, "Add to .gitignore", "i") {
             action.ignore = Some(path.clone());
         }
+    }
+    let target = if staged {
+        DiffTarget::Staged(path.clone())
+    } else {
+        DiffTarget::WorkdirUnstaged(path.clone())
+    };
+    if item(ui, true, "Edit", "e, built-in editor with syntax colors") {
+        action.clicked = Some(target.clone());
+        action.edit = true;
+    }
+    if item(ui, true, "Open in $EDITOR", "Shift+E, new terminal split; set with --editor or git config gitgui.editor") {
+        action.clicked = Some(target.clone());
+        action.edit_external = true;
+    }
+    if crate::split::is_cmux() && item(ui, true, "Preview in cmux", "Shift+O, cmux file preview tab") {
+        action.clicked = Some(target);
+        action.preview = true;
     }
     if item(ui, true, "Copy path", "") {
         action.copy = Some(path);

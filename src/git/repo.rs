@@ -14,6 +14,7 @@ use super::graph::{self, GraphLayout};
 pub enum GitError {
     NotARepository(PathBuf),
     Git(git2::Error),
+    Io(String),
 }
 
 impl fmt::Display for GitError {
@@ -21,6 +22,7 @@ impl fmt::Display for GitError {
         match self {
             GitError::NotARepository(p) => write!(f, "not a git repository: {}", p.display()),
             GitError::Git(e) => write!(f, "{}", e.message()),
+            GitError::Io(e) => write!(f, "{e}"),
         }
     }
 }
@@ -237,6 +239,17 @@ impl RepoState {
     }
 }
 
+/// One entry of a working tree directory listing (sidebar file tree).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirEntry {
+    pub name: String,
+    /// Repo-relative path with `/` separators.
+    pub path: String,
+    pub is_dir: bool,
+    /// Matched by .gitignore (shown dimmed, still openable).
+    pub ignored: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RepoSnapshot {
     pub path: PathBuf,
@@ -255,6 +268,8 @@ pub struct RepoSnapshot {
     pub staged: Vec<FileStatus>,
     pub conflicted: Vec<FileStatus>,
     pub user_name: String,
+    /// `git config gitgui.editor`, when set.
+    pub editor: Option<String>,
     pub user_email: String,
     /// Full message of the HEAD commit, offered when amending.
     pub head_message: Option<String>,
@@ -379,6 +394,10 @@ impl Repo {
             .as_ref()
             .and_then(|c| c.get_string("user.email").ok())
             .unwrap_or_default();
+        let editor = cfg
+            .as_ref()
+            .and_then(|c| c.get_string("gitgui.editor").ok())
+            .filter(|e| !e.trim().is_empty());
         Ok(Arc::new(RepoSnapshot {
             path: self.workdir.clone(),
             head,
@@ -395,6 +414,7 @@ impl Repo {
             conflicted,
             user_name,
             user_email,
+            editor,
             head_message: self.head_message(),
             state: self.state(),
             rebase_progress: self.rebase_progress(),
@@ -722,6 +742,45 @@ impl Repo {
         staged.sort_by(by_path);
         conflicted.sort_by(by_path);
         Ok((unstaged, staged, conflicted))
+    }
+
+    /// Entries of the working tree directory `rel` ("" for the root):
+    /// directories first, then files, both case-insensitively sorted. `.git`
+    /// is skipped, ignored entries are flagged.
+    pub fn list_dir(&self, rel: &str) -> Result<Vec<DirEntry>> {
+        let dir = if rel.is_empty() {
+            self.workdir.clone()
+        } else {
+            self.workdir.join(rel)
+        };
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir(&dir).map_err(|e| GitError::Io(format!("{}: {e}", dir.display())))? {
+            let entry = entry.map_err(|e| GitError::Io(e.to_string()))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == ".git" {
+                continue;
+            }
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let path = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{rel}/{name}")
+            };
+            let probe = if is_dir { format!("{path}/") } else { path.clone() };
+            let ignored = self.repo.status_should_ignore(Path::new(&probe)).unwrap_or(false);
+            out.push(DirEntry {
+                name,
+                path,
+                is_dir,
+                ignored,
+            });
+        }
+        out.sort_by(|a, b| {
+            b.is_dir
+                .cmp(&a.is_dir)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        Ok(out)
     }
 
     /// Files changed by a commit, against its first parent (or empty tree).
@@ -1811,6 +1870,27 @@ mod tests {
             .find_branch("feature", git2::BranchType::Local)
             .unwrap();
         assert!(b.upstream().is_ok());
+    }
+
+    #[test]
+    fn list_dir_sorts_dirs_first_and_flags_ignored() {
+        let t = testutil::TempRepo::new();
+        t.commit_file("b.txt", "b\n", "init");
+        t.write("src/main.rs", "fn main() {}\n");
+        t.write("A.txt", "a\n");
+        t.write(".gitignore", "target/\n");
+        std::fs::create_dir_all(t.dir.join("target")).unwrap();
+        let r = Repo::open(&t.dir).unwrap();
+        let root = r.list_dir("").unwrap();
+        let names: Vec<&str> = root.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["src", "target", ".gitignore", "A.txt", "b.txt"]);
+        assert!(root.iter().find(|e| e.name == "target").unwrap().ignored);
+        assert!(!root.iter().find(|e| e.name == "src").unwrap().ignored);
+        let src = r.list_dir("src").unwrap();
+        assert_eq!(src.len(), 1);
+        assert_eq!(src[0].path, "src/main.rs");
+        assert!(!src[0].is_dir);
+        assert!(r.list_dir("missing").is_err());
     }
 
     #[test]

@@ -23,3 +23,20 @@ pub fn draw_chevron_down(painter: &Painter, rect: Rect, color: Color32) {
     painter.line_segment([pos2(cx - wing, top), pos2(cx, bot)], stroke);
     painter.line_segment([pos2(cx + wing, top), pos2(cx, bot)], stroke);
 }
+
+/// Small right / down triangle for tree rows.
+pub fn disclosure(ui: &mut Ui, open: bool, color: Color32) -> egui::Response {
+    let h = ui.spacing().interact_size.y * 0.5;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(h, h), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let r = rect.shrink(h * 0.22);
+        let pts = if open {
+            vec![r.left_top(), r.right_top(), pos2(r.center().x, r.bottom())]
+        } else {
+            vec![r.left_top(), pos2(r.right(), r.center().y), r.left_bottom()]
+        };
+        ui.painter_at(rect)
+            .add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
+    }
+    response
+}

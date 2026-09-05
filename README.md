@@ -217,6 +217,8 @@ Release binaries are built by `.github/workflows/release.yml` on tag push (`v*`)
 - Merge, rebase, cherry-pick and revert state in the footer with continue / abort / skip; conflicted files show their markers and resolve with ours / theirs
 - Remotes: add, rename, edit URL, remove, fetch one; tags: create (annotated or light), delete, push; stashes: apply, pop, drop, keep index, branch from stash
 - Diff search, adjustable context, whitespace toggle, word wrap
+- File tree in the sidebar: the whole working tree, folders listed on demand, ignored entries dimmed, changed files colored; click a file to open it
+- Built-in editor with syntax colors (Rust, C, Go, Java, Swift, Python, Ruby, JS/TS, shell, TOML, YAML, JSON, Markdown, CSS, HTML, SQL, Lua), line numbers, undo, `Ctrl+S` saves; `Shift+E` opens the file in your editor in a new split (`--editor`, `git config gitgui.editor`, `$EDITOR`; GUI editors like `code` open detached), `Shift+O` opens cmux's file preview
 - Fetch, pull, pull with rebase, push, force push with lease (via your `git` CLI and credential helpers)
 - Auto refresh every 2 s when the repo changes (no need to press `r` after edits in another pane)
 - `?` shows every shortcut; right-click anything for the rest
@@ -278,6 +280,8 @@ gitgui --dump-input       print decoded key and mouse events, Ctrl+C to exit
 gitgui --no-shm           force the base64 transport (what SSH uses)
 gitgui --scale 2          override pixels per point (auto-detected from the cell height)
 gitgui --font-size 14     UI font size in points
+gitgui --open src/main.rs open a file in the built-in editor at startup
+gitgui --editor "code -w" editor for Shift+E (or: git config gitgui.editor nano)
 gitgui --help
 ```
 
@@ -306,6 +310,8 @@ Press `?` inside gitgui for the full list. The main ones:
 | Stage all, unstage all | `a` / `Shift+A` |
 | Discard file or selected lines, discard everything | `d` / `Shift+D` |
 | Ignore the selected untracked file | `i` |
+| Edit the selected file (built-in), open in your editor, preview in cmux | `e`, `Shift+E`, `Shift+O` |
+| Save, close the editor | `Ctrl+S`, `Escape` |
 | Focus commit message | `c` |
 | Commit | `Ctrl+Enter` |
 | Commit and push | `Ctrl+Shift+Enter` |
