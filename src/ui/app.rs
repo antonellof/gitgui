@@ -1728,7 +1728,6 @@ impl App {
                 };
                 let room = (ctx.content_rect().width() - 48.0).max(120.0);
                 ui.set_min_width(want.min(room));
-                ui.set_max_width(room);
                 match modal {
                     Modal::Discard(paths) => {
                         ui.label(format!(
