@@ -271,8 +271,9 @@ Not planned for v0.x: an interactive rebase editor, bisect, submodules,
 worktrees, sparse checkout, patch export. Use the git CLI in the
 neighbouring pane.
 
-### Recently shipped (v0.1.1 to v0.2.0)
+### Recently shipped (v0.1.1 to v0.3.0)
 
+- v0.3.0: built-in editor with syntax colors, external editor and cmux preview hand-off, sidebar file tree, panel hide / show, `--open`, `--editor`, compact README
 - v0.2.0: feature parity pass, see "Feature audit 2026-09-05"
 
 - v0.1.6: commit detail shows the full message body, word-wrapped, above

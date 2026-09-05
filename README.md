@@ -1,6 +1,11 @@
 # gitgui
 
-A git GUI that runs inside your terminal.
+A git GUI that runs inside your terminal. One Rust binary paints an [egui](https://github.com/emilk/egui) interface as pixels into a cmux, Ghostty, kitty or WezTerm pane over the kitty graphics protocol. No Electron, no browser engine, no TUI. Works over SSH.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/antonellof/gitgui/main/scripts/install.sh | bash
+cd /path/to/repo && gitgui
+```
 
 ![gitgui in a cmux split next to pi](screenshot/gitgui-cmux-pi.png)
 
@@ -8,375 +13,127 @@ A git GUI that runs inside your terminal.
   <a href="screenshot/gitgui-commits.png"><img src="screenshot/gitgui-commits.png" width="49%" alt="Commit graph, commit detail with the full message body, and diff"></a>
   <a href="screenshot/gitgui-branches.png"><img src="screenshot/gitgui-branches.png" width="49%" alt="Branch switcher over a repo with many branches"></a>
 </p>
-<p align="center">
-  <sub>
-    <a href="screenshot/gitgui-commits.png">commits and diff</a> ·
-    <a href="screenshot/gitgui-branches.png">branch switcher</a>
-  </sub>
-</p>
 
-### Demo: agent opens gitgui in a split
+<details>
+<summary>Demos: an agent opens gitgui in a split and drives it through the skill</summary>
 
-Claude Code in the left pane runs `gitgui --split right .`, then reviews, commits and cuts a release while gitgui refreshes on its own.
+Claude Code runs `gitgui --split right .`, then reviews, commits and cuts a release while gitgui refreshes on its own.
 
 ![Claude Code opens gitgui in a cmux split and drives a release](screenshot/gitgui-demo-1.gif)
-
-### Demo: agent drives gitgui through the skill
 
 The agent reads `skill/SKILL.md` and uses `gitgui action` to inspect status, stage files and take screenshots of the pane.
 
 ![An agent uses the gitgui skill to stage, stash and inspect the repo](screenshot/gitgui-demo-skill.gif)
+</details>
 
+## Install
 
-## Why
-
-I live in [cmux](https://cmux.dev) (Ghostty-based terminal workspaces) and wanted a real git GUI in a pane next to my coding agent, not a separate Electron app or a text-mode TUI. gitgui renders pixels inside the terminal: commit graph, staging area, diff viewer, hunk staging, all in the same window as [pi](https://pi.dev) or any other CLI agent. One small Rust binary, no browser engine, works over SSH.
-
-Not a TUI. gitgui paints an [egui](https://github.com/emilk/egui) interface into an RGBA framebuffer with its own software rasterizer and ships every frame to the terminal with the kitty graphics protocol.
-
-## Quick install
-
-Requires macOS or Linux and a kitty-graphics terminal (cmux, Ghostty, kitty, WezTerm).
-
-**From a public clone** (works for private repos when you are logged in with `gh`):
+Requires macOS or Linux and a kitty-graphics terminal (cmux, Ghostty, kitty, WezTerm). The one-liner above downloads a release binary into `~/.local/bin`, or builds from source with `cargo` when there is no binary for your platform.
 
 ```bash
-gh repo clone antonellof/gitgui
-cd gitgui
-bash scripts/install.sh
+GITGUI_VERSION=0.2.0 GITGUI_INSTALL_DIR=~/bin bash scripts/install.sh   # pin a version, other dir
+cargo install --git https://github.com/antonellof/gitgui                 # from source (Rust 1.95+)
+gitgui --probe                                                           # does this terminal support kitty graphics?
 ```
 
-The script downloads a release binary when one exists, otherwise builds from source with `cargo` (Rust 1.95+).
+If `gitgui` is not found afterwards, add `~/.local/bin` to your `PATH`.
 
-**One-liner** (public repo only; `curl` cannot fetch scripts or release assets from a private repo):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/antonellof/gitgui/main/scripts/install.sh | bash
-```
-
-Pin a version or install elsewhere:
-
-```bash
-GITGUI_VERSION=0.1.2 GITGUI_INSTALL_DIR=~/.local/bin bash scripts/install.sh
-```
-
-**Build from source directly** (Rust 1.95+):
-
-```bash
-git clone https://github.com/antonellof/gitgui
-cd gitgui
-cargo install --path .
-```
-
-### After install
-
-On success the installer prints:
-
-```
-installed: ~/.local/bin/gitgui
-
-run in a kitty-graphics terminal (cmux, Ghostty, kitty):
-  gitgui                  open repo in current directory
-  gitgui /path/to/repo    open a specific repo
-  gitgui --split right .  open in a new terminal split
-
-quit with q or Ctrl+C
-```
-
-If `gitgui` is not found, add the install dir to your PATH:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-Verify the terminal supports kitty graphics:
-
-```bash
-gitgui --probe
-```
-
-### Run it
-
-Open cmux, Ghostty, kitty, or WezTerm, then:
-
-```bash
-cd /path/to/your/repo
-gitgui                    # current directory
-gitgui --split right .    # new split beside your agent pane (cmux, kitty)
-```
-
-Inside gitgui: `j`/`k` to move, `s`/`u` to stage/unstage, `Ctrl+Enter` to commit, `q` or `Ctrl+C` to quit. See [Shortcuts](#shortcuts).
-
-## cmux + pi + gitgui (AI coding setup)
-
-This is the layout in the screenshot above: **pi** (or Cursor, Claude Code, Codex, etc.) in the left pane, **gitgui** in a right split, same workspace, same repo.
-
-### 1. Install cmux
-
-Install [cmux](https://cmux.dev) and open a workspace at your project path:
-
-```bash
-cmux /path/to/your/repo
-```
-
-cmux exposes `CMUX_SURFACE_ID`, kitty graphics, and pixel mouse in every terminal pane. That is what gitgui needs.
-
-### 2. Install gitgui
-
-Use the quick install above, or `cargo install --path .` from a clone.
-
-Open gitgui in a split beside your agent pane:
-
-```bash
-gitgui --split right .
-```
-
-Under the hood this runs `cmux new-split right` and `cmux send` with the gitgui command. You can also split manually and run `gitgui` in the new pane.
-
-### 3. Install pi (optional)
-
-[pi](https://pi.dev) is a terminal coding agent. Install it however you prefer (Homebrew, npm: `@earendil-works/pi-coding-agent`), then start it in the main pane:
-
-```bash
-pi
-```
-
-Any agent that runs in a terminal pane works the same way. The point is two panes, one repo, agent on one side and gitgui on the other.
-
-### 4. Give the agent gitgui skills
-
-Copy or symlink the skill file so your agent knows the control API:
-
-```bash
-mkdir -p ~/.cursor/skills/gitgui
-ln -sf "$(pwd)/skill/SKILL.md" ~/.cursor/skills/gitgui/SKILL.md
-```
-
-For pi, point it at the same `skill/SKILL.md` (or add it to pi's skills directory if you use one).
-
-The agent can then:
-
-```bash
-gitgui ls
-gitgui action '{"cmd":"status"}'
-gitgui action '{"cmd":"select","oid":"abc123"}'
-gitgui action '{"cmd":"stage","paths":["src/foo.rs"]}'
-gitgui action '{"cmd":"screenshot","path":"/tmp/gitgui.png"}'
-```
-
-When run from the pane that owns a gitgui instance, `action` auto-connects via the controlling tty. Otherwise pass `--pid`.
-
-### Typical workflow
-
-1. Open cmux at the repo.
-2. Start pi (or your agent) in the left pane.
-3. Run `gitgui --split right .` from the agent pane, or open gitgui manually in a right split.
-4. Agent edits code; you (or the agent via `gitgui action`) stage, review diffs, and commit in gitgui without leaving the terminal.
-
-Suggested cmux keybind: map a workspace shortcut to `gitgui --split right .` if you open it often.
-
-## Local development
-
-To hack on gitgui itself with the same cmux setup:
-
-```bash
-git clone https://github.com/antonellof/gitgui
-cd gitgui
-cargo build --release
-```
-
-Run from a cmux pane (or any kitty-graphics terminal):
-
-```bash
-cargo run --release -- --repo /path/to/test/repo
-cargo run --release -- --split right --repo .
-```
-
-Without a graphics terminal you can still verify rendering and git logic:
-
-```bash
-cargo test
-cargo clippy -- -D warnings
-cargo run --release -- --headless-frame /tmp/frame.png --repo . --size 1600x1000 --scale 2
-bash scripts/smoke.sh
-```
-
-`--headless-frame` renders one PNG and exits. Use it in CI and to inspect layout without a live pane.
-
-Interactive mouse testing in cmux: build `scripts/click.swift` (see [scripts/README.md](scripts/README.md)) because `cmux send` types text but cannot inject raw mouse events.
-
-Release binaries are built by `.github/workflows/release.yml` on tag push (`v*`).
-
-## What you get
-
-- Commit graph with branch lanes, sidebar (branches, remotes, tags, stashes)
-- Stage and unstage files, hunks and individual lines; discard by file, hunk or line; commit, amend
-- Commit menu: cherry-pick, revert, tag, branch here, checkout detached, reset soft / mixed / hard, copy hash, open in browser
-- History rewriting from the commit menu: reword, squash, fixup, drop, move up / down, edit, autosquash (runs `git rebase` for you, no editor pops up)
-- Branches: checkout, create, rename, delete, merge, rebase onto, fast-forward, set upstream, open pull request; delete on the remote
-- Merge, rebase, cherry-pick and revert state in the footer with continue / abort / skip; conflicted files show their markers and resolve with ours / theirs
-- Remotes: add, rename, edit URL, remove, fetch one; tags: create (annotated or light), delete, push; stashes: apply, pop, drop, keep index, branch from stash
-- Diff search, adjustable context, whitespace toggle, word wrap
-- File tree in the sidebar: the whole working tree, folders listed on demand, ignored entries dimmed, changed files colored; click a file to open it
-- Built-in editor with syntax colors (Rust, C, Go, Java, Swift, Python, Ruby, JS/TS, shell, TOML, YAML, JSON, Markdown, CSS, HTML, SQL, Lua), line numbers, undo, `Ctrl+S` saves; `Shift+E` opens the file in your editor in a new split (`--editor`, `git config gitgui.editor`, `$EDITOR`; GUI editors like `code` open detached), `Shift+O` opens cmux's file preview
-- Fetch, pull, pull with rebase, push, force push with lease (via your `git` CLI and credential helpers)
-- Auto refresh every 2 s when the repo changes (no need to press `r` after edits in another pane)
-- `?` shows every shortcut; right-click anything for the rest
-- Agent control socket: `gitgui ls`, `gitgui action '{"cmd":"status"}'` (see [skill/SKILL.md](skill/SKILL.md))
-
-Status: **v0.2.0**. Phases 0 to 5 of the roadmap and the feature parity pass are done. See [Roadmap](#roadmap) and [docs/PLAN.md](docs/PLAN.md) for open issues.
-
-## Architecture
-
-Single Rust binary (edition 2021, no async runtime). Three threads:
-
-| Thread | Role |
-|---|---|
-| **stdin reader** | Blocking `read(2)` on stdin, pushes raw bytes to a channel |
-| **main loop** | egui UI, tessellation, software rasterizer, kitty graphics frames |
-| **git worker** | libgit2 reads and index writes; `git` CLI for fetch/pull/push |
-
-The UI never blocks on git. It reads an immutable `RepoSnapshot` the worker replaces after each operation. Rendering never touches git.
-
-```
-  Terminal  ──stdin──►  term::input  ──Event──►  main loop
-     ▲                                              │
-     │  kitty graphics (shm or base64+zlib)         │ egui
-     │                                              ▼
-  term::kitty  ◄──  render::frame  ◄──  render::raster  ◄──  ui::app
-                      (RGBA, dirty)      (mesh triangles)
-                                              │
-                                              ▼
-                                         git worker (git2 + git CLI)
-```
-
-### Stack
-
-| Layer | Technology |
-|---|---|
-| Language | Rust (stable, 1.95+) |
-| UI | [egui](https://github.com/emilk/egui) 0.36 + [epaint](https://github.com/emilk/egui) (no eframe, no GPU) |
-| Rasterizer | Custom software triangle rasterizer in `render/raster.rs` |
-| Git | [libgit2](https://github.com/rust-lang/git2-rs) via `git2` 0.21 for reads and writes; `git` subprocess for network |
-| Terminal | kitty graphics protocol, kitty keyboard, SGR pixel mouse, OSC 10/11 theme query |
-| Transport | POSIX shared memory locally; flate2 + base64 over SSH |
-| Agent API | Unix socket, JSON-lines (`src/agent.rs`) |
-| Splits | cmux CLI, kitty `@ launch`, Ghostty hint fallback (`src/split.rs`) |
-
-Pinned dependency versions and API notes live in [CLAUDE.md](CLAUDE.md). Full module map and milestones: [docs/SPEC.md](docs/SPEC.md). Escape sequences: [docs/PROTOCOLS.md](docs/PROTOCOLS.md).
-
-Same idea as [terminal-browser](https://github.com/zenbu-labs/terminal-browser) and [terminal-code](https://github.com/zenbu-labs/terminal-code), minus Chromium.
-
-## Usage
+## Use
 
 ```
 gitgui                    open the repository containing the current directory
 gitgui <path>             open the repository at <path>
-gitgui --split right      open in a new terminal split (cmux, kitty)
-gitgui ls                 list running gitgui instances
-gitgui action '{"cmd":"status"}'   control a running instance (see skill/SKILL.md)
-gitgui --probe            print what the terminal supports and exit
-gitgui --dump-input       print decoded key and mouse events, Ctrl+C to exit
-gitgui --no-shm           force the base64 transport (what SSH uses)
-gitgui --scale 2          override pixels per point (auto-detected from the cell height)
-gitgui --font-size 14     UI font size in points
+gitgui --split right      open in a new terminal split next to your agent (cmux, kitty)
 gitgui --open src/main.rs open a file in the built-in editor at startup
 gitgui --editor "code -w" editor for Shift+E (or: git config gitgui.editor nano)
-gitgui --help
+gitgui ls                 list running gitgui instances
+gitgui action '{"cmd":"status"}'   control a running instance (see skill/SKILL.md)
+gitgui --scale 2 --font-size 14    override pixels per point and font size
+gitgui --probe | --dump-input | --no-shm | --help
 ```
 
-## How does it work?
+Press `?` inside gitgui for every shortcut. The essentials: `j` / `k` move, `s` / `u` stage / unstage, `Ctrl+Enter` commit, `q` quit.
 
-The terminal never sees any text. gitgui paints an egui interface into an RGBA framebuffer and ships every frame as a kitty graphics image covering the whole pane. Locally the frame goes through POSIX shared memory. Over SSH it falls back to zlib plus base64 inline.
+### With a coding agent
 
-Input: kitty keyboard protocol for keys, SGR pixel mouse for clicks, drags and wheel, bracketed paste, focus events, SIGWINCH for resize. Bytes are decoded into egui events.
+The screenshot above is [cmux](https://cmux.dev) with [pi](https://pi.dev) in the left pane and gitgui in a right split, same workspace, same repo. Any terminal agent (Claude Code, Codex, Cursor) works the same way:
 
-Git access goes through libgit2 for reads and index writes. Network operations shell out to the `git` CLI so credential helpers and SSH agents keep working.
+```bash
+cmux /path/to/your/repo        # open a cmux workspace
+gitgui --split right .         # from the agent's pane: gitgui in a split beside it
+```
 
-## SSH
+Give the agent the control API by linking `skill/SKILL.md` into its skills directory (for Cursor: `~/.cursor/skills/gitgui/SKILL.md`). It can then run `gitgui action` to select commits, stage files, fetch, push and take screenshots of the pane. From the pane that owns the gitgui instance, `action` connects through the controlling tty; elsewhere pass `--pid`.
 
-Run `gitgui` on the remote machine inside an SSH session in a supported terminal. It detects `SSH_TTY`, switches to the inline transport and throttles to 20 fps. Nothing needs to be installed on the local side.
+## Features
+
+- **History**: commit graph with branch lanes, filter by summary / author / hash, full message body, files per commit.
+- **Staging**: files, hunks and single lines; discard by file, hunk or line; commit, amend, commit and push; stash with keep-index / untracked options.
+- **Commit menu**: cherry-pick, revert, tag, branch here, checkout detached, reset soft / mixed / hard, copy hash, open in browser.
+- **History rewriting**: reword, squash, fixup, drop, move up / down, edit, autosquash. gitgui runs `git rebase` for you, no editor pops up.
+- **Branches and remotes**: checkout, create, rename, delete, merge, rebase onto, fast-forward, upstream, delete on remote, open pull request; add / rename / edit / remove remotes; annotated and light tags; fetch, pull, pull with rebase, push, force push with lease through your `git` CLI so credential helpers and SSH agents keep working.
+- **Merge and rebase state**: footer banner with continue / abort / skip; conflicted files show their markers and resolve with ours / theirs.
+- **Diff**: search, adjustable context, whitespace toggle, word wrap, hunk and line selection with the mouse.
+- **File tree**: the whole working tree in the sidebar, folders listed on demand, ignored entries dimmed, changed files colored.
+- **Editor**: built-in, with syntax colors for the common languages, line numbers, undo, `Ctrl+S`. `Shift+E` opens the file in your own editor in a new split (GUI editors such as `code` open detached), `Shift+O` opens cmux's file preview.
+- **Panels**: hide and show the sidebar, commit list and detail pane with `1` / `2` / `3` or the buttons in each header.
+- **Refresh**: watches the repository and refreshes on its own when another pane changes it.
+- **Agent API**: Unix socket, JSON lines, `gitgui ls` and `gitgui action`.
+
+Not planned: an interactive rebase editor, bisect, submodules, worktrees. Use the git CLI in the neighbouring pane. Open items: [docs/PLAN.md](docs/PLAN.md).
 
 ## Shortcuts
 
-Press `?` inside gitgui for the full list. The main ones:
-
 | Action | Key |
 |---|---|
-| Move selection | `j` / `k`, `Down` / `Up` |
-| Open, checkout | `Enter` |
-| Stage, unstage (file or selected lines) | `s` / `u` |
-| Toggle staged | `Space` |
+| Move selection, open / checkout | `j` / `k`, `Enter` |
+| Stage, unstage (file or selected lines), toggle | `s` / `u`, `Space` |
 | Stage all, unstage all | `a` / `Shift+A` |
-| Discard file or selected lines, discard everything | `d` / `Shift+D` |
+| Discard file or lines, discard everything | `d` / `Shift+D` |
 | Ignore the selected untracked file | `i` |
-| Edit the selected file (built-in), open in your editor, preview in cmux | `e`, `Shift+E`, `Shift+O` |
+| Edit (built-in), open in your editor, preview in cmux | `e`, `Shift+E`, `Shift+O` |
 | Save, close the editor | `Ctrl+S`, `Escape` |
-| Focus commit message | `c` |
-| Commit | `Ctrl+Enter` |
-| Commit and push | `Ctrl+Shift+Enter` |
+| Commit, commit and push, focus the message | `Ctrl+Enter`, `Ctrl+Shift+Enter`, `c` |
 | Stash | `Shift+S` |
-| Filter commits | `/` |
-| Search in the diff, next / previous match | `Ctrl+F`, `n` / `Shift+N` |
+| Filter commits, search the diff, next / previous match | `/`, `Ctrl+F`, `n` / `Shift+N` |
 | Diff context, whitespace | `{` / `}`, `Ctrl+W` |
-| New branch, tag, cherry-pick, revert, reset at the selected commit | `n`, `Shift+T`, `Shift+C`, `t`, `g` |
-| Reword, drop, move the selected commit | `Shift+R`, `d`, `Shift+K` / `Shift+J` |
+| Branch, tag, cherry-pick, revert, reset at the commit | `n`, `Shift+T`, `Shift+C`, `t`, `g` |
+| Reword, drop, move the commit | `Shift+R`, `d`, `Shift+K` / `Shift+J` |
 | Copy hash, open commit in browser | `y`, `o` |
 | Continue, abort or skip a merge / rebase | `m` |
+| Fetch, pull, push, refresh | `f`, `p`, `Shift+P`, `r` |
+| Cycle panes, hide / show sidebar, commits, detail | `Tab`, `1` / `2` / `3` |
 | Clear filter, search or selection; close dialog | `Escape` |
-| Fetch, pull, push | `f` / `p` / `Shift+P` |
-| Refresh | `r` |
-| Cycle panes | `Tab` |
-| Hide or show the sidebar, commit list, detail pane | `1` / `2` / `3` (also `hide` in each header and the footer toggles) |
-| Help | `?` |
-| Quit | `q`, `Ctrl+C` |
+| Help, quit | `?`, `q` or `Ctrl+C` |
 
-Mouse: click files to view diffs, `+` / `-` to stage or unstage, `Stage hunk` and `Discard hunk` on a hunk header, click / Shift+click / drag diff lines to select them for line staging, double-click a branch to check it out, right-click commits, branches, remotes, tags, stashes and files for everything else. Right-click the Push button for a force push, Pull for pull with rebase, Fetch for a single remote. The footer shows the branch switcher, dirty counts, a merge / rebase banner with continue and abort when one is in progress, and the fetch / pull / push / refresh / quit buttons; in panes narrower than about 560 pt the buttons show icons only.
+Right-click commits, branches, remotes, tags, stashes and files for everything else. gitgui never binds `Cmd+*` and leaves `Ctrl+Shift+*` to the terminal, except `Ctrl+Shift+Enter`.
 
-gitgui never binds `Cmd+*`. Most `Ctrl+Shift+*` combos stay with your terminal; the exception is `Ctrl+Shift+Enter` to commit and push from the commit box.
+## How it works
 
-## Roadmap
+Three threads, no async runtime: a stdin reader, the main loop (egui, tessellation, a software rasterizer in `render/raster.rs`, kitty graphics frames) and a git worker (libgit2 for reads and index writes, the `git` CLI for network and rebase). The UI reads an immutable snapshot the worker replaces after each operation; rendering never touches git.
 
-- [x] Phase 0: terminal plumbing. Capability probe, raw mode, kitty graphics frame transport with shm and inline paths, clean restore on quit, panic and signals.
-- [x] Phase 1: rendering. Software rasterizer for egui meshes, headless PNG frames.
-- [x] Phase 2: input. Kitty keyboard, SGR pixel mouse, paste, focus, resize.
-- [x] Phase 3: read-only git. Sidebar, commit graph, commit detail, diff view.
-- [x] Phase 4: writes. Stage and unstage by file and hunk, commit, amend, branches, stash, fetch, pull, push.
-- [x] Phase 5: integration. Split panes (cmux, kitty), agent control socket, install script, release workflow, agent skill file.
+Frames go through POSIX shared memory locally and zlib + base64 over SSH (detected from `SSH_TTY`, throttled to 20 fps). Input is the kitty keyboard protocol, SGR pixel mouse, bracketed paste, focus events and SIGWINCH. Colors follow the terminal palette (OSC 10 / 11).
 
-Post v0.1, in priority order (details and sizes in [docs/PLAN.md](docs/PLAN.md)):
+| Layer | Technology |
+|---|---|
+| UI | egui 0.36 + epaint, no eframe, no GPU |
+| Git | git2 0.21 (libgit2) for reads and writes, `git` subprocess for network |
+| Terminal | kitty graphics, kitty keyboard, SGR pixel mouse |
+| Splits | cmux CLI, kitty `@ launch`, Ghostty hint fallback |
 
-- [x] Commit and push button and agent command (v0.1.1)
-- [x] Auto refresh, keyboard shortcuts, agent network ops (v0.1.3)
-- [x] Footer toolbar, branch picker, publish to GitHub, init screen (v0.1.4)
-- [x] Layout fixes for short and narrow panes, owner-only agent socket, filter keeps a visible selection (v0.1.5)
-- [x] Full commit message body in the commit detail (v0.1.6)
-- [x] README demo recordings (two videos under the hero screenshot)
-- [x] Feature parity pass (v0.2.0): line staging, diff search / context / whitespace, commit menu with cherry-pick, revert, tag, reset, history rewriting (reword, squash, fixup, drop, move, edit, autosquash), merge / rebase state with continue, abort, skip and ours / theirs conflict resolution, branch merge / rebase / fast-forward / rename / upstream, remotes, tags, stash options, force push, pull with rebase, help dialog
-- [ ] Terminal font family matching (Ghostty `font-family` via CoreText / fontconfig)
-- [ ] File history and blame
-- [ ] tmux / Zellij graphics passthrough
-- [ ] Recent repos switcher
-- [ ] Multi-select in file lists, file tree view
-- [ ] Undo / redo from the reflog, reflog view
-
-Not planned: an interactive rebase editor (single-commit rewrites are in the commit menu), bisect, submodules, worktrees. Use the git CLI in the neighbouring pane.
+Same trick as [terminal-browser](https://github.com/zenbu-labs/terminal-browser) and [terminal-code](https://github.com/zenbu-labs/terminal-code), minus Chromium. tmux and Zellij are not supported yet (kitty graphics need passthrough).
 
 ## Development
 
 ```
-cargo test                          unit tests, byte-exact for every protocol encoder and parser
+cargo test                              byte-exact tests for every protocol encoder and parser, git and UI harness tests
 cargo clippy -- -D warnings
-cargo run -- --probe                what does this terminal support?
-cargo run --release -- --headless-frame /tmp/frame.png --size 1600x1000 --scale 2
-                                    render one frame to a PNG without a terminal, prints timings
-cargo run --release                 interactive
-bash scripts/smoke.sh               headless smoke test without a graphics terminal
+cargo run --release -- --headless-frame /tmp/frame.png --size 1600x1000 --scale 2 --open src/main.rs
+                                        one PNG frame without a terminal, prints timings
+bash scripts/smoke.sh                   headless smoke test
 ```
 
-The design documents are the source of truth: [docs/SPEC.md](docs/SPEC.md) for architecture and milestones, [docs/PROTOCOLS.md](docs/PROTOCOLS.md) for the exact escape sequences.
-
-tmux and Zellij are not supported yet (kitty graphics need passthrough). gitgui detects them and exits with a message.
+[docs/SPEC.md](docs/SPEC.md) is the source of truth for architecture and behavior, [docs/PROTOCOLS.md](docs/PROTOCOLS.md) for the exact escape sequences, [CLAUDE.md](CLAUDE.md) for pinned versions and API notes. Release binaries are built by `.github/workflows/release.yml` on a `v*` tag.
 
 ## License
 
