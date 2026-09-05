@@ -2,8 +2,15 @@
 
 A git GUI that runs inside your terminal. One Rust binary paints an [egui](https://github.com/emilk/egui) interface as pixels into a cmux, Ghostty, kitty or WezTerm pane over the kitty graphics protocol. No Electron, no browser engine, no TUI. Works over SSH.
 
+Install:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/antonellof/gitgui/main/scripts/install.sh | bash
+```
+
+Run:
+
+```bash
 cd /path/to/repo && gitgui
 ```
 
@@ -25,18 +32,6 @@ The agent reads `skill/SKILL.md` and uses `gitgui action` to inspect status, sta
 
 ![An agent uses the gitgui skill to stage, stash and inspect the repo](screenshot/gitgui-demo-skill.gif)
 </details>
-
-## Install
-
-Requires macOS or Linux and a kitty-graphics terminal (cmux, Ghostty, kitty, WezTerm). The one-liner above downloads a release binary into `~/.local/bin`, or builds from source with `cargo` when there is no binary for your platform.
-
-```bash
-GITGUI_VERSION=0.2.0 GITGUI_INSTALL_DIR=~/bin bash scripts/install.sh   # pin a version, other dir
-cargo install --git https://github.com/antonellof/gitgui                 # from source (Rust 1.95+)
-gitgui --probe                                                           # does this terminal support kitty graphics?
-```
-
-If `gitgui` is not found afterwards, add `~/.local/bin` to your `PATH`.
 
 ## Use
 
@@ -122,6 +117,18 @@ Frames go through POSIX shared memory locally and zlib + base64 over SSH (detect
 | Splits | cmux CLI, kitty `@ launch`, Ghostty hint fallback |
 
 Same trick as [terminal-browser](https://github.com/zenbu-labs/terminal-browser) and [terminal-code](https://github.com/zenbu-labs/terminal-code), minus Chromium. tmux and Zellij are not supported yet (kitty graphics need passthrough).
+
+## Install options
+
+Requires macOS or Linux and a kitty-graphics terminal (cmux, Ghostty, kitty, WezTerm). The one-liner at the top downloads a release binary into `~/.local/bin`, or builds from source with `cargo` when there is no binary for your platform.
+
+```bash
+GITGUI_VERSION=0.2.0 GITGUI_INSTALL_DIR=~/bin bash scripts/install.sh   # pin a version, other dir
+cargo install --git https://github.com/antonellof/gitgui                 # from source (Rust 1.95+)
+gitgui --probe                                                           # does this terminal support kitty graphics?
+```
+
+If `gitgui` is not found afterwards, add `~/.local/bin` to your `PATH`.
 
 ## Development
 
