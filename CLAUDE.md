@@ -35,16 +35,20 @@ src/
     frame.rs         double-buffered RGBA framebuffer, dirty detection, headless PNG export
   git/
     repo.rs          Repository wrapper: status, branches, log, diffs, stage/unstage, commit
+    actions.rs       cherry-pick, revert, merge, reset, tags, remotes, upstreams, conflicts, line-level patches
+    rebase.rs        rebase todo rewriting; gitgui is its own GIT_SEQUENCE_EDITOR / GIT_EDITOR
     graph.rs         commit graph lane assignment
-    ops.rs           slow ops on the worker thread (fetch/pull/push via git CLI)
+    ops.rs           worker thread: Command enum, git2 writes, git CLI for network and rebase
   ui/
     app.rs           top-level egui app state, panels, footer, modals, keybindings
     sidebar.rs       branches, remotes, tags, stashes
     log.rs           commit list with graph column
     changes.rs       working tree: unstaged/staged file lists, commit box, layout math
-    diff.rs          diff viewer with per-hunk stage/unstage, wrap toggle
+    diff.rs          diff viewer: hunk and line staging, discard, search, context, whitespace, wrap
     toolbar.rs       footer buttons (fetch, pull, push, refresh, quit), icon-only below 560 pt
     branch_picker.rs branch switcher modal
+    menus.rs         commit right-click menu
+    help.rs          keyboard reference table and the `?` dialog
     row.rs           row helper: trailing widgets from the right, leading side clipped
     input.rs         egui RawInput from terminal events
     icons.rs, logo.rs small painted glyphs
@@ -87,10 +91,11 @@ cargo run --release                                         # interactive, in cu
 4. Never consume terminal or multiplexer shortcuts. Ghostty and cmux own `Cmd+*` on macOS and most `Ctrl+Shift+*`. Our bindings are single keys and `Ctrl+` letters that terminals do not claim (see SPEC, "Keybindings").
 5. Full-frame updates only. Do not attempt partial image updates via kitty animation frames (`a=f`); Ghostty support is not guaranteed. Skip the send when the frame is byte-identical to the last one sent.
 6. Locally use the shared memory transport. Fall back to direct base64+zlib when `SSH_TTY` or `SSH_CONNECTION` is set or when the shm probe fails.
-7. Git writes go through `git2`. Network goes through the `git` CLI so credential helpers and SSH agents work unchanged. Never implement credential handling yourself.
+7. Git writes go through `git2`. Network goes through the `git` CLI so credential helpers and SSH agents work unchanged. Never implement credential handling yourself. The one other CLI exception is the sequencer: rebase, and continue / abort / skip of an in-progress merge, rebase, cherry-pick or revert, because libgit2 has no equivalent. History rewrites run `git rebase -i` with gitgui as the sequence editor (`git/rebase.rs`), never an interactive editor.
 8. Keep the UI loop under 16 ms for a 1600x1000 frame on an M-series or recent x86 laptop. Profile the rasterizer before optimizing anything else; it is the only hot path.
 9. Do not add dependencies beyond the stack above without stating why in the commit message. In particular no `crossterm`, no `ratatui`, no `tokio`.
 10. Do not use the em dash character anywhere in code, comments, docs, or commit messages. Use a comma, a colon, or a period.
+11. Refresh the cached index (`Repo::index()`) before any write. libgit2 caches the index per repository and another process (the git CLI, an editor, the agent next door) may have written it since.
 
 ## Conventions
 

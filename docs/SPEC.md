@@ -6,7 +6,7 @@ A git GUI comparable in feel to Sourcetree or GitKraken's core panels (graph, ch
 
 Target terminals: Ghostty and cmux first, kitty second. Anything with kitty graphics + SGR pixel mouse should work.
 
-Non-goals for v1: merge conflict resolution UI, interactive rebase editor, submodules, worktrees, Windows.
+Non-goals: an interactive rebase editor (single-commit rewrites are offered from the commit menu instead), bisect, submodules, worktrees, Windows.
 
 ## 2. Architecture
 
@@ -80,13 +80,23 @@ FileStatus { path, old_path (renames), kind: Added|Modified|Deleted|Renamed|Untr
 ### 3.2 Commands
 
 ```
-Refresh
-Stage(paths) | Unstage(paths) | StageAll | UnstageAll | Discard(paths)      // Discard asks confirmation in UI
-StageHunk { path, hunk_index } | UnstageHunk { path, hunk_index }
-Commit { message, amend: bool }
-Checkout(branch) | CreateBranch { name, from } | DeleteBranch(name)
-StashPush { message } | StashPop(index) | StashDrop(index)
-Fetch | Pull | Push                                                        // git CLI, output streamed to a log panel
+Refresh | SetDiffOpts { context, ignore_whitespace }
+Stage(paths) | Unstage(paths) | StageAll | UnstageAll | Discard(paths) | DiscardAll   // discards ask in the UI
+StageHunk | UnstageHunk | DiscardHunk { path, hunk_index }
+StageLines | UnstageLines | DiscardLines { path, hunk_index, lines }
+Ignore(pattern)
+Commit { message, amend } | CommitAndPush { message, amend }
+Checkout(branch) | ForceCheckout | StashAndCheckout | CheckoutDetached(oid)
+CreateBranch { name, from, checkout } | DeleteBranch | RenameBranch | SetUpstream | FastForward
+Merge(branch) | CherryPick(oid) | Revert(oid) | Reset { oid, kind: Soft|Mixed|Hard }
+Resolve { path, side: Ours|Theirs }
+CreateTag { name, oid, message } | DeleteTag
+StashPushOpts { message, keep_index, include_untracked } | StashPop | StashApply | StashDrop | BranchFromStash
+RemoteAdd | RemoteRemove | RemoteRename | RemoteSetUrl
+// git CLI, output streamed to the log panel:
+Fetch | FetchRemote | Pull | PullRebase | Push | ForcePush | PushTag | DeleteRemoteBranch | PublishGithub
+Rebase(onto) | RewriteCommit { oid, action: Drop|Squash|Fixup|Reword|Edit|MoveUp|MoveDown, message } | Autosquash
+State { action: Continue|Abort|Skip, subcommand }                            // merge, rebase, cherry-pick, revert
 LoadDiff { target: WorkdirUnstaged(path) | Staged(path) | Commit(oid, path) }
 LoadCommitFiles(oid)
 ```
@@ -102,6 +112,11 @@ Implementation notes with `git2`:
 - Log: `Revwalk` with `Sort::TOPOLOGICAL | Sort::TIME`, push all local branch heads and HEAD (option to include remotes). Store parents per row.
 - Ahead/behind: `repo.graph_ahead_behind(local, upstream)`.
 - Network ops: `Command::new("git").args([...])` with `GIT_TERMINAL_PROMPT=0`, stdout/stderr streamed to the UI log. Never hang on a prompt.
+- Line staging: `actions::partial_patch` rebuilds one hunk with only the selected lines as changes (forward for staging; reversed, with unselected additions kept as context, for unstaging and discarding), then `repo.apply` to the index or the working tree. `\ No newline at end of file` is carried per line.
+- Cherry-pick, revert and merge use libgit2's own operations, then commit the result with the original author (cherry-pick) or a generated message. libgit2 leaves the result in the in-memory index and its safe checkout neither creates nor deletes files, so the index is written and the touched paths are synced from the new HEAD (`actions::finish_pick`). Conflicts stay in the index with the operation state set; the CLI's `--continue` finishes them.
+- History rewriting: `git rebase -i <oid>~1` (or `--root`) with `GIT_SEQUENCE_EDITOR="gitgui --sequence-editor"` and `GIT_EDITOR="gitgui --commit-editor"`. The editor subprocess reads the action, the commit and an optional message from `GITGUI_TODO_*` environment variables and rewrites the todo (`git/rebase.rs`). Squash into below and move down rebase from two commits below. Only commits on the first-parent chain below HEAD without a merge in between are offered, and only on a clean tree.
+- Conflicts: `resolve_conflict` writes the chosen stage's blob (or deletes the file) and re-adds the path. A conflicted file's "diff" is the working tree file with the ours block as removals and the theirs block as additions (`repo::conflict_view`).
+- The cached index is re-read before every write (`Repo::index()`): other processes write it all the time.
 
 ### 3.3 Commit graph layout (git/graph.rs)
 
@@ -166,12 +181,14 @@ Layout rules learned the hard way (see PLAN, "Review 2026-09-04"):
 
 Behaviors:
 
-- Click a branch: select its tip in the list. Double click or `Enter`: checkout. Right click: context menu (checkout, new branch from here, delete, copy name).
-- Click a commit: load files and diff for the first file. Refs render as colored pills before the summary.
-- Working tree row: unstaged and staged lists side by side; click a file to show its diff; click the `+` / `-` icon or press `s` / `u` to stage or unstage; `Stage all` / `Unstage all` buttons; `Discard` with a confirmation modal.
-- Diff view: monospace, line numbers for old and new, colored backgrounds for + and - lines, hunk headers with a `Stage hunk` / `Unstage hunk` button, horizontal scroll, word-wrap toggle. Syntax highlighting is out of scope for v1.
+- Click a branch: select its tip in the list. Double click or `Enter`: checkout. Right click: checkout, new branch from here, rename, delete, merge into current, rebase current onto it, fast-forward, set / unset upstream, open pull request, copy name. Remote branches add checkout detached, set as upstream, delete on remote. Remotes: fetch, edit URL, rename, remove, plus an `Add remote` button. Tags: checkout detached, new branch, push to a remote, delete, plus `New tag at HEAD`. Stashes: apply, pop, branch from stash, drop.
+- Click a commit: load files and diff for the first file. Refs render as colored pills before the summary. Right click: new branch, tag, checkout detached, cherry-pick, revert, reset (soft / mixed / hard), reword, squash, fixup, drop, move up / down, edit, create fixup commit, autosquash, copy hash / message, open in browser. Rewrites are enabled only for commits the current branch can rebase (`App::rewrite_info`).
+- Working tree row: unstaged and staged lists side by side; click a file to show its diff; click the `+` / `-` icon or press `s` / `u` to stage or unstage; `Stage all` / `Unstage all` / `Discard all` buttons; `Discard` with a confirmation modal. Right click a file: stage / unstage, discard, add to .gitignore, copy path; conflicted files offer use ours / use theirs / mark resolved.
+- Diff view: monospace, line numbers for old and new, colored backgrounds for + and - lines, hunk headers with `Stage hunk` / `Unstage hunk` and `Discard hunk` buttons, horizontal scroll, word-wrap toggle. Click, Shift+click or drag lines to select them; the header then offers `Stage N lines` / `Unstage N lines` / `Discard N lines` (also `s` / `u` / `d`). `Ctrl+F` searches with match highlighting, `n` / `Shift+N` step; `{` / `}` change context lines, `Ctrl+W` toggles whitespace. Syntax highlighting is out of scope.
 - Commit box: multiline text edit, `Ctrl+Enter` commits, amend checkbox, shows the author from config.
 - Search: `/` focuses a filter box over the commit list (summary, author, short hash).
+- Footer: while a merge, rebase, cherry-pick or revert is in progress a red banner names it (with rebase progress) and offers `Continue` and `Abort`; `m` opens the same choices plus `Skip`.
+- Dialogs: `?` lists every shortcut (`ui/help.rs` is the single source for the table). Destructive commands (drop, reset hard, discard all, force push, delete on remote, abort) always confirm first.
 - Toast notifications for op results, errors in red with the git stderr text.
 - Everything must be operable with mouse only and with keyboard only.
 
@@ -181,14 +198,27 @@ Single keys and Ctrl combos the terminal does not claim:
 
 ```
 j / k, Down / Up      move selection          Enter          open / checkout
-s / u                 stage / unstage         a / Shift+A    stage all / unstage all
-c                     focus commit message    Ctrl+Enter     commit
-Shift+S               stash                   Ctrl+Shift+Enter  commit and push
-/                     filter                  Escape         clear filter / close modal
+s / u                 stage / unstage file or selected lines
+Space                 toggle staged           a / Shift+A    stage all / unstage all
+d / Shift+D           discard file or lines / discard everything (both ask)
+i                     ignore untracked file   c              focus commit message
+Ctrl+Enter            commit                  Ctrl+Shift+Enter  commit and push
+Shift+S               stash (with options)    /              filter commits
+Ctrl+F, n / Shift+N   search diff, next / previous match
+{ / }                 diff context            Ctrl+W         ignore whitespace
+n / Shift+T           new branch / tag at the selected commit
+Shift+C / t / g       cherry-pick / revert / reset at the selected commit
+Shift+R / d           reword / drop the selected commit
+Shift+K / Shift+J     move the selected commit up / down
+y / o                 copy hash / open commit in browser
+m                     continue, abort or skip a merge or rebase
 f / p / Shift+P       fetch / pull / push     r              refresh
 Tab                   cycle focus between sidebar, list, detail
-q, Ctrl+C             quit
+Escape                clear line selection, diff search, filter; close dialog
+?                     help                    q, Ctrl+C      quit
 ```
+
+`d` means "drop" when a commit is selected and "discard" on the working tree row. `n` steps through search matches while a diff search is active.
 
 Single keys are ignored while a text field has focus; `Ctrl+Enter`,
 `Ctrl+Shift+Enter` and `Escape` still work there. `Ctrl+Shift+Enter` is the

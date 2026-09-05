@@ -22,6 +22,10 @@ pub enum Mode {
     Run,
     List,
     Action { json: String, pid: Option<u32> },
+    /// Hidden: `GIT_SEQUENCE_EDITOR` for the rebase todo (git/rebase.rs).
+    SequenceEditor(PathBuf),
+    /// Hidden: `GIT_EDITOR` for commit messages during a rebase.
+    CommitEditor(PathBuf),
 }
 
 pub struct Cli {
@@ -90,6 +94,30 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
             font_size: None,
             path: None,
         });
+    }
+
+    if let [flag, file] = args.as_slice() {
+        let mode = match flag.as_str() {
+            "--sequence-editor" => Some(Mode::SequenceEditor(PathBuf::from(file))),
+            "--commit-editor" => Some(Mode::CommitEditor(PathBuf::from(file))),
+            _ => None,
+        };
+        if let Some(mode) = mode {
+            return Ok(Cli {
+                mode,
+                probe: false,
+                dump_input: false,
+                no_shm: false,
+                crash: false,
+                headless: None,
+                size: (1600, 1000),
+                split: None,
+                split_size: None,
+                scale: None,
+                font_size: None,
+                path: None,
+            });
+        }
     }
 
     let mut cli = Cli {
@@ -212,6 +240,15 @@ mod tests {
             }
             _ => panic!("expected action mode"),
         }
+    }
+
+    #[test]
+    fn parses_editor_modes() {
+        let c = p(&["--sequence-editor", "/tmp/todo"]).unwrap();
+        assert!(matches!(c.mode, Mode::SequenceEditor(ref f) if f.to_str() == Some("/tmp/todo")));
+        let c = p(&["--commit-editor", "/tmp/msg"]).unwrap();
+        assert!(matches!(c.mode, Mode::CommitEditor(_)));
+        assert!(p(&["--sequence-editor"]).is_err());
     }
 
     #[test]

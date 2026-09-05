@@ -1,8 +1,9 @@
 //! Detail pane: commit files or working tree lists, plus the diff viewer.
 
+use crate::git::actions::ConflictSide;
 use crate::git::ops::Command;
-use crate::git::repo::{DiffTarget, FileKind, FileStatus};
-use crate::ui::app::{App, Modal, Pane, Selection};
+use crate::git::repo::{DiffTarget, FileKind, FileStatus, RepoState};
+use crate::ui::app::{App, InputKind, Modal, Pane, Selection};
 use crate::ui::diff;
 
 pub fn show_detail(app: &mut App, ui: &mut egui::Ui) {
@@ -89,6 +90,9 @@ struct WorktreeListAction {
     clicked: Option<DiffTarget>,
     cmd: Option<Command>,
     modal: Option<Modal>,
+    ignore: Option<String>,
+    copy: Option<String>,
+    discard_all: bool,
 }
 
 fn show_worktree(app: &mut App, ui: &mut egui::Ui, _focused: bool) {
@@ -98,6 +102,9 @@ fn show_worktree(app: &mut App, ui: &mut egui::Ui, _focused: bool) {
         clicked: None,
         cmd: None,
         modal: None,
+        ignore: None,
+        copy: None,
+        discard_all: false,
     };
 
     // Hard split: the commit box owns the bottom `commit_h` points no matter
@@ -146,8 +153,67 @@ fn show_worktree(app: &mut App, ui: &mut egui::Ui, _focused: bool) {
     if let Some(c) = action.cmd {
         app.run(c);
     }
-    if action.modal.is_some() {
+    if action.modal.is_some() && app.busy == 0 {
         app.modal = action.modal;
+    }
+    if let Some(p) = action.ignore {
+        app.input(InputKind::Ignore, format!("/{p}"), String::new());
+    }
+    if let Some(p) = action.copy {
+        ui.ctx().copy_text(p);
+        app.toast("copied path", false);
+    }
+    if action.discard_all {
+        app.discard_all();
+    }
+}
+
+/// Right-click menu of a working tree file row.
+fn file_menu(ui: &mut egui::Ui, f: &FileStatus, staged: bool, busy: bool, action: &mut WorktreeListAction) {
+    let path = f.path.clone();
+    let item = |ui: &mut egui::Ui, enabled: bool, label: &str, tip: &str| -> bool {
+        let r = ui.add_enabled(enabled && !busy, egui::Button::new(label));
+        let r = if tip.is_empty() { r } else { r.on_hover_text(tip) };
+        let clicked = r.clicked();
+        if clicked {
+            ui.close();
+        }
+        clicked
+    };
+    if f.kind == FileKind::Conflicted {
+        if item(ui, true, "Use ours", "keep the version of the branch you are on (for a rebase: the upstream side)") {
+            action.cmd = Some(Command::Resolve {
+                path: path.clone(),
+                side: ConflictSide::Ours,
+            });
+        }
+        if item(ui, true, "Use theirs", "keep the incoming version (for a rebase: the commit being replayed)") {
+            action.cmd = Some(Command::Resolve {
+                path: path.clone(),
+                side: ConflictSide::Theirs,
+            });
+        }
+        if item(ui, true, "Mark resolved", "stage the file as it is in the working tree") {
+            action.cmd = Some(Command::Stage(vec![path.clone()]));
+        }
+        ui.separator();
+    } else if staged {
+        if item(ui, true, "Unstage", "u") {
+            action.cmd = Some(Command::Unstage(vec![path.clone()]));
+        }
+    } else {
+        if item(ui, true, "Stage", "s") {
+            action.cmd = Some(Command::Stage(vec![path.clone()]));
+        }
+        if item(ui, true, "Discard changes", "d, asks for confirmation") {
+            action.modal = Some(Modal::Discard(vec![path.clone()]));
+        }
+        if f.kind == FileKind::Untracked && item(ui, true, "Add to .gitignore", "i") {
+            action.ignore = Some(path.clone());
+        }
+    }
+    if item(ui, true, "Copy path", "") {
+        action.copy = Some(path);
     }
 }
 
@@ -291,18 +357,32 @@ fn show_worktree_lists(
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.strong(format!("Unstaged ({})", s.unstaged.len() + s.conflicted.len()));
+        if s.state != RepoState::Clean {
+            ui.colored_label(app.theme.error, format!("{} in progress", s.state.label()));
+        }
     });
     ui.horizontal(|ui| {
         if ui.add_enabled(!busy && !s.unstaged.is_empty(), egui::Button::new("Stage all").small()).on_hover_text("a").clicked() {
             action.cmd = Some(Command::StageAll);
         }
         if ui.add_enabled(!busy && s.is_dirty(), egui::Button::new("Stash").small()).on_hover_text("Shift+S").clicked() {
-            action.modal = Some(Modal::StashPush { message: String::new() });
+            action.modal = Some(Modal::StashOpts {
+                message: String::new(),
+                keep_index: false,
+                include_untracked: true,
+            });
         }
         if let Some((p, false)) = app.selected_worktree_file() {
-            if ui.add_enabled(!busy, egui::Button::new("Discard").small()).on_hover_text("asks for confirmation").clicked() {
+            if ui.add_enabled(!busy, egui::Button::new("Discard").small()).on_hover_text("d, asks for confirmation").clicked() {
                 action.modal = Some(Modal::Discard(vec![p]));
             }
+        }
+        if ui
+            .add_enabled(!busy && s.is_dirty(), egui::Button::new("Discard all").small())
+            .on_hover_text("Shift+D, asks for confirmation")
+            .clicked()
+        {
+            action.discard_all = true;
         }
     });
     egui::ScrollArea::vertical()
@@ -318,9 +398,11 @@ fn show_worktree_lists(
                     if ui.add_enabled(!busy, egui::Button::new("+").small()).on_hover_text("stage (s)").clicked() {
                         action.cmd = Some(Command::Stage(vec![f.path.clone()]));
                     }
-                    if file_row(ui, f, selected, &app.theme).clicked() {
+                    let resp = file_row(ui, f, selected, &app.theme);
+                    if resp.clicked() || resp.secondary_clicked() {
                         action.clicked = Some(target);
                     }
+                    resp.context_menu(|ui| file_menu(ui, f, false, busy, action));
                 });
             }
             if s.unstaged.is_empty() && s.conflicted.is_empty() {
@@ -347,9 +429,11 @@ fn show_worktree_lists(
                     if ui.add_enabled(!busy, egui::Button::new("-").small()).on_hover_text("unstage (u)").clicked() {
                         action.cmd = Some(Command::Unstage(vec![f.path.clone()]));
                     }
-                    if file_row(ui, f, selected, &app.theme).clicked() {
+                    let resp = file_row(ui, f, selected, &app.theme);
+                    if resp.clicked() || resp.secondary_clicked() {
                         action.clicked = Some(target);
                     }
+                    resp.context_menu(|ui| file_menu(ui, f, true, busy, action));
                 });
             }
             if s.staged.is_empty() {

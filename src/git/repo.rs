@@ -149,6 +149,8 @@ pub struct DiffLine {
     pub old_no: Option<u32>,
     pub new_no: Option<u32>,
     pub text: String,
+    /// The file has no newline after this line (unified diff marker).
+    pub no_newline: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,11 +164,78 @@ pub struct DiffText {
     pub target: DiffTarget,
     pub binary: bool,
     pub too_large: bool,
+    /// Added, Deleted, Modified or Renamed (Untracked shows as Added).
+    pub status: FileKind,
     pub hunks: Vec<Hunk>,
+}
+
+/// How diffs are produced: context lines and whitespace handling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffOpts {
+    pub context: u32,
+    pub ignore_whitespace: bool,
+}
+
+impl Default for DiffOpts {
+    fn default() -> Self {
+        DiffOpts {
+            context: 3,
+            ignore_whitespace: false,
+        }
+    }
+}
+
+impl DiffOpts {
+    pub const MAX_CONTEXT: u32 = 20;
+
+    pub fn apply(&self, opts: &mut git2::DiffOptions) {
+        opts.context_lines(self.context);
+        if self.ignore_whitespace {
+            opts.ignore_whitespace(true);
+        }
+    }
 }
 
 /// Files above this size are not diffed.
 pub const MAX_DIFF_BYTES: u64 = 2 * 1024 * 1024;
+
+/// An operation the repository is in the middle of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RepoState {
+    #[default]
+    Clean,
+    Merge,
+    Revert,
+    CherryPick,
+    Rebase,
+    Bisect,
+    Other,
+}
+
+impl RepoState {
+    pub fn label(self) -> &'static str {
+        match self {
+            RepoState::Clean => "",
+            RepoState::Merge => "merge",
+            RepoState::Revert => "revert",
+            RepoState::CherryPick => "cherry-pick",
+            RepoState::Rebase => "rebase",
+            RepoState::Bisect => "bisect",
+            RepoState::Other => "operation",
+        }
+    }
+
+    /// The git subcommand that owns `--continue` / `--abort` for this state.
+    pub fn git_subcommand(self) -> Option<&'static str> {
+        match self {
+            RepoState::Merge => Some("merge"),
+            RepoState::Revert => Some("revert"),
+            RepoState::CherryPick => Some("cherry-pick"),
+            RepoState::Rebase => Some("rebase"),
+            RepoState::Clean | RepoState::Bisect | RepoState::Other => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct RepoSnapshot {
@@ -176,6 +245,8 @@ pub struct RepoSnapshot {
     pub tags: Vec<Tag>,
     pub stashes: Vec<Stash>,
     pub remotes: Vec<String>,
+    /// (name, url) for each remote.
+    pub remote_urls: Vec<(String, String)>,
     pub commits: Vec<CommitRow>,
     pub graph: GraphLayout,
     /// True when more commits exist beyond the cap.
@@ -187,6 +258,10 @@ pub struct RepoSnapshot {
     pub user_email: String,
     /// Full message of the HEAD commit, offered when amending.
     pub head_message: Option<String>,
+    /// Merge, rebase, cherry-pick or revert in progress.
+    pub state: RepoState,
+    /// (done, total) while a rebase runs, from .git/rebase-merge.
+    pub rebase_progress: Option<(usize, usize)>,
 }
 
 impl RepoSnapshot {
@@ -196,8 +271,8 @@ impl RepoSnapshot {
 }
 
 pub struct Repo {
-    repo: Repository,
-    workdir: PathBuf,
+    pub(crate) repo: Repository,
+    pub(crate) workdir: PathBuf,
 }
 
 impl Repo {
@@ -283,11 +358,15 @@ impl Repo {
             }
         }
         let stashes = self.stashes()?;
-        let remotes = self
+        let remotes: Vec<String> = self
             .repo
             .remotes()
             .map(|r| r.iter().flatten().flatten().map(|s| s.to_owned()).collect())
             .unwrap_or_default();
+        let remote_urls: Vec<(String, String)> = remotes
+            .iter()
+            .filter_map(|n: &String| self.remote_url(n).map(|u| (n.clone(), u)))
+            .collect();
         let (commits, truncated) = self.log(&branches, &head, &labels, commit_limit)?;
         let graph = graph::layout(&commits);
         let (unstaged, staged, conflicted) = self.status()?;
@@ -307,6 +386,7 @@ impl Repo {
             tags,
             stashes,
             remotes,
+            remote_urls,
             commits,
             graph,
             truncated,
@@ -316,10 +396,38 @@ impl Repo {
             user_name,
             user_email,
             head_message: self.head_message(),
+            state: self.state(),
+            rebase_progress: self.rebase_progress(),
         }))
     }
 
-    fn head_info(&self) -> Option<HeadInfo> {
+    /// The operation in progress, if any.
+    pub fn state(&self) -> RepoState {
+        use git2::RepositoryState as S;
+        match self.repo.state() {
+            S::Clean => RepoState::Clean,
+            S::Merge => RepoState::Merge,
+            S::Revert | S::RevertSequence => RepoState::Revert,
+            S::CherryPick | S::CherryPickSequence => RepoState::CherryPick,
+            S::Rebase | S::RebaseInteractive | S::RebaseMerge => RepoState::Rebase,
+            S::Bisect => RepoState::Bisect,
+            S::ApplyMailbox | S::ApplyMailboxOrRebase => RepoState::Other,
+        }
+    }
+
+    fn rebase_progress(&self) -> Option<(usize, usize)> {
+        let dir = self.repo.path().join("rebase-merge");
+        let read = |name: &str| -> Option<usize> {
+            std::fs::read_to_string(dir.join(name))
+                .ok()?
+                .trim()
+                .parse()
+                .ok()
+        };
+        Some((read("msgnum")?, read("end")?))
+    }
+
+    pub(crate) fn head_info(&self) -> Option<HeadInfo> {
         let head = self.repo.head().ok();
         let detached = self.repo.head_detached().unwrap_or(false);
         match head {
@@ -508,7 +616,7 @@ impl Repo {
     }
 
     #[allow(clippy::type_complexity)]
-    fn status(&self) -> Result<(Vec<FileStatus>, Vec<FileStatus>, Vec<FileStatus>)> {
+    pub(crate) fn status(&self) -> Result<(Vec<FileStatus>, Vec<FileStatus>, Vec<FileStatus>)> {
         let mut opts = git2::StatusOptions::new();
         opts.include_untracked(true)
             .recurse_untracked_dirs(true)
@@ -656,21 +764,24 @@ impl Repo {
     }
 
     /// Diff text for one file.
-    pub fn diff(&self, target: &DiffTarget) -> Result<DiffText> {
+    pub fn diff(&self, target: &DiffTarget, diff_opts: DiffOpts) -> Result<DiffText> {
         let path = target.path();
+        if matches!(target, DiffTarget::WorkdirUnstaged(_)) && self.is_conflicted(path) {
+            return Ok(conflict_view(target, &self.workdir.join(path)));
+        }
         let mut opts = git2::DiffOptions::new();
         opts.pathspec(path)
             .include_untracked(true)
             .recurse_untracked_dirs(true)
-            .show_untracked_content(true)
-            .context_lines(3);
+            .show_untracked_content(true);
+        diff_opts.apply(&mut opts);
         let diff = match target {
             DiffTarget::WorkdirUnstaged(_) => {
                 self.repo.diff_index_to_workdir(None, Some(&mut opts))?
             }
             DiffTarget::Staged(_) => {
                 let head_tree = self.repo.head().ok().and_then(|h| h.peel_to_tree().ok());
-                let index = self.repo.index()?;
+                let index = self.index()?;
                 self.repo
                     .diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut opts))?
             }
@@ -686,11 +797,19 @@ impl Repo {
             target: target.clone(),
             binary: false,
             too_large: false,
+            status: FileKind::Modified,
             hunks: Vec::new(),
         };
         let n = diff.deltas().len();
         for idx in 0..n {
             let delta = diff.get_delta(idx).expect("delta index in range");
+            out.status = match delta.status() {
+                git2::Delta::Added | git2::Delta::Untracked => FileKind::Added,
+                git2::Delta::Deleted => FileKind::Deleted,
+                git2::Delta::Renamed => FileKind::Renamed,
+                git2::Delta::Typechange => FileKind::TypeChange,
+                _ => FileKind::Modified,
+            };
             let size = delta.new_file().size().max(delta.old_file().size());
             if size > MAX_DIFF_BYTES {
                 out.too_large = true;
@@ -709,6 +828,14 @@ impl Repo {
                 for l in 0..count {
                     let line = patch.line_in_hunk(h, l)?;
                     let origin = line.origin();
+                    if matches!(origin, '<' | '>' | '=') {
+                        // "\ No newline at end of file" applies to the line before.
+                        if let Some(prev) = lines.last_mut() {
+                            let prev: &mut DiffLine = prev;
+                            prev.no_newline = true;
+                        }
+                        continue;
+                    }
                     if !matches!(origin, '+' | '-' | ' ') {
                         continue;
                     }
@@ -721,6 +848,7 @@ impl Repo {
                         old_no: line.old_lineno(),
                         new_no: line.new_lineno(),
                         text,
+                        no_newline: false,
                     });
                 }
                 let header = String::from_utf8_lossy(hunk.header()).trim_end().to_owned();
@@ -729,7 +857,23 @@ impl Repo {
         }
         Ok(out)
     }
+    fn is_conflicted(&self, path: &str) -> bool {
+        self.index()
+            .ok()
+            .is_some_and(|i| i.has_conflicts() && i.conflict_get(Path::new(path)).is_ok())
+    }
+
     // ---- writes (Phase 4) ----
+
+    /// The repository index, re-read from disk when another process (the
+    /// git CLI, an editor, an agent in the next pane) wrote it since libgit2
+    /// last loaded it. libgit2 caches the index per repository and most
+    /// operations do not refresh it on their own.
+    pub(crate) fn index(&self) -> std::result::Result<git2::Index, git2::Error> {
+        let mut index = self.repo.index()?;
+        index.read(false)?;
+        Ok(index)
+    }
 
     fn index_write(&self, index: &mut git2::Index) -> Result<()> {
         index.write()?;
@@ -739,7 +883,7 @@ impl Repo {
     /// Stage paths: add or update existing files (and directories), remove
     /// entries whose file is gone from the working tree.
     pub fn stage(&self, paths: &[String]) -> Result<()> {
-        let mut index = self.repo.index()?;
+        let mut index = self.index()?;
         for p in paths {
             let full = self.workdir.join(p);
             if full.exists() {
@@ -757,7 +901,7 @@ impl Repo {
     }
 
     pub fn stage_all(&self) -> Result<()> {
-        let mut index = self.repo.index()?;
+        let mut index = self.index()?;
         index.add_all(["*"], git2::IndexAddOption::DEFAULT, None)?;
         index.update_all(["*"], None)?;
         self.index_write(&mut index)
@@ -776,7 +920,7 @@ impl Repo {
                     .reset_default(Some(&head), paths.iter().map(|s| s.as_str()))?;
             }
             None => {
-                let mut index = self.repo.index()?;
+                let mut index = self.index()?;
                 for p in paths {
                     let _ = index.remove_path(Path::new(p));
                     let _ = index.remove_dir(Path::new(p), 0);
@@ -800,7 +944,7 @@ impl Repo {
     /// Throw away working tree changes for paths: tracked files are restored
     /// from the index, untracked files and directories are deleted.
     pub fn discard(&self, paths: &[String]) -> Result<()> {
-        let index = self.repo.index()?;
+        let index = self.index()?;
         let mut tracked = Vec::new();
         for p in paths {
             if index.get_path(Path::new(p), 0).is_some() {
@@ -827,23 +971,25 @@ impl Repo {
         Ok(())
     }
 
-    /// Stage only hunk `hunk_index` of the unstaged diff for `path`.
-    pub fn stage_hunk(&self, path: &str, hunk_index: usize) -> Result<()> {
+    /// Stage only hunk `hunk_index` of the unstaged diff for `path`. The
+    /// hunk index refers to a diff produced with the same `diff_opts`.
+    pub fn stage_hunk(&self, path: &str, hunk_index: usize, diff_opts: DiffOpts) -> Result<()> {
         let mut opts = git2::DiffOptions::new();
         opts.pathspec(path)
             .include_untracked(true)
-            .show_untracked_content(true)
-            .context_lines(3);
+            .show_untracked_content(true);
+        diff_opts.apply(&mut opts);
         let diff = self.repo.diff_index_to_workdir(None, Some(&mut opts))?;
         self.apply_hunk_to_index(&diff, hunk_index)
     }
 
     /// Remove only hunk `hunk_index` of the staged diff for `path` from the index.
-    pub fn unstage_hunk(&self, path: &str, hunk_index: usize) -> Result<()> {
+    pub fn unstage_hunk(&self, path: &str, hunk_index: usize, diff_opts: DiffOpts) -> Result<()> {
         let mut opts = git2::DiffOptions::new();
-        opts.pathspec(path).context_lines(3);
+        opts.pathspec(path);
+        diff_opts.apply(&mut opts);
         let head_tree = self.repo.head().ok().and_then(|h| h.peel_to_tree().ok());
-        let index = self.repo.index()?;
+        let index = self.index()?;
         let diff =
             self.repo
                 .diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut opts))?;
@@ -886,7 +1032,7 @@ impl Repo {
             return self.commit_via_cli(message, amend);
         }
         let sig = self.repo.signature()?;
-        let mut index = self.repo.index()?;
+        let mut index = self.index()?;
         let tree_id = index.write_tree()?;
         let tree = self.repo.find_tree(tree_id)?;
         if amend {
@@ -996,14 +1142,37 @@ impl Repo {
     }
 
     pub fn stash_push(&mut self, message: &str) -> Result<()> {
+        self.stash_push_opts(message, false, true)
+    }
+
+    /// Stash with options: `keep_index` leaves staged changes in the index,
+    /// `include_untracked` stashes untracked files too.
+    pub fn stash_push_opts(
+        &mut self,
+        message: &str,
+        keep_index: bool,
+        include_untracked: bool,
+    ) -> Result<()> {
         let sig = self.repo.signature()?;
         let msg = if message.trim().is_empty() {
             "gitgui stash"
         } else {
             message
         };
-        self.repo
-            .stash_save(&sig, msg, Some(git2::StashFlags::INCLUDE_UNTRACKED))?;
+        let mut flags = git2::StashFlags::DEFAULT;
+        if keep_index {
+            flags |= git2::StashFlags::KEEP_INDEX;
+        }
+        if include_untracked {
+            flags |= git2::StashFlags::INCLUDE_UNTRACKED;
+        }
+        self.repo.stash_save(&sig, msg, Some(flags))?;
+        Ok(())
+    }
+
+    /// Apply a stash without dropping it.
+    pub fn stash_apply(&mut self, index: usize) -> Result<()> {
+        self.repo.stash_apply(index, None)?;
         Ok(())
     }
 
@@ -1016,6 +1185,71 @@ impl Repo {
         self.repo.stash_drop(index)?;
         Ok(())
     }
+}
+
+/// A conflicted file cannot be diffed against the index, so show the working
+/// tree file itself: lines of the "ours" block as removals, lines of the
+/// "theirs" block as additions, everything else as context. Markers stay
+/// visible so the user knows what they are looking at.
+pub fn conflict_view(target: &DiffTarget, file: &Path) -> DiffText {
+    let text = std::fs::read(file).unwrap_or_default();
+    let mut out = DiffText {
+        target: target.clone(),
+        binary: false,
+        too_large: false,
+        status: FileKind::Conflicted,
+        hunks: Vec::new(),
+    };
+    if text.len() as u64 > MAX_DIFF_BYTES {
+        out.too_large = true;
+        return out;
+    }
+    if text.contains(&0u8) {
+        out.binary = true;
+        return out;
+    }
+    let text = String::from_utf8_lossy(&text);
+    let mut lines = Vec::new();
+    let mut side = ' ';
+    let mut conflicts = 0usize;
+    for (i, raw) in text.lines().enumerate() {
+        let no = Some(i as u32 + 1);
+        let origin = if raw.starts_with("<<<<<<< ") {
+            side = '-';
+            conflicts += 1;
+            ' '
+        } else if raw.starts_with("=======") && side == '-' {
+            side = '+';
+            ' '
+        } else if raw.starts_with(">>>>>>> ") && side == '+' {
+            side = ' ';
+            ' '
+        } else if raw.starts_with("||||||| ") && side == '-' {
+            // diff3 style: the base block is shown as context.
+            side = ' ';
+            ' '
+        } else if raw.starts_with("=======") && side == ' ' && conflicts > 0 {
+            side = '+';
+            ' '
+        } else {
+            side
+        };
+        lines.push(DiffLine {
+            origin,
+            old_no: if origin == '+' { None } else { no },
+            new_no: if origin == '-' { None } else { no },
+            text: raw.to_owned(),
+            no_newline: false,
+        });
+    }
+    out.hunks.push(Hunk {
+        header: format!(
+            "@@ {conflicts} conflict{}: <<<<<<< ours shown as removed, >>>>>>> theirs as added @@",
+            if conflicts == 1 { "" } else { "s" }
+        ),
+        lines,
+    });
+    out
 }
 
 /// Reverse a unified diff: swap the file headers, the hunk ranges and the
@@ -1108,14 +1342,21 @@ pub mod testutil {
             std::fs::write(p, content).unwrap();
         }
 
-        pub fn add(&self, rel: &str) {
+        /// The index, re-read when a `Repo` under test wrote it meanwhile.
+        fn index(&self) -> git2::Index {
             let mut idx = self.repo.index().unwrap();
+            idx.read(false).unwrap();
+            idx
+        }
+
+        pub fn add(&self, rel: &str) {
+            let mut idx = self.index();
             idx.add_path(Path::new(rel)).unwrap();
             idx.write().unwrap();
         }
 
         pub fn commit(&self, message: &str) -> git2::Oid {
-            let mut idx = self.repo.index().unwrap();
+            let mut idx = self.index();
             let tree_id = idx.write_tree().unwrap();
             let tree = self.repo.find_tree(tree_id).unwrap();
             let sig = git2::Signature::now("Test User", "test@example.com").unwrap();
@@ -1248,7 +1489,7 @@ mod tests {
         t.write("f.txt", "a\nB\nc\nd\n");
         let r = Repo::open(&t.dir).unwrap();
 
-        let staged = r.diff(&DiffTarget::Staged("f.txt".into())).unwrap();
+        let staged = r.diff(&DiffTarget::Staged("f.txt".into()), DiffOpts::default()).unwrap();
         assert_eq!(staged.hunks.len(), 1);
         let lines: Vec<(char, &str)> = staged.hunks[0]
             .lines
@@ -1261,7 +1502,7 @@ mod tests {
         assert!(staged.hunks[0].header.starts_with("@@ -1,3 +1,3 @@"));
 
         let unstaged = r
-            .diff(&DiffTarget::WorkdirUnstaged("f.txt".into()))
+            .diff(&DiffTarget::WorkdirUnstaged("f.txt".into()), DiffOpts::default())
             .unwrap();
         let lines: Vec<(char, &str)> = unstaged.hunks[0]
             .lines
@@ -1270,7 +1511,7 @@ mod tests {
             .collect();
         assert_eq!(lines, vec![(' ', "a"), (' ', "B"), (' ', "c"), ('+', "d")]);
 
-        let commit = r.diff(&DiffTarget::Commit(c1, "f.txt".into())).unwrap();
+        let commit = r.diff(&DiffTarget::Commit(c1, "f.txt".into()), DiffOpts::default()).unwrap();
         assert_eq!(
             commit.hunks[0]
                 .lines
@@ -1286,7 +1527,7 @@ mod tests {
         // untracked file diff shows its content as additions
         t.write("u.txt", "x\ny\n");
         let u = r
-            .diff(&DiffTarget::WorkdirUnstaged("u.txt".into()))
+            .diff(&DiffTarget::WorkdirUnstaged("u.txt".into()), DiffOpts::default())
             .unwrap();
         assert_eq!(
             u.hunks[0].lines.iter().filter(|l| l.origin == '+').count(),
@@ -1418,19 +1659,19 @@ mod tests {
             .replace("line 28\n", "LINE 28\n");
         t.write("f.txt", &modified);
         let d = r
-            .diff(&DiffTarget::WorkdirUnstaged("f.txt".into()))
+            .diff(&DiffTarget::WorkdirUnstaged("f.txt".into()), DiffOpts::default())
             .unwrap();
         assert_eq!(d.hunks.len(), 2);
 
-        r.stage_hunk("f.txt", 1).unwrap();
-        let staged = r.diff(&DiffTarget::Staged("f.txt".into())).unwrap();
+        r.stage_hunk("f.txt", 1, DiffOpts::default()).unwrap();
+        let staged = r.diff(&DiffTarget::Staged("f.txt".into()), DiffOpts::default()).unwrap();
         assert_eq!(staged.hunks.len(), 1);
         assert!(staged.hunks[0]
             .lines
             .iter()
             .any(|l| l.origin == '+' && l.text == "LINE 28"));
         let unstaged = r
-            .diff(&DiffTarget::WorkdirUnstaged("f.txt".into()))
+            .diff(&DiffTarget::WorkdirUnstaged("f.txt".into()), DiffOpts::default())
             .unwrap();
         assert_eq!(unstaged.hunks.len(), 1);
         assert!(unstaged.hunks[0]
@@ -1439,32 +1680,32 @@ mod tests {
             .any(|l| l.origin == '+' && l.text == "LINE 2"));
 
         // Stage the other hunk too, then unstage only the first one.
-        r.stage_hunk("f.txt", 0).unwrap();
+        r.stage_hunk("f.txt", 0, DiffOpts::default()).unwrap();
         assert_eq!(
-            r.diff(&DiffTarget::Staged("f.txt".into()))
+            r.diff(&DiffTarget::Staged("f.txt".into()), DiffOpts::default())
                 .unwrap()
                 .hunks
                 .len(),
             2
         );
         assert!(r
-            .diff(&DiffTarget::WorkdirUnstaged("f.txt".into()))
+            .diff(&DiffTarget::WorkdirUnstaged("f.txt".into()), DiffOpts::default())
             .unwrap()
             .hunks
             .is_empty());
-        r.unstage_hunk("f.txt", 0).unwrap();
-        let staged = r.diff(&DiffTarget::Staged("f.txt".into())).unwrap();
+        r.unstage_hunk("f.txt", 0, DiffOpts::default()).unwrap();
+        let staged = r.diff(&DiffTarget::Staged("f.txt".into()), DiffOpts::default()).unwrap();
         assert_eq!(staged.hunks.len(), 1);
         assert!(staged.hunks[0].lines.iter().any(|l| l.text == "LINE 28"));
         let unstaged = r
-            .diff(&DiffTarget::WorkdirUnstaged("f.txt".into()))
+            .diff(&DiffTarget::WorkdirUnstaged("f.txt".into()), DiffOpts::default())
             .unwrap();
         assert_eq!(unstaged.hunks.len(), 1);
         assert!(unstaged.hunks[0].lines.iter().any(|l| l.text == "LINE 2"));
         // Unstage the remaining hunk: index equals HEAD again, worktree unchanged.
-        r.unstage_hunk("f.txt", 0).unwrap();
+        r.unstage_hunk("f.txt", 0, DiffOpts::default()).unwrap();
         assert!(r
-            .diff(&DiffTarget::Staged("f.txt".into()))
+            .diff(&DiffTarget::Staged("f.txt".into()), DiffOpts::default())
             .unwrap()
             .hunks
             .is_empty());
@@ -1472,6 +1713,26 @@ mod tests {
             std::fs::read_to_string(t.dir.join("f.txt")).unwrap(),
             modified
         );
+    }
+
+    #[test]
+    fn conflict_view_marks_sides() {
+        let dir = std::env::temp_dir().join(format!("gitgui-conflict-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("c.txt");
+        std::fs::write(
+            &f,
+            "one\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> side\nthree\n",
+        )
+        .unwrap();
+        let d = conflict_view(&DiffTarget::WorkdirUnstaged("c.txt".into()), &f);
+        assert_eq!(d.status, FileKind::Conflicted);
+        let origins: String = d.hunks[0].lines.iter().map(|l| l.origin).collect();
+        assert_eq!(origins, "  - +  ");
+        assert!(d.hunks[0].header.contains("1 conflict:"));
+        assert_eq!(d.hunks[0].lines[2].text, "ours");
+        assert_eq!(d.hunks[0].lines[4].text, "theirs");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -4,6 +4,7 @@ use egui::{pos2, vec2, Color32, Pos2, Rect, Sense, Stroke};
 
 use crate::git::graph::{EdgeKind, RowLayout};
 use crate::ui::app::{age, App, Pane, Selection};
+use crate::ui::menus::{self, CommitMenu};
 
 pub const ROW_HEIGHT: f32 = 22.0;
 const LANE_WIDTH: f32 = 14.0;
@@ -57,6 +58,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let theme = app.theme.clone();
 
     let mut new_selection = None;
+    let mut menu_pick: Option<(usize, CommitMenu)> = None;
     let mut scroll_target: Option<usize> = None;
     if app.scroll_to_selection {
         scroll_target = rows.iter().position(|r| *r == app.selection);
@@ -87,6 +89,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             if resp.clicked() {
                 new_selection = Some(sel);
             }
+            if let Selection::Commit(ci) = sel {
+                if resp.secondary_clicked() {
+                    new_selection = Some(sel);
+                }
+                resp.context_menu(|ui| {
+                    if let Some(a) = menus::commit_menu(ui, app, ci) {
+                        menu_pick = Some((ci, a));
+                    }
+                });
+            }
             if selected && scroll_target == Some(i) {
                 ui.scroll_to_rect(rect, Some(egui::Align::Center));
             }
@@ -106,13 +118,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         "Working tree (empty repository)".to_owned()
                     } else {
                         format!(
-                            "Working tree: {} unstaged, {} staged{}",
+                            "Working tree: {} unstaged, {} staged{}{}",
                             s.unstaged.len(),
                             s.staged.len(),
                             if s.conflicted.is_empty() {
                                 String::new()
                             } else {
                                 format!(", {} conflicted", s.conflicted.len())
+                            },
+                            if s.state == crate::git::repo::RepoState::Clean {
+                                String::new()
+                            } else {
+                                format!(" ({} in progress)", s.state.label())
                             }
                         )
                     };
@@ -184,6 +201,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if let Some(sel) = new_selection {
         app.focus = Pane::Log;
         app.select(sel);
+    }
+    if let Some((ci, action)) = menu_pick {
+        let ctx = ui.ctx().clone();
+        menus::apply_commit_menu(app, &ctx, ci, action);
     }
     if focused && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
         app.focus = Pane::Detail;
