@@ -299,10 +299,12 @@ impl App {
                 return;
             }
         }
+        let from_tree = self.focus == crate::ui::app::Pane::Sidebar && self.tree_selected.as_deref() == Some(path.as_str());
         let workdir = self.snapshot.path.clone();
         match Editor::open(&workdir, &path) {
             Ok(ed) => {
                 self.editor = Some(ed);
+                self.editor_full = from_tree;
                 self.focus = crate::ui::app::Pane::Detail;
             }
             Err(e) => self.toast(e, true),

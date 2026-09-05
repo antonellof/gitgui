@@ -953,6 +953,7 @@ mod tests {
         let ed = h.app.editor.as_ref().expect("editor open");
         assert_eq!(ed.path, "a.rs");
         assert_eq!(ed.lang, crate::ui::highlight::Lang::Rust);
+        assert!(!h.app.editor_full, "opened from the change list: commit column stays");
         assert!(h.ctx.egui_wants_keyboard_input(), "editor has keyboard focus");
         assert!(h.app.editor_focused());
 
@@ -1018,6 +1019,7 @@ mod tests {
         h.key(b"e");
         h.frame(Vec::new());
         assert_eq!(h.app.editor.as_ref().map(|e| e.path.as_str()), Some("src/lib.rs"));
+        assert!(h.app.editor_full, "opened from the tree: commit column hidden");
 
         // A refresh re-lists the root and every open folder.
         h.app.apply(Reply::Snapshot(h.repo.snapshot(100).unwrap()));

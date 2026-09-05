@@ -304,6 +304,9 @@ pub struct App {
     pub diff_jump: bool,
     /// Built-in file editor, shown in place of the diff while open.
     pub editor: Option<crate::ui::editor::Editor>,
+    /// Opened from the sidebar file tree: the editor takes everything right
+    /// of the sidebar. From the change lists the commit column stays.
+    pub editor_full: bool,
     /// `--editor` override for Shift+E.
     pub editor_cmd: Option<String>,
     /// `--open`: file for the built-in editor once the first snapshot is in.
@@ -374,6 +377,7 @@ impl App {
             diff_match: 0,
             diff_jump: false,
             editor: None,
+            editor_full: false,
             editor_cmd: None,
             open_on_start: None,
             tree: HashMap::new(),
@@ -1419,6 +1423,7 @@ impl App {
             e.quiet();
             e
         });
+        self.editor_full = false;
     }
 
     /// Move the log selection by `delta` rows (keyboard navigation).
@@ -1790,7 +1795,7 @@ impl App {
             // Measured on the root: inside the panel the sizing pass reports
             // a much smaller height and the file column would come out tiny.
             let avail_h = root.available_height();
-            if self.show_log || self.show_detail {
+            if !self.editor_full && (self.show_log || self.show_detail) {
                 egui::Panel::left("editor_column")
                     .default_size(col_w)
                     .resizable(true)

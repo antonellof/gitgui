@@ -307,7 +307,8 @@ panes, focus leaves a pane when it is hidden.
 With a file open the editor takes the full height as the third column; the
 commit list and the file column stack in the second column (`Panel::left
 ("editor_column")` in `App::ui`). `changes::show_files` draws the file
-column alone so both layouts share it.
+column alone so both layouts share it. Opened from the sidebar file tree
+(`App::editor_full`) the commit column is hidden as well.
 
 ### Editor and tree follow-ups
 
