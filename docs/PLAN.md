@@ -271,8 +271,9 @@ Not planned for v0.x: an interactive rebase editor, bisect, submodules,
 worktrees, sparse checkout, patch export. Use the git CLI in the
 neighbouring pane.
 
-### Recently shipped (v0.1.1 to v0.3.2)
+### Recently shipped (v0.1.1 to v0.3.3)
 
+- v0.3.3: a file opened from the sidebar tree hides the commit column (editor only, right of the sidebar)
 - v0.3.2: README install / run blocks first, install options moved down, editor header button `open/preview`
 - v0.3.1: editor layout (commit list above the file column, editor at full height), narrow commit rows drop the author
 - v0.3.0: built-in editor with syntax colors, external editor and cmux preview hand-off, sidebar file tree, panel hide / show, `--open`, `--editor`, compact README
