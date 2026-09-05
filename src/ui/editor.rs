@@ -134,6 +134,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let busy = app.busy > 0;
     let editor_name = app.external_editor();
     let cmux = crate::split::is_cmux();
+    let mut hide = false;
     let Some(ed) = app.editor.as_mut() else { return };
     let dirty = ed.dirty();
     let path = ed.path.clone();
@@ -143,6 +144,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     crate::ui::row::split(
         ui,
         |ui| {
+            if ui
+                .add(egui::Button::new("hide").small())
+                .on_hover_text("Hide the changes and diff pane (3 toggles)")
+                .clicked()
+            {
+                hide = true;
+            }
             if ui
                 .add(egui::Button::new("Close").small())
                 .on_hover_text("Escape (asks when there are unsaved changes)")
@@ -253,6 +261,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         ed.cache = Some(g);
     }
 
+    if hide {
+        app.toggle_panel(crate::ui::app::Pane::Detail);
+    }
     if action.save {
         app.save_editor();
     }

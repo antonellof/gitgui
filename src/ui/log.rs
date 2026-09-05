@@ -13,39 +13,55 @@ const NODE_RADIUS: f32 = 3.5;
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let focused = app.focus == Pane::Log;
-    ui.horizontal(|ui| {
-        ui.strong("Commits");
-        if app.snapshot.truncated {
-            ui.weak(format!("(first {})", app.snapshot.commits.len()));
-            if ui.small_button("load more").clicked() {
-                app.pending.push(crate::git::ops::Command::LoadMore(
-                    app.snapshot.commits.len() + 2000,
-                ));
+    let filtering = app.filter_active || !app.filter.is_empty();
+    let mut hide = false;
+    crate::ui::row::split(
+        ui,
+        |ui| {
+            if ui
+                .add(egui::Button::new("hide").small())
+                .on_hover_text("Hide the commit list (2 toggles)")
+                .clicked()
+            {
+                hide = true;
             }
-        }
-        if app.filter_active || !app.filter.is_empty() {
-            let edit = egui::TextEdit::singleline(&mut app.filter)
-                .hint_text("filter summary, author, hash")
-                .desired_width(260.0);
-            let resp = ui.add(edit);
-            if app.filter_focus_requested {
-                resp.request_focus();
-                app.filter_focus_requested = false;
-            }
-            if resp.changed() {
-                app.rebuild_filter();
-            }
-            if ui.small_button("x").clicked() {
-                app.filter.clear();
-                app.filter_active = false;
-                app.rebuild_filter();
-            }
-        } else {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if !filtering {
                 ui.weak("/ to filter");
-            });
-        }
-    });
+            }
+        },
+        |ui| {
+            ui.strong("Commits");
+            if app.snapshot.truncated {
+                ui.weak(format!("(first {})", app.snapshot.commits.len()));
+                if ui.small_button("load more").clicked() {
+                    app.pending.push(crate::git::ops::Command::LoadMore(
+                        app.snapshot.commits.len() + 2000,
+                    ));
+                }
+            }
+            if app.filter_active || !app.filter.is_empty() {
+                let edit = egui::TextEdit::singleline(&mut app.filter)
+                    .hint_text("filter summary, author, hash")
+                    .desired_width(260.0);
+                let resp = ui.add(edit);
+                if app.filter_focus_requested {
+                    resp.request_focus();
+                    app.filter_focus_requested = false;
+                }
+                if resp.changed() {
+                    app.rebuild_filter();
+                }
+                if ui.small_button("x").clicked() {
+                    app.filter.clear();
+                    app.filter_active = false;
+                    app.rebuild_filter();
+                }
+            }
+        },
+    );
+    if hide {
+        app.toggle_panel(Pane::Log);
+    }
     ui.separator();
 
     let rows = app.log_rows();

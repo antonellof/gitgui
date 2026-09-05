@@ -327,6 +327,7 @@ Press `?` inside gitgui for the full list. The main ones:
 | Fetch, pull, push | `f` / `p` / `Shift+P` |
 | Refresh | `r` |
 | Cycle panes | `Tab` |
+| Hide or show the sidebar, commit list, detail pane | `1` / `2` / `3` (also `hide` in each header and the footer toggles) |
 | Help | `?` |
 | Quit | `q`, `Ctrl+C` |
 

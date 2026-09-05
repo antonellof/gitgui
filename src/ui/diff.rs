@@ -122,6 +122,7 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
     crate::ui::row::split(
         ui,
         |ui| {
+            app.hide_button(ui, crate::ui::app::Pane::Detail);
             ui.checkbox(&mut app.wrap, "wrap");
             if ui
                 .add(egui::Button::new("ws").small().selected(ignore_ws))
