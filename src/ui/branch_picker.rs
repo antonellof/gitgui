@@ -64,7 +64,7 @@ pub fn show(
         .max_height(320.0)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.set_min_width(440.0);
+            ui.set_min_width(440.0f32.min(ui.available_width().max(120.0)));
             let locals: Vec<_> = snapshot
                 .branches
                 .iter()
