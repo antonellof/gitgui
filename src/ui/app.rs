@@ -1720,10 +1720,15 @@ impl App {
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.set_min_width(match modal {
+                // Never wider than the pane: a narrow split would push the
+                // dialog off the left edge.
+                let want: f32 = match modal {
                     Modal::BranchPicker { .. } | Modal::Help => 460.0,
                     _ => 360.0,
-                });
+                };
+                let room = (ctx.content_rect().width() - 48.0).max(120.0);
+                ui.set_min_width(want.min(room));
+                ui.set_max_width(room);
                 match modal {
                     Modal::Discard(paths) => {
                         ui.label(format!(
