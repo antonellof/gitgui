@@ -271,8 +271,9 @@ Not planned for v0.x: an interactive rebase editor, bisect, submodules,
 worktrees, sparse checkout, patch export. Use the git CLI in the
 neighbouring pane.
 
-### Recently shipped (v0.1.1 to v0.3.0)
+### Recently shipped (v0.1.1 to v0.3.1)
 
+- v0.3.1: editor layout (commit list above the file column, editor at full height), narrow commit rows drop the author
 - v0.3.0: built-in editor with syntax colors, external editor and cmux preview hand-off, sidebar file tree, panel hide / show, `--open`, `--editor`, compact README
 - v0.2.0: feature parity pass, see "Feature audit 2026-09-05"
 
@@ -299,6 +300,13 @@ neighbouring pane.
 (digits below 900 pt) hide the sidebar, the commit list and the detail pane.
 A hidden log or detail pane gives its space to the other, Tab skips hidden
 panes, focus leaves a pane when it is hidden.
+
+### Editor layout (2026-09-05)
+
+With a file open the editor takes the full height as the third column; the
+commit list and the file column stack in the second column (`Panel::left
+("editor_column")` in `App::ui`). `changes::show_files` draws the file
+column alone so both layouts share it.
 
 ### Editor and tree follow-ups
 

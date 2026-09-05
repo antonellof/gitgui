@@ -7,15 +7,11 @@ use crate::ui::app::{App, InputKind, Modal, Pane, Selection};
 use crate::ui::diff;
 
 pub fn show_detail(app: &mut App, ui: &mut egui::Ui) {
-    let focused = app.focus == Pane::Detail;
     let avail = ui.available_width();
     egui::Panel::left("detail_files")
         .default_size((avail * 0.35).clamp(200.0, 480.0))
         .resizable(true)
-        .show(ui, |ui| match app.selection {
-            Selection::WorkingTree => show_worktree(app, ui, focused),
-            Selection::Commit(i) => show_commit(app, ui, i, focused),
-        });
+        .show(ui, |ui| show_files(app, ui));
     egui::CentralPanel::default().show(ui, |ui| {
         if app.editor.is_some() {
             crate::ui::editor::show(app, ui);
@@ -23,6 +19,16 @@ pub fn show_detail(app: &mut App, ui: &mut egui::Ui) {
             diff::show(app, ui);
         }
     });
+}
+
+/// The file column alone: unstaged / staged lists and the commit box for the
+/// working tree, the file list for a commit.
+pub fn show_files(app: &mut App, ui: &mut egui::Ui) {
+    let focused = app.focus == Pane::Detail;
+    match app.selection {
+        Selection::WorkingTree => show_worktree(app, ui, focused),
+        Selection::Commit(i) => show_commit(app, ui, i, focused),
+    }
 }
 
 fn file_row(ui: &mut egui::Ui, f: &FileStatus, selected: bool, theme: &crate::ui::theme::Theme) -> egui::Response {

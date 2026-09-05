@@ -12,7 +12,7 @@ use crate::git::ops::{Command, Reply, StateAction};
 use crate::git::rebase::TodoAction;
 use crate::git::repo::{DiffOpts, DiffTarget, DiffText, FileStatus, RepoSnapshot, RepoState};
 use crate::ui::theme::Theme;
-use crate::ui::{branch_picker, changes, diff, help, icons, log, row, sidebar, toolbar};
+use crate::ui::{branch_picker, changes, diff, editor, help, icons, log, row, sidebar, toolbar};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selection {
@@ -1781,6 +1781,55 @@ impl App {
                 .default_size(140.0)
                 .resizable(true)
                 .show(root, |ui| self.net_log(ui));
+        }
+
+        if self.editor.is_some() {
+            // Editor layout: sidebar, then a column with the commit list
+            // above the file column, then the editor at full height.
+            let col_w = (root.available_width() * 0.38).clamp(240.0, 520.0);
+            // Measured on the root: inside the panel the sizing pass reports
+            // a much smaller height and the file column would come out tiny.
+            let avail_h = root.available_height();
+            if self.show_log || self.show_detail {
+                egui::Panel::left("editor_column")
+                    .default_size(col_w)
+                    .resizable(true)
+                    .show(root, |ui| {
+                        // In the column's sizing pass the nested bottom panel
+                        // would store a tiny height and stay that way.
+                        let sizing = ui.is_sizing_pass();
+                        match (self.show_log, self.show_detail) {
+                            (true, true) if !sizing => {
+                                egui::Panel::bottom("editor_column_files")
+                                    .default_size(avail_h * 0.5)
+                                    .resizable(true)
+                                    .show(ui, |ui| {
+                                        // The file column lays out hard rects and
+                                        // reports less than it uses; without this the
+                                        // panel shrinks a little every frame.
+                                        ui.set_min_size(ui.available_size());
+                                        changes::show_files(self, ui)
+                                    });
+                                egui::CentralPanel::default().show(ui, |ui| log::show(self, ui));
+                            }
+                            (true, _) => {
+                                egui::CentralPanel::default().show(ui, |ui| log::show(self, ui));
+                            }
+                            _ => {
+                                egui::CentralPanel::default().show(ui, |ui| changes::show_files(self, ui));
+                            }
+                        }
+                    });
+            }
+            egui::CentralPanel::default().show(root, |ui| {
+                editor::show(self, ui);
+            });
+            self.show_toasts(&ctx);
+            if let Some(cmd) = diff::take_pending(self) {
+                self.run(cmd);
+            }
+            self.show_modal(&ctx);
+            return;
         }
 
         let avail_h = root.available_height();

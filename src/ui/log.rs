@@ -179,7 +179,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         );
                         x += w + 4.0;
                     }
-                    let right_w = 150.0;
+                    // Narrow columns (the editor layout) drop the author and
+                    // keep the age; the summary takes the rest.
+                    let show_author = rect.width() > 420.0;
+                    let right_w = if show_author { 150.0 } else { 44.0 };
                     let summary_w = (rect.max.x - right_w - x).max(40.0);
                     let body = egui::TextStyle::Body.resolve(ui.style());
                     let color = ui.visuals().text_color();
@@ -192,17 +195,19 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         color,
                     );
                     let weak = ui.visuals().weak_text_color();
-                    let a = painter.layout_no_wrap(c.author.clone(), font.clone(), weak);
-                    let author_x = rect.max.x - right_w + 4.0;
-                    let aclip = Rect::from_min_max(
-                        pos2(author_x, rect.min.y),
-                        pos2(rect.max.x - 40.0, rect.max.y),
-                    );
-                    painter.with_clip_rect(aclip).galley(
-                        pos2(author_x, rect.center().y - a.size().y / 2.0),
-                        a,
-                        weak,
-                    );
+                    if show_author {
+                        let a = painter.layout_no_wrap(c.author.clone(), font.clone(), weak);
+                        let author_x = rect.max.x - right_w + 4.0;
+                        let aclip = Rect::from_min_max(
+                            pos2(author_x, rect.min.y),
+                            pos2(rect.max.x - 40.0, rect.max.y),
+                        );
+                        painter.with_clip_rect(aclip).galley(
+                            pos2(author_x, rect.center().y - a.size().y / 2.0),
+                            a,
+                            weak,
+                        );
+                    }
                     painter.text(
                         pos2(rect.max.x - 6.0, rect.center().y),
                         egui::Align2::RIGHT_CENTER,
