@@ -134,6 +134,27 @@ fn render_pass(
     timings: &mut Timings,
 ) -> PassResult {
     let t0 = Instant::now();
+    let mut input = input;
+    // Plain Tab cycles our panes. Keep it away from egui unless a text
+    // field has focus, otherwise egui's own Tab navigation parks focus on a
+    // button and every single-key binding goes dead until Escape.
+    if !ctx.egui_wants_keyboard_input() {
+        let before = input.events.len();
+        input.events.retain(|e| {
+            !matches!(
+                e,
+                egui::Event::Key {
+                    key: egui::Key::Tab,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.is_none()
+            )
+        });
+        if input.events.len() != before {
+            app.tab_pressed = true;
+        }
+    }
     let mut out = ctx.run_ui(input, |ui| app.ui(ui));
     let t1 = Instant::now();
     let shapes = std::mem::take(&mut out.shapes);
@@ -1010,6 +1031,38 @@ mod tests {
             })
             .collect();
         assert!(dirs.contains(&String::new()) && dirs.contains(&"src".to_owned()));
+    }
+
+    #[test]
+    fn panels_toggle_with_digits_and_tab_skips_hidden() {
+        use crate::git::repo::testutil::TempRepo;
+        use crate::ui::app::Pane;
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        t.write("a.txt", "two\n");
+        let mut h = Harness::new(&t.dir);
+        assert!(h.app.show_sidebar && h.app.show_log && h.app.show_detail);
+        h.key(b"1");
+        assert!(!h.app.show_sidebar);
+        h.key(b"3");
+        assert!(!h.app.show_detail);
+        // Only the log is left: Tab keeps focus there.
+        h.app.focus = Pane::Log;
+        h.key(b"\t");
+        assert_eq!(h.app.focus, Pane::Log);
+        h.key(b"2");
+        h.frame(Vec::new());
+        assert!(!h.app.show_log);
+        // Everything hidden renders the hint without panicking; bring it back.
+        h.key(b"1");
+        h.key(b"2");
+        h.key(b"3");
+        h.frame(Vec::new());
+        assert!(h.app.show_sidebar && h.app.show_log && h.app.show_detail);
+        // Hiding the focused pane moves focus to the next visible one.
+        h.app.focus = Pane::Detail;
+        h.app.toggle_panel(Pane::Detail);
+        assert_eq!(h.app.focus, Pane::Sidebar);
     }
 
     #[test]

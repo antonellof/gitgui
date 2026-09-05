@@ -268,6 +268,12 @@ pub struct App {
     pub transport: &'static str,
     pub scale: f32,
     pub show_debug: bool,
+    /// Panel visibility (1 / 2 / 3 toggle, hide buttons in each header).
+    /// Plain Tab this frame (the runtime strips it from egui's input).
+    pub tab_pressed: bool,
+    pub show_sidebar: bool,
+    pub show_log: bool,
+    pub show_detail: bool,
     pub sidebar_selected: Option<String>,
     pub modal: Option<Modal>,
     pub net: NetLog,
@@ -341,6 +347,10 @@ impl App {
             transport,
             scale,
             show_debug: false,
+            tab_pressed: false,
+            show_sidebar: true,
+            show_log: true,
+            show_detail: true,
             sidebar_selected: None,
             modal: None,
             net: NetLog {
@@ -1298,6 +1308,57 @@ impl App {
         }
     }
 
+    pub fn panel_shown(&self, pane: Pane) -> bool {
+        match pane {
+            Pane::Sidebar => self.show_sidebar,
+            Pane::Log => self.show_log,
+            Pane::Detail => self.show_detail,
+        }
+    }
+
+    /// Hide or show a panel; focus moves off a hidden panel.
+    pub fn toggle_panel(&mut self, pane: Pane) {
+        let flag = match pane {
+            Pane::Sidebar => &mut self.show_sidebar,
+            Pane::Log => &mut self.show_log,
+            Pane::Detail => &mut self.show_detail,
+        };
+        *flag = !*flag;
+        if !*flag && self.focus == pane {
+            self.cycle_focus();
+        }
+    }
+
+    /// Tab: next visible pane (sidebar, log, detail), or stay put when the
+    /// others are hidden.
+    pub fn cycle_focus(&mut self) {
+        let order = [Pane::Sidebar, Pane::Log, Pane::Detail];
+        let start = order.iter().position(|p| *p == self.focus).unwrap_or(0);
+        for step in 1..=3 {
+            let next = order[(start + step) % 3];
+            if self.panel_shown(next) {
+                self.focus = next;
+                return;
+            }
+        }
+    }
+
+    /// Small header button that hides `pane`.
+    pub fn hide_button(&mut self, ui: &mut egui::Ui, pane: Pane) {
+        let (tip, key) = match pane {
+            Pane::Sidebar => ("Hide the sidebar", "1"),
+            Pane::Log => ("Hide the commit list", "2"),
+            Pane::Detail => ("Hide the changes and diff pane", "3"),
+        };
+        if ui
+            .add(egui::Button::new("hide").small())
+            .on_hover_text(format!("{tip} ({key} toggles)"))
+            .clicked()
+        {
+            self.toggle_panel(pane);
+        }
+    }
+
     /// Ask the worker for a directory listing once.
     pub fn request_dir(&mut self, dir: &str) {
         if self.tree_requested.insert(dir.to_owned()) {
@@ -1650,12 +1711,24 @@ impl App {
                 self.rebuild_filter();
             }
         }
-        if tab {
-            self.focus = match self.focus {
-                Pane::Sidebar => Pane::Log,
-                Pane::Log => Pane::Detail,
-                Pane::Detail => Pane::Sidebar,
-            };
+        if tab || std::mem::take(&mut self.tab_pressed) {
+            self.cycle_focus();
+        }
+        let (k1, k2, k3) = ctx.input(|i| {
+            (
+                plain(i, egui::Key::Num1),
+                plain(i, egui::Key::Num2),
+                plain(i, egui::Key::Num3),
+            )
+        });
+        if k1 {
+            self.toggle_panel(Pane::Sidebar);
+        }
+        if k2 {
+            self.toggle_panel(Pane::Log);
+        }
+        if k3 {
+            self.toggle_panel(Pane::Detail);
         }
         if r {
             self.pending.push(Command::Refresh);
@@ -1691,12 +1764,14 @@ impl App {
         }
 
         let sidebar_w = (root.available_width() * 0.25).clamp(140.0, 220.0);
-        egui::Panel::left("sidebar")
-            .default_size(sidebar_w)
-            .resizable(true)
-            .show(root, |ui| {
-                sidebar::show(self, ui);
-            });
+        if self.show_sidebar {
+            egui::Panel::left("sidebar")
+                .default_size(sidebar_w)
+                .resizable(true)
+                .show(root, |ui| {
+                    sidebar::show(self, ui);
+                });
+        }
         egui::Panel::bottom("status")
             .default_size(28.0)
             .resizable(false)
@@ -1709,15 +1784,37 @@ impl App {
         }
 
         let avail_h = root.available_height();
-        egui::Panel::bottom("detail")
-            .default_size(avail_h * 0.45)
-            .resizable(true)
-            .show(root, |ui| {
-                changes::show_detail(self, ui);
-            });
-        egui::CentralPanel::default().show(root, |ui| {
-            log::show(self, ui);
-        });
+        match (self.show_log, self.show_detail) {
+            (true, true) => {
+                egui::Panel::bottom("detail")
+                    .default_size(avail_h * 0.45)
+                    .resizable(true)
+                    .show(root, |ui| {
+                        changes::show_detail(self, ui);
+                    });
+                egui::CentralPanel::default().show(root, |ui| {
+                    log::show(self, ui);
+                });
+            }
+            (true, false) => {
+                egui::CentralPanel::default().show(root, |ui| {
+                    log::show(self, ui);
+                });
+            }
+            (false, true) => {
+                egui::CentralPanel::default().show(root, |ui| {
+                    changes::show_detail(self, ui);
+                });
+            }
+            (false, false) => {
+                egui::CentralPanel::default().show(root, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(ui.available_height() * 0.4);
+                        ui.weak("All panels hidden. Press 1, 2 or 3, or use the footer buttons.");
+                    });
+                });
+            }
+        }
 
         self.show_toasts(&ctx);
         if let Some(cmd) = diff::take_pending(self) {
@@ -2335,10 +2432,30 @@ impl App {
         let show_debug = self.show_debug;
         let debug = format!("{:.1} ms {} x{}", self.frame_ms, self.transport, self.scale);
         let last_op = self.last_op.clone();
+        // Digits only below 900 pt so the branch and counts keep their room.
+        let compact = ui.available_width() < 900.0;
         row::split(
             ui,
             |ui| {
                 toolbar::show(self, ui);
+                ui.separator();
+                // Panel toggles, rightmost after the toolbar: detail, log,
+                // sidebar in right-to-left order so they read 1 2 3.
+                for (pane, label, short, tip) in [
+                    (Pane::Detail, "detail", "3", "Changes and diff pane (3)"),
+                    (Pane::Log, "commits", "2", "Commit list (2)"),
+                    (Pane::Sidebar, "sidebar", "1", "Sidebar (1)"),
+                ] {
+                    let shown = self.panel_shown(pane);
+                    let text = if compact { short } else { label };
+                    if ui
+                        .add(egui::Button::new(text).small().selected(shown))
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        self.toggle_panel(pane);
+                    }
+                }
                 if show_debug {
                     ui.separator();
                     ui.weak(debug);

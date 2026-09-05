@@ -292,6 +292,13 @@ neighbouring pane.
 - Agent API: `fetch`, `pull`, `push`, `commit_and_push`
 - **Auto refresh**: git worker polls every 2 s; refreshes when worktree fingerprint or `.git/` mtimes change, even when the gitgui pane is unfocused (edits from pi in a neighboring cmux pane show up without pressing `r`)
 
+### Panel visibility (2026-09-05)
+
+`1` / `2` / `3`, a `hide` button in each panel header and footer toggles
+(digits below 900 pt) hide the sidebar, the commit list and the detail pane.
+A hidden log or detail pane gives its space to the other, Tab skips hidden
+panes, focus leaves a pane when it is hidden.
+
 ### Editor and tree follow-ups
 
 - Keyboard navigation inside the file tree (j / k, Enter, Left / Right).

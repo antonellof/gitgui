@@ -6,6 +6,7 @@ pub const KEYS: &[(&str, &str, &str)] = &[
     ("Navigation", "j / k, Down / Up", "move selection"),
     ("Navigation", "PageDown / PageUp, Home / End", "jump in the list"),
     ("Navigation", "Tab", "cycle focus: sidebar, log, detail"),
+    ("Navigation", "1 / 2 / 3", "hide or show the sidebar / commit list / detail pane"),
     ("Navigation", "Enter", "open selection / check out branch"),
     ("Navigation", "/", "filter commits (summary, author, hash)"),
     ("Navigation", "Escape", "clear filter, search, selection; close dialog"),

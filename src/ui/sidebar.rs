@@ -34,6 +34,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ui.weak("*");
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            app.hide_button(ui, Pane::Sidebar);
             if ui.small_button("?").on_hover_text("Keyboard shortcuts").clicked() {
                 app.open_help();
             }

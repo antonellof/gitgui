@@ -193,6 +193,7 @@ Behaviors:
 - Footer: while a merge, rebase, cherry-pick or revert is in progress a red banner names it (with rebase progress) and offers `Continue` and `Abort`; `m` opens the same choices plus `Skip`.
 - Dialogs: `?` lists every shortcut (`ui/help.rs` is the single source for the table). Destructive commands (drop, reset hard, discard all, force push, delete on remote, abort) always confirm first.
 - Toast notifications for op results, errors in red with the git stderr text.
+- Panels: every panel header has a small `hide` button, the footer has one toggle per panel (sidebar, commits, detail) and `1` / `2` / `3` toggle from the keyboard. A hidden log or detail pane gives its space to the other; with both hidden the main area shows a hint. Tab skips hidden panes.
 - Everything must be operable with mouse only and with keyboard only.
 
 ### Keybindings
@@ -219,6 +220,7 @@ y / o                 copy hash / open commit in browser
 m                     continue, abort or skip a merge or rebase
 f / p / Shift+P       fetch / pull / push     r              refresh
 Tab                   cycle focus between sidebar, list, detail
+1 / 2 / 3             hide or show the sidebar / commit list / detail pane
 Escape                clear line selection, diff search, filter; close dialog
 ?                     help                    q, Ctrl+C      quit
 ```
