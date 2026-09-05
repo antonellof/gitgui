@@ -167,7 +167,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
             if cmux
                 && ui
-                    .add(egui::Button::new("cmux").small())
+                    .add(egui::Button::new("open/preview").small())
                     .on_hover_text("Open in a cmux file preview tab (Shift+O)")
                     .clicked()
             {
