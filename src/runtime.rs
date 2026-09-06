@@ -729,6 +729,28 @@ mod tests {
     }
 
     #[test]
+    fn wheel_over_the_log_scrolls_it() {
+        let t = TempRepo::new();
+        for i in 0..60 {
+            t.commit_file("a.txt", &format!("{i}\n"), &format!("commit {i}"));
+        }
+        let mut h = Harness::new(&t.dir);
+        // The log pane is the top-right one: find a point inside it.
+        let log = h.app.pane_of(Pane::Log).unwrap();
+        let region = h.app.panes.layout().pane_regions(4.0, 80.0, iced_core::Size::new(900.0, 700.0 - 34.0 - 8.0));
+        let r = region[&log];
+        let (x, y) = ((r.x + r.width / 2.0) as i32, (r.y + r.height / 2.0) as i32);
+        let row = |h: &Harness| -> Vec<u8> { h.fb.pixels().to_vec() };
+        let before = row(&h);
+        // SGR wheel down (button 65) in pixel coordinates.
+        h.key(format!("\x1b[<65;{x};{y}M").as_bytes());
+        h.key(format!("\x1b[<65;{x};{y}M").as_bytes());
+        let after = row(&h);
+        assert_ne!(before, after, "rows should have moved under the pointer");
+        assert_eq!(h.app.selection, Selection::Commit(0), "scrolling does not change the selection");
+    }
+
+    #[test]
     fn font_size_tracks_cell_height() {
         assert_eq!(font_size_for_cell(0, 2.0), 13.0);
         assert_eq!(font_size_for_cell(34, 2.0), 13.0);
