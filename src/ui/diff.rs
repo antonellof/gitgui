@@ -151,20 +151,30 @@ pub fn view(app: &App) -> Element<'_> {
                         border: iced_core::Border { radius: 4.0.into(), ..Default::default() },
                         ..Default::default()
                     }),
-                Space::new().width(Length::Fill),
-                small_button("Use ours", (!busy).then_some(Message::Resolve(p.clone(), crate::git::actions::ConflictSide::Ours))),
-                small_button("Use theirs", (!busy).then_some(Message::Resolve(p.clone(), crate::git::actions::ConflictSide::Theirs))),
-                small_button("Mark resolved", (!busy).then_some(Message::Run(crate::git::ops::Command::Stage(vec![p.clone()])))),
-                widgets::primary_button("Resolve…", (!busy).then_some(Message::MergeOpen(p.clone()))),
             ]
             .spacing(6)
             .align_y(iced_core::Alignment::Center);
-            let hint = text_widget("Resolve… opens the three-way tool (ours | result | theirs). Or pick a side for the whole file, or edit it by hand and mark it resolved. Continue the merge from the footer once every file is resolved.")
-                .size(11)
-                .color(t.weak);
+            // Actions on their own row, the important one first, so a narrow
+            // pane cuts the hint and never the Resolve button.
+            let actions = row![
+                widgets::primary_button("Resolve…", (!busy).then_some(Message::MergeOpen(p.clone()))),
+                small_button("Use ours", (!busy).then_some(Message::Resolve(p.clone(), crate::git::actions::ConflictSide::Ours))),
+                small_button("Use theirs", (!busy).then_some(Message::Resolve(p.clone(), crate::git::actions::ConflictSide::Theirs))),
+                small_button("Mark resolved", (!busy).then_some(Message::Run(crate::git::ops::Command::Stage(vec![p.clone()])))),
+                container(
+                    text_widget("three-way tool, or pick a side for the whole file, or edit and mark resolved")
+                        .size(11)
+                        .color(t.weak)
+                        .wrapping(iced_core::text::Wrapping::None)
+                )
+                .width(Length::Fill)
+                .clip(true),
+            ]
+            .spacing(6)
+            .align_y(iced_core::Alignment::Center);
             let bg = alpha(t.error, 0.12);
             col = col.push(
-                container(column![sides, hint].spacing(4))
+                container(column![sides, actions].spacing(6))
                     .padding([6, 8])
                     .width(Length::Fill)
                     .style(move |_| container::Style {
