@@ -1,6 +1,8 @@
 # gitgui
 
-A git GUI that runs inside your terminal. One Rust binary paints an [iced](https://iced.rs) interface as pixels into a cmux, Ghostty, kitty or WezTerm pane over the kitty graphics protocol. No Electron, no browser engine, no TUI. Works over SSH.
+A git GUI that runs inside your terminal, next to your coding agent. One Rust binary paints an [iced](https://iced.rs) interface as pixels into a cmux, Ghostty, kitty or WezTerm pane over the kitty graphics protocol. No Electron, no browser engine, no TUI. Works over SSH.
+
+Commit graph with branch lanes, staging by file, hunk or line, a three-way conflict resolver, history rewriting without an editor popping up, a built-in code editor with syntax colors, and a file tree, on panes you drag and resize. Git writes go through libgit2; fetch, pull and push go through your own `git` so credential helpers and SSH agents keep working. Version 0.4.0, MIT.
 
 Install:
 
@@ -29,7 +31,7 @@ Conflicts open a three-way resolver: ours, result, theirs, with per-conflict but
 Requires macOS or Linux and a kitty-graphics terminal (cmux, Ghostty, kitty, WezTerm). The one-liner at the top downloads a release binary into `~/.local/bin`, or builds from source with `cargo` when there is no binary for your platform.
 
 ```bash
-GITGUI_VERSION=0.2.0 GITGUI_INSTALL_DIR=~/bin bash scripts/install.sh   # pin a version, other dir
+GITGUI_VERSION=0.4.0 GITGUI_INSTALL_DIR=~/bin bash scripts/install.sh   # pin a version, other dir
 cargo install --git https://github.com/antonellof/gitgui                 # from source (Rust 1.95+)
 gitgui --probe                                                           # does this terminal support kitty graphics?
 ```
