@@ -214,6 +214,7 @@ impl Shell {
         {
             self.resize(phys.width, phys.height, self.ppp);
         }
+        app.window = self.size;
         let mut events = std::mem::take(&mut self.events);
         events.push(Event::Window(window::Event::RedrawRequested(Instant::now())));
         let mut redraw = window::RedrawRequest::Wait;

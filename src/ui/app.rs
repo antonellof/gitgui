@@ -415,6 +415,8 @@ pub struct App {
     pub modal_multiline: text_editor::Content<Renderer>,
     pub menu: Option<Menu>,
     pub cursor: Point,
+    /// Logical window size, set by the shell before each frame.
+    pub window: iced_core::Size,
     /// Modifier keys as of the last input event (for shift-click in the diff).
     pub modifiers: keyboard::Modifiers,
     /// Text to put on the terminal clipboard after this frame.
@@ -439,8 +441,6 @@ pub struct App {
     pub tree_requested: HashSet<String>,
     pub line_sel: Option<LineSel>,
     pub panes: pane_grid::State<Pane>,
-    /// The pane maximized for a tree-opened editor, restored on close.
-    pub editor_maximized: bool,
 }
 
 impl App {
@@ -490,6 +490,7 @@ impl App {
             modal_multiline: text_editor::Content::new(),
             menu: None,
             cursor: Point::ORIGIN,
+            window: iced_core::Size::new(800.0, 500.0),
             modifiers: keyboard::Modifiers::empty(),
             pending_copy: Vec::new(),
             net: NetLog {
@@ -517,7 +518,6 @@ impl App {
             tree_requested: HashSet::new(),
             line_sel: None,
             panes,
-            editor_maximized: false,
         }
     }
 
@@ -580,7 +580,7 @@ impl App {
                     self.on_selection_changed();
                     if let Some(path) = self.open_on_start.take() {
                         self.tree_selected = Some(path.clone());
-                        self.open_editor(path, true);
+                        self.open_editor(path);
                     }
                 } else {
                     match self.selection {
@@ -1431,7 +1431,7 @@ impl App {
 
     // ---- editor ----
 
-    pub fn open_editor(&mut self, path: String, full: bool) {
+    pub fn open_editor(&mut self, path: String) {
         if let Some(ed) = &self.editor {
             if ed.path == path {
                 return;
@@ -1446,12 +1446,6 @@ impl App {
             Ok(ed) => {
                 self.editor = Some(ed);
                 self.focus = Pane::Detail;
-                if full {
-                    if let Some(p) = self.pane_of(Pane::Detail) {
-                        self.panes.maximize(p);
-                        self.editor_maximized = true;
-                    }
-                }
                 self.ops.push(Box::new(iced_core::widget::operation::focusable::focus(
                     widgets::EDITOR_ID.clone(),
                 )));
@@ -1478,14 +1472,6 @@ impl App {
             self.modal = Some(Modal::CloseEditor);
         } else {
             self.editor = None;
-            self.restore_after_editor();
-        }
-    }
-
-    fn restore_after_editor(&mut self) {
-        if self.editor_maximized {
-            self.panes.restore();
-            self.editor_maximized = false;
         }
     }
 
@@ -1556,10 +1542,7 @@ impl App {
                 self.panes.resize(split, ratio);
             }
             Message::PaneMaximize(p) => self.panes.maximize(p),
-            Message::PaneRestore => {
-                self.panes.restore();
-                self.editor_maximized = false;
-            }
+            Message::PaneRestore => self.panes.restore(),
             Message::SelectRow(sel) => {
                 self.focus = Pane::Log;
                 self.select(sel);
@@ -1763,14 +1746,12 @@ impl App {
                 self.save_editor();
                 if self.editor.as_ref().is_some_and(|e| !e.dirty()) {
                     self.editor = None;
-                    self.restore_after_editor();
-                }
+                        }
                 self.modal = None;
             }
             Message::ModalEditorDiscard => {
                 self.editor = None;
-                self.restore_after_editor();
-                self.modal = None;
+                    self.modal = None;
             }
             Message::OpenBranchPicker => {
                 if self.busy == 0 {
@@ -1865,7 +1846,7 @@ impl App {
             Message::TreeOpen(p) => {
                 self.tree_selected = Some(p.clone());
                 self.focus = Pane::Sidebar;
-                self.open_editor(p, true);
+                self.open_editor(p);
             }
             Message::TreeRequest(d) => {
                 self.tree_requested.remove(&d);
@@ -1875,8 +1856,7 @@ impl App {
                 self.tree_selected = Some(path.clone());
                 if self.editor.as_ref().is_some_and(|e| !e.dirty()) {
                     self.editor = None;
-                    self.restore_after_editor();
-                }
+                        }
                 let target = if self.snapshot.unstaged.iter().any(|f| f.path == path) {
                     DiffTarget::WorkdirUnstaged(path)
                 } else {
@@ -1891,8 +1871,7 @@ impl App {
                     self.toast("select a file first", true);
                     return;
                 };
-                let from_tree = self.focus == Pane::Sidebar && self.tree_selected.as_deref() == Some(path.as_str());
-                self.open_editor(path, from_tree);
+                self.open_editor(path);
             }
             Message::EditorAction(action) => {
                 if let Some(ed) = self.editor.as_mut() {
@@ -2286,13 +2265,13 @@ impl App {
         let base: Element<'_> = main.into();
         let mut layers = stack![base];
         if let Some(m) = &self.menu {
-            layers = layers.push(menu::view(self, m));
+            layers = layers.push(widgets::layered(menu::view(self, m)));
         }
         if let Some(m) = &self.modal {
-            layers = layers.push(modal::view(self, m));
+            layers = layers.push(widgets::layered(modal::view(self, m)));
         }
         if !self.toasts.is_empty() {
-            layers = layers.push(widgets::toasts(self));
+            layers = layers.push(widgets::layered(widgets::toasts(self)));
         }
         layers.into()
     }
@@ -2312,7 +2291,7 @@ impl App {
         ];
         let mut layers = stack![Element::from(content)];
         if !self.toasts.is_empty() {
-            layers = layers.push(widgets::toasts(self));
+            layers = layers.push(widgets::layered(widgets::toasts(self)));
         }
         layers.into()
     }

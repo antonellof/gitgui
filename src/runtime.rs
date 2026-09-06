@@ -86,6 +86,20 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
         git_ms = t_git.elapsed().as_secs_f64() * 1e3;
         settle(&mut app, repo);
     }
+    // Debug aid: GITGUI_HEADLESS_OPEN=picker|help|menu|stash|reset opens a
+    // dialog before rendering, so the frame shows it.
+    if let Ok(what) = std::env::var("GITGUI_HEADLESS_OPEN") {
+        use crate::ui::app::Message;
+        app.cursor = iced_core::Point::new(400.0, 200.0);
+        match what.as_str() {
+            "picker" => app.update(Message::OpenBranchPicker),
+            "help" => app.update(Message::OpenHelp),
+            "menu" => app.update(Message::MenuOpen(crate::ui::app::MenuKind::Commit(0))),
+            "stash" => app.update(Message::OpenStashDialog),
+            "reset" => app.update(Message::CommitAction(0, crate::ui::app::CommitAction::Reset)),
+            _ => {}
+        }
+    }
     // Three passes: fonts load, layout settles, then the final frame.
     let mut ui_ms = 0.0;
     for _ in 0..3 {
@@ -673,7 +687,6 @@ mod tests {
         let ed = h.app.editor.as_ref().expect("editor open");
         assert_eq!(ed.path, "a.rs");
         assert_eq!(ed.lang, crate::ui::highlight::Lang::Rust);
-        assert!(!h.app.editor_maximized, "opened from the change list keeps the layout");
         // Typed text lands in the editor, not in the bindings.
         h.key(b"x");
         assert!(h.app.editor.as_ref().unwrap().dirty());
@@ -708,11 +721,11 @@ mod tests {
         assert_eq!(h.app.panes.maximized(), Some(log));
         h.key(b"2");
         assert!(h.app.panes.maximized().is_none());
-        // A tree file opens the editor maximized in the detail pane.
+        // A tree file opens the editor in the detail pane; the layout stays.
         h.app.update(crate::ui::app::Message::TreeOpen("src/lib.rs".into()));
         h.frame();
         assert_eq!(h.app.editor.as_ref().map(|e| e.path.as_str()), Some("src/lib.rs"));
-        assert_eq!(h.app.panes.maximized(), h.app.pane_of(Pane::Detail));
+        assert!(h.app.panes.maximized().is_none());
     }
 
     #[test]

@@ -297,11 +297,6 @@ pub fn panel_style(theme: &iced_core::Theme) -> container::Style {
             width: 1.0,
             radius: 8.0.into(),
         },
-        shadow: iced_core::Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
-            offset: iced_core::Vector::new(0.0, 4.0),
-            blur_radius: 16.0,
-        },
         ..Default::default()
     }
 }
@@ -361,5 +356,115 @@ pub fn text_editor_style(theme: &iced_core::Theme, status: iced_widget::text_edi
             ..base
         },
         _ => base,
+    }
+}
+
+/// Draws its child inside a fresh render layer. tiny-skia draws layers in
+/// creation order, and the custom widgets create per-text layers, so an
+/// overlay drawn later into the root layer would still sit under them.
+pub struct Layered<'a> {
+    child: Element<'a>,
+}
+
+pub fn layered<'a>(child: impl Into<Element<'a>>) -> Element<'a> {
+    iced_core::Element::new(Layered { child: child.into() })
+}
+
+impl<'a> iced_core::Widget<Message, iced_core::Theme, crate::ui::app::Renderer> for Layered<'a> {
+    fn size(&self) -> iced_core::Size<Length> {
+        self.child.as_widget().size()
+    }
+
+    fn size_hint(&self) -> iced_core::Size<Length> {
+        self.child.as_widget().size_hint()
+    }
+
+    fn tag(&self) -> iced_core::widget::tree::Tag {
+        self.child.as_widget().tag()
+    }
+
+    fn state(&self) -> iced_core::widget::tree::State {
+        self.child.as_widget().state()
+    }
+
+    fn children(&self) -> Vec<iced_core::widget::Tree> {
+        self.child.as_widget().children()
+    }
+
+    fn diff(&self, tree: &mut iced_core::widget::Tree) {
+        self.child.as_widget().diff(tree);
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut iced_core::widget::Tree,
+        renderer: &crate::ui::app::Renderer,
+        limits: &iced_core::layout::Limits,
+    ) -> iced_core::layout::Node {
+        self.child.as_widget_mut().layout(tree, renderer, limits)
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut iced_core::widget::Tree,
+        layout: iced_core::Layout<'_>,
+        renderer: &crate::ui::app::Renderer,
+        operation: &mut dyn iced_core::widget::Operation,
+    ) {
+        self.child.as_widget_mut().operate(tree, layout, renderer, operation);
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut iced_core::widget::Tree,
+        event: &iced_core::Event,
+        layout: iced_core::Layout<'_>,
+        cursor: iced_core::mouse::Cursor,
+        renderer: &crate::ui::app::Renderer,
+        clipboard: &mut dyn iced_core::Clipboard,
+        shell: &mut iced_core::Shell<'_, Message>,
+        viewport: &iced_core::Rectangle,
+    ) {
+        self.child
+            .as_widget_mut()
+            .update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &iced_core::widget::Tree,
+        layout: iced_core::Layout<'_>,
+        cursor: iced_core::mouse::Cursor,
+        viewport: &iced_core::Rectangle,
+        renderer: &crate::ui::app::Renderer,
+    ) -> iced_core::mouse::Interaction {
+        self.child.as_widget().mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
+
+    fn draw(
+        &self,
+        tree: &iced_core::widget::Tree,
+        renderer: &mut crate::ui::app::Renderer,
+        theme: &iced_core::Theme,
+        style: &iced_core::renderer::Style,
+        layout: iced_core::Layout<'_>,
+        cursor: iced_core::mouse::Cursor,
+        viewport: &iced_core::Rectangle,
+    ) {
+        use iced_core::Renderer as _;
+        renderer.with_layer(*viewport, |renderer| {
+            self.child.as_widget().draw(tree, renderer, theme, style, layout, cursor, viewport);
+        });
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut iced_core::widget::Tree,
+        layout: iced_core::Layout<'b>,
+        renderer: &crate::ui::app::Renderer,
+        viewport: &iced_core::Rectangle,
+        translation: iced_core::Vector,
+    ) -> Option<iced_core::overlay::Element<'b, Message, iced_core::Theme, crate::ui::app::Renderer>> {
+        self.child.as_widget_mut().overlay(tree, layout, renderer, viewport, translation)
     }
 }

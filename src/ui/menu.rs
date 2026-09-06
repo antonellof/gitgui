@@ -356,18 +356,30 @@ fn items(app: &App, kind: &MenuKind) -> Vec<Item> {
 
 pub fn view<'a>(app: &'a App, menu: &'a Menu) -> Element<'a> {
     let t = &app.theme;
+    let entries = items(app, &menu.kind);
+    // Estimated height, to keep the menu inside the window.
+    let est: f32 = entries
+        .iter()
+        .map(|i| match i {
+            Item::Sep => 8.0,
+            Item::Entry(..) => 27.0,
+        })
+        .sum::<f32>()
+        + 10.0;
     let mut col = column![].spacing(1);
-    for item in items(app, &menu.kind) {
+    for item in entries {
         match item {
             Item::Sep => {
                 col = col.push(container(rule::horizontal(1)).padding([3, 4]));
             }
             Item::Entry(label, tip, msg) => {
                 let enabled = msg.is_some();
-                let mut line = iced_widget::row![text(label).size(13)].spacing(10).align_y(iced_core::Alignment::Center);
+                let mut line = iced_widget::row![text(label).size(13).wrapping(iced_core::text::Wrapping::None)]
+                    .spacing(10)
+                    .align_y(iced_core::Alignment::Center);
                 if !tip.is_empty() {
                     line = line.push(Space::new().width(Length::Fill));
-                    line = line.push(text(tip).size(11).color(t.weak));
+                    line = line.push(text(tip).size(11).color(t.weak).wrapping(iced_core::text::Wrapping::None));
                 }
                 let mut b = button(line)
                     .width(Length::Fill)
@@ -400,12 +412,13 @@ pub fn view<'a>(app: &'a App, menu: &'a Menu) -> Element<'a> {
             }
         }
     }
+    const MENU_W: f32 = 340.0;
     let panel = container(col)
         .padding(4)
-        .width(Length::Fixed(300.0))
+        .width(Length::Fixed(MENU_W))
         .style(widgets::panel_style);
-    let x = menu.at.x.max(0.0);
-    let y = menu.at.y.max(0.0);
+    let x = menu.at.x.min((app.window.width - MENU_W - 4.0).max(0.0)).max(0.0);
+    let y = menu.at.y.min((app.window.height - est - 4.0).max(0.0)).max(0.0);
     let positioned = container(panel)
         .padding(Padding {
             top: y,

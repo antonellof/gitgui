@@ -420,6 +420,7 @@ impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
                 let y = bounds.y + i as f32 * ROW_H - state.scroll;
                 let full = Rectangle::new(Point::new(bounds.x, y), Size::new(bounds.width, ROW_H));
                 let Some(rect) = full.intersection(&bounds) else { continue };
+                let partial = rect.height < ROW_H - 0.5;
                 let cy = full.center_y();
                 match row {
                     Row::Hunk(hunk, header) => {
@@ -432,7 +433,8 @@ impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
                             - bounds.x
                             - 8.0;
                         let clip = Rectangle::new(Point::new(bounds.x, rect.y), Size::new(text_w.max(20.0), rect.height));
-                        draw_text(renderer, header.to_string(), Point::new(bounds.x + 8.0 - state.scroll_x, cy), mono, size, t.hunk_fg, clip);
+                        let overflow = partial || state.scroll_x > 0.0 || header.chars().count() as f32 * geo.char_w + 8.0 > clip.width;
+                        draw_text(renderer, header.to_string(), Point::new(bounds.x + 8.0 - state.scroll_x, cy), mono, size, t.hunk_fg, clip, overflow);
                         for (brect, action) in buttons {
                             let Some(brect) = brect.intersection(&bounds) else { continue };
                             let hovered = cursor.is_over(brect);
@@ -456,6 +458,7 @@ impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
                                 Pixels(size.0 - 1.0),
                                 t.strong,
                                 brect,
+                                partial,
                             );
                         }
                         let _ = hunk;
@@ -489,7 +492,7 @@ impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
                         let old = l.old_no.map(|n| n.to_string()).unwrap_or_default();
                         let new = l.new_no.map(|n| n.to_string()).unwrap_or_default();
                         let numbers = format!("{old:>digits$} {new:>digits$} {}", l.origin);
-                        draw_text(renderer, numbers, Point::new(bounds.x + 6.0, cy), mono, size, t.line_no, gutter_rect);
+                        draw_text(renderer, numbers, Point::new(bounds.x + 6.0, cy), mono, size, t.line_no, gutter_rect, partial);
                         let text_clip = Rectangle::new(
                             Point::new(bounds.x + geo.gutter, rect.y),
                             Size::new((bounds.width - geo.gutter).max(0.0), rect.height),
@@ -499,7 +502,8 @@ impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
                         } else {
                             l.text.clone()
                         };
-                        draw_text(renderer, content, Point::new(bounds.x + geo.gutter - state.scroll_x, cy), mono, size, fg, text_clip);
+                        let overflow = partial || state.scroll_x > 0.0 || content.chars().count() as f32 * geo.char_w > text_clip.width;
+                        draw_text(renderer, content, Point::new(bounds.x + geo.gutter - state.scroll_x, cy), mono, size, fg, text_clip, overflow);
                     }
                 }
             }

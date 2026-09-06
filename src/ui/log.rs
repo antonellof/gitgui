@@ -219,6 +219,7 @@ impl Widget<Message, iced_core::Theme, Renderer> for LogView<'_> {
                 let full = Rectangle::new(Point::new(bounds.x, y), Size::new(bounds.width, ROW_H));
                 // Nested layers do not intersect in tiny-skia: clip rows to the widget ourselves.
                 let Some(rect) = full.intersection(&bounds) else { continue };
+                let partial = rect.height < ROW_H - 0.5;
                 let sel = self.rows[i];
                 let selected = sel == app.selection;
                 if selected {
@@ -252,7 +253,7 @@ impl Widget<Message, iced_core::Theme, Renderer> for LogView<'_> {
                                 format!(" ({} in progress)", s.state.label())
                             }
                         );
-                        draw_text(renderer, label, Point::new(text_x, full.center_y()), default_font, font_size, t.strong, rect);
+                        draw_text(renderer, label, Point::new(text_x, full.center_y()), default_font, font_size, t.strong, rect, true);
                     }
                     Selection::Commit(ci) => {
                         let Some(c) = s.commits.get(ci) else { continue };
@@ -267,19 +268,19 @@ impl Widget<Message, iced_core::Theme, Renderer> for LogView<'_> {
                             let pill = Rectangle::new(Point::new(x, full.center_y() - 8.0), Size::new(w, 16.0));
                             if let Some(visible) = pill.intersection(&bounds) {
                                 fill(renderer, visible, t.pill(r.kind), 4.0);
-                                draw_text(renderer, r.name.clone(), Point::new(x + 5.0, full.center_y()), default_font, small, Color::WHITE, visible);
+                                draw_text(renderer, r.name.clone(), Point::new(x + 5.0, full.center_y()), default_font, small, Color::WHITE, visible, partial);
                             }
                             x += w + 4.0;
                         }
                         let summary_w = (rect.x + rect.width - right_w - x - 8.0).max(40.0);
                         let clip = Rectangle::new(Point::new(x, rect.y), Size::new(summary_w, rect.height));
                         let summary = state.fit(&c.summary, summary_w, default_font, font_size);
-                        draw_text(renderer, summary, Point::new(x, full.center_y()), default_font, font_size, t.text, clip);
+                        draw_text(renderer, summary, Point::new(x, full.center_y()), default_font, font_size, t.text, clip, partial);
                         if show_author {
                             let ax = rect.x + rect.width - right_w + 4.0;
                             let aclip = Rectangle::new(Point::new(ax, rect.y), Size::new(right_w - 48.0, rect.height));
                             let author = state.fit(&c.author, right_w - 52.0, default_font, small);
-                            draw_text(renderer, author, Point::new(ax, full.center_y()), default_font, small, t.weak, aclip);
+                            draw_text(renderer, author, Point::new(ax, full.center_y()), default_font, small, t.weak, aclip, partial);
                         }
                         let age_s = age(now, c.time);
                         let aw = measure(&age_s, default_font, small);
@@ -291,6 +292,7 @@ impl Widget<Message, iced_core::Theme, Renderer> for LogView<'_> {
                             small,
                             t.weak,
                             rect,
+                            partial,
                         );
                     }
                 }
@@ -316,8 +318,16 @@ pub fn fill(renderer: &mut Renderer, rect: Rectangle, color: Color, radius: f32)
 }
 
 /// Single-line text anchored at its left-center point, clipped to `clip`.
-pub fn draw_text(renderer: &mut Renderer, content: String, at: Point, font: Font, size: Pixels, color: Color, clip: Rectangle) {
+/// Single-line text anchored at its left-center point. With `may_overflow`
+/// the text is drawn inside a layer of exactly `clip` (see below); pass
+/// false for text known to fit, a layer per text is what costs.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_text(renderer: &mut Renderer, content: String, at: Point, font: Font, size: Pixels, color: Color, clip: Rectangle, may_overflow: bool) {
     if clip.width <= 0.0 || clip.height <= 0.0 {
+        return;
+    }
+    if !may_overflow {
+        fill_text(renderer, content, at, font, size, color, clip);
         return;
     }
     // tiny-skia applies a clip mask only when the text's clip rect pokes
@@ -327,25 +337,27 @@ pub fn draw_text(renderer: &mut Renderer, content: String, at: Point, font: Font
         Point::new(clip.x - 1.0, clip.y - 1.0),
         Size::new(clip.width + 2.0, clip.height + 2.0),
     );
-    renderer.with_layer(clip, |renderer| {
-        text::Renderer::fill_text(
-            renderer,
-            text::Text {
-                content,
-                bounds: Size::new(f32::INFINITY, clip.height.max(ROW_H)),
-                size,
-                line_height: text::LineHeight::default(),
-                font,
-                align_x: text::Alignment::Left,
-                align_y: alignment::Vertical::Center,
-                shaping: text::Shaping::Advanced,
-                wrapping: text::Wrapping::None,
-            },
-            at,
-            color,
-            outer,
-        );
-    });
+    renderer.with_layer(clip, |renderer| fill_text(renderer, content, at, font, size, color, outer));
+}
+
+fn fill_text(renderer: &mut Renderer, content: String, at: Point, font: Font, size: Pixels, color: Color, clip: Rectangle) {
+    text::Renderer::fill_text(
+        renderer,
+        text::Text {
+            content,
+            bounds: Size::new(f32::INFINITY, clip.height.max(ROW_H)),
+            size,
+            line_height: text::LineHeight::default(),
+            font,
+            align_x: text::Alignment::Left,
+            align_y: alignment::Vertical::Center,
+            shaping: text::Shaping::Advanced,
+            wrapping: text::Wrapping::None,
+        },
+        at,
+        color,
+        clip,
+    );
 }
 
 /// `s` cut to `width` points with an ellipsis when it does not fit.

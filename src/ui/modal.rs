@@ -129,7 +129,7 @@ pub fn view<'a>(app: &'a App, modal: &'a Modal) -> Element<'a> {
             actions = actions.push(Space::new().width(Length::Fill)).push(button("Close", Some(Message::ModalClose)));
             column![
                 input("filter branches", filter, true, Message::ModalValue),
-                scrollable(list).height(Length::Fixed(260.0)),
+                container(scrollable(list)).max_height(260.0),
                 actions,
             ]
             .spacing(10)
@@ -305,7 +305,7 @@ pub fn view<'a>(app: &'a App, modal: &'a Modal) -> Element<'a> {
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|_| container::Style {
-                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.45))),
+                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))),
                 ..Default::default()
             }),
     )
