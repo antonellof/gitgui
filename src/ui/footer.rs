@@ -15,6 +15,16 @@ pub fn view(app: &App) -> Element<'_> {
     let busy = app.busy > 0;
     let mut r = row![].spacing(8).align_y(Alignment::Center).padding([4, 8]);
 
+    r = r.push(
+        row![
+            text("gitgui").size(12).color(t.strong),
+            text(concat!("v", env!("CARGO_PKG_VERSION"))).size(11).color(t.weak),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center),
+    );
+    r = r.push(text("|").size(12).color(t.border));
+
     if !app.no_repo {
         let name = match &s.head {
             Some(h) => h.branch_name.clone().unwrap_or_else(|| {
@@ -85,7 +95,7 @@ pub fn view(app: &App) -> Element<'_> {
         r = r.push(fetch).push(pull).push(push);
         r = r.push(small_button("Refresh  r", Some(Message::Refresh)));
     }
-    r = r.push(small_button("?", Some(Message::OpenHelp)));
+    r = r.push(small_button("Help  ?", Some(Message::OpenHelp)));
     r = r.push(small_button("Quit  q", Some(Message::Quit)));
     let bg = t.panel;
     container(r)
