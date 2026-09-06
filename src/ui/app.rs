@@ -1,18 +1,30 @@
-//! Top-level application state and layout (docs/SPEC.md section 4).
+//! Top-level state, messages and update logic. Views live in the sibling
+//! modules; `App::view` assembles them on an iced `pane_grid` so every pane
+//! can be dragged, resized and maximized.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 use git2::Oid;
+use iced_core::keyboard::{self, key::Named};
+use iced_core::widget::Operation;
+use iced_core::{Length, Point};
+use iced_widget::pane_grid::{self, Axis, Configuration};
+use iced_widget::{column, container, pane_grid as pane_grid_widget, stack, text, text_editor};
 
 use crate::git::actions::{ConflictSide, ResetKind};
 use crate::git::ops::{Command, Reply, StateAction};
 use crate::git::rebase::TodoAction;
-use crate::git::repo::{DiffOpts, DiffTarget, DiffText, FileStatus, RepoSnapshot, RepoState};
+use crate::git::repo::{DiffOpts, DiffTarget, DirEntry, FileStatus, RepoSnapshot, RepoState};
+use crate::ui::editor::Editor;
 use crate::ui::theme::Theme;
-use crate::ui::{branch_picker, changes, diff, editor, help, icons, log, row, sidebar, toolbar};
+use crate::ui::{changes, diff, editor, footer, log, menu, modal, sidebar, widgets};
+
+pub type Renderer = crate::shell::Renderer;
+pub type Element<'a> = iced_core::Element<'a, Message, iced_core::Theme, Renderer>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selection {
@@ -25,16 +37,21 @@ pub enum Selection {
 pub enum Pane {
     Sidebar,
     Log,
+    Changes,
     Detail,
 }
 
-pub struct Toast {
-    pub text: String,
-    pub error: bool,
-    pub at: Instant,
+impl Pane {
+    pub fn title(self) -> &'static str {
+        match self {
+            Pane::Sidebar => "Repository",
+            Pane::Log => "Commits",
+            Pane::Changes => "Changes",
+            Pane::Detail => "Diff",
+        }
+    }
 }
 
-/// A confirmation or input dialog on top of everything else.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Modal {
     Discard(Vec<String>),
@@ -46,49 +63,39 @@ pub enum Modal {
     },
     DeleteBranch(String),
     DropStash(usize),
-    /// Pick a branch to switch to (click current branch in the status bar).
     BranchPicker {
         filter: String,
     },
-    /// Uncommitted changes block checkout; ask how to proceed.
     CheckoutConfirm {
         target: String,
     },
-    /// Create a GitHub repo with gh and push (no origin yet).
     PublishGithub {
         name: String,
         description: String,
         private: bool,
     },
-    /// Yes / no before a command that is hard to undo.
     Confirm {
         title: &'static str,
         body: String,
         button: &'static str,
         cmd: Command,
     },
-    /// One or two text fields that build a command.
     Input {
         kind: InputKind,
         value: String,
         extra: String,
     },
-    /// Soft / mixed / hard reset of the current branch to a commit.
     Reset {
         oid: Oid,
         label: String,
     },
-    /// Stash with options.
     StashOpts {
         message: String,
         keep_index: bool,
         include_untracked: bool,
     },
-    /// Continue / abort / skip the in-progress operation.
     StateMenu,
-    /// Keyboard reference.
     Help,
-    /// Escape in the editor with unsaved changes.
     CloseEditor,
 }
 
@@ -96,19 +103,14 @@ pub enum Modal {
 /// `extra` the optional second one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputKind {
-    /// Tag name, optional annotation message.
     Tag { oid: Oid, label: String },
     RenameBranch { old: String },
-    /// Multiline commit message.
     Reword { oid: Oid, is_root: bool },
-    /// Remote name and URL.
     RemoteAdd,
     RemoteUrl { name: String },
     RemoteRename { old: String },
-    /// Remote branch like `origin/main`.
     SetUpstream { branch: String },
     BranchFromStash { index: usize },
-    /// Pattern for .gitignore.
     Ignore,
 }
 
@@ -127,7 +129,6 @@ impl InputKind {
         }
     }
 
-    /// (first field hint, second field hint or None).
     pub fn hints(&self) -> (&'static str, Option<&'static str>) {
         match self {
             InputKind::Tag { .. } => ("tag name", Some("message (optional, makes an annotated tag)")),
@@ -142,17 +143,11 @@ impl InputKind {
         }
     }
 
-    pub fn multiline(&self) -> bool {
-        matches!(self, InputKind::Reword { .. })
-    }
-
     pub fn valid(&self, value: &str, extra: &str) -> bool {
         let v = value.trim();
         match self {
             InputKind::RemoteAdd => !v.is_empty() && !v.contains(' ') && !extra.trim().is_empty(),
-            InputKind::Reword { .. } | InputKind::Ignore | InputKind::RemoteUrl { .. } => {
-                !v.is_empty()
-            }
+            InputKind::Reword { .. } | InputKind::Ignore | InputKind::RemoteUrl { .. } => !v.is_empty(),
             _ => !v.is_empty() && !v.contains(' '),
         }
     }
@@ -225,13 +220,11 @@ impl LineSel {
     }
 }
 
-/// Whether a commit can be rewritten with a rebase from the current branch:
-/// it sits on the first-parent chain below HEAD with no merge in between.
+/// Whether a commit can be rewritten with a rebase from the current branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RewriteInfo {
     pub is_root: bool,
     pub is_head: bool,
-    /// A plain (non-merge) commit exists right below, for squash / fixup / move down.
     pub has_older: bool,
 }
 
@@ -242,6 +235,160 @@ pub struct NetLog {
     pub open: bool,
 }
 
+pub struct Toast {
+    pub text: String,
+    pub error: bool,
+    pub at: Instant,
+}
+
+/// A right-click menu: where it opened and for what.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Menu {
+    pub at: Point,
+    pub kind: MenuKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuKind {
+    Commit(usize),
+    Branch(String),
+    RemoteBranch(String),
+    Remote(String),
+    Tag(String),
+    Stash(usize),
+    /// (path, staged, conflicted, untracked)
+    File {
+        path: String,
+        staged: bool,
+        conflicted: bool,
+        untracked: bool,
+    },
+    TreeFile(String),
+    TreeDir(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitAction {
+    NewBranch,
+    Tag,
+    CherryPick,
+    Revert,
+    Reset,
+    CheckoutDetached,
+    Rewrite(TodoAction),
+    Reword,
+    Autosquash,
+    CreateFixup,
+    CopyHash,
+    CopyMessage,
+    OpenBrowser,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HunkAction {
+    Stage,
+    Unstage,
+    Discard,
+}
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    /// A key press no widget consumed.
+    Key(keyboard::Key, keyboard::Modifiers),
+    Nothing,
+    // Panes
+    PaneClicked(pane_grid::Pane),
+    PaneDragged(pane_grid::DragEvent),
+    PaneResized(pane_grid::ResizeEvent),
+    PaneMaximize(pane_grid::Pane),
+    PaneRestore,
+    // Selection
+    SelectRow(Selection),
+    SelectFile(DiffTarget),
+    SidebarSelect(String, Oid),
+    FilterChanged(String),
+    FilterClear,
+    FilterOpen,
+    // Git
+    Run(Command),
+    Refresh,
+    Switch(String),
+    CheckoutDetached(Oid),
+    Discard(Vec<String>),
+    DiscardAll,
+    Ignore(String),
+    Resolve(String, ConflictSide),
+    Commit,
+    CommitAndPush,
+    CommitMsg(text_editor::Action),
+    ToggleAmend(bool),
+    CommitAction(usize, CommitAction),
+    StateAction(StateAction),
+    // Diff
+    DiffSearch(String),
+    DiffSearchOpen,
+    DiffSearchClose,
+    DiffNext(i32),
+    DiffContext(i32),
+    DiffWhitespace,
+    DiffWrap(bool),
+    DiffLineClick { hunk: usize, line: usize, shift: bool },
+    DiffDragTo { hunk: usize, line: usize },
+    DiffHunk(HunkAction, usize),
+    LinesStage,
+    LinesUnstage,
+    LinesDiscard,
+    ClearLineSel,
+    // Dialogs
+    ModalClose,
+    ModalConfirm,
+    ModalValue(String),
+    ModalExtra(String),
+    ModalMultiline(text_editor::Action),
+    ModalCheckbox(bool),
+    ModalCheckbox2(bool),
+    ModalReset(ResetKind),
+    ModalCheckoutStash,
+    ModalCheckoutForce,
+    ModalPick(String),
+    ModalEditorSave,
+    ModalEditorDiscard,
+    OpenBranchPicker,
+    OpenPublish,
+    OpenHelp,
+    OpenStateMenu,
+    OpenStashDialog,
+    OpenNewBranch,
+    // Menus
+    MenuOpen(MenuKind),
+    MenuClose,
+    MenuPick(Box<Message>),
+    Input(InputKind, String, String),
+    Confirm(&'static str, String, &'static str, Command),
+    Modal(Modal),
+    Copy(String),
+    OpenUrl(String),
+    PullRequest(String),
+    // Tree
+    TreeToggle(String),
+    TreeSelect(String),
+    TreeOpen(String),
+    TreeRequest(String),
+    ShowChanges(String),
+    // Editor
+    Edit,
+    EditorAction(text_editor::Action),
+    EditorSave,
+    EditorClose,
+    EditorExternal,
+    EditorPreview,
+    // Misc
+    NetClose,
+    ToggleDebug,
+    Quit,
+    InitRepo,
+}
+
 pub struct App {
     pub theme: Theme,
     pub snapshot: Arc<RepoSnapshot>,
@@ -250,81 +397,75 @@ pub struct App {
     pub focus: Pane,
     pub commit_files: HashMap<Oid, Vec<FileStatus>>,
     pub selected_file: Option<DiffTarget>,
-    pub diff: Option<DiffText>,
+    pub diff: Option<crate::git::repo::DiffText>,
     pub diff_loading: bool,
     pub filter: String,
     pub filter_active: bool,
-    pub filter_focus_requested: bool,
-    /// Visible commit indices after filtering.
     pub filtered: Vec<usize>,
-    pub commit_msg: String,
+    pub commit_msg: text_editor::Content<Renderer>,
     pub amend: bool,
     pub wrap: bool,
     pub toasts: Vec<Toast>,
     pub last_op: Option<String>,
     pub pending: Vec<Command>,
-    pub scroll_to_selection: bool,
+    /// Widget operations (focus requests) for the shell to run.
+    pub ops: Vec<Box<dyn Operation>>,
+    pub scroll_to_selection: Cell<bool>,
     pub frame_ms: f32,
     pub transport: &'static str,
     pub scale: f32,
     pub show_debug: bool,
-    /// Panel visibility (1 / 2 / 3 toggle, hide buttons in each header).
-    /// Plain Tab this frame (the runtime strips it from egui's input).
-    pub tab_pressed: bool,
-    pub show_sidebar: bool,
-    pub show_log: bool,
-    pub show_detail: bool,
     pub sidebar_selected: Option<String>,
     pub modal: Option<Modal>,
+    pub modal_multiline: text_editor::Content<Renderer>,
+    pub menu: Option<Menu>,
+    pub cursor: Point,
+    /// Modifier keys as of the last input event (for shift-click in the diff).
+    pub modifiers: keyboard::Modifiers,
+    /// Text to put on the terminal clipboard after this frame.
+    pub pending_copy: Vec<String>,
     pub net: NetLog,
-    /// Set when the commit box should take keyboard focus this frame.
-    pub focus_commit_msg: bool,
-    /// Last known HEAD message, used when amend is toggled on.
     pub amend_loaded: bool,
-    /// Pending write ops, to disable buttons while one runs.
     pub busy: usize,
-    /// Where the Commit button was laid out last pass (tests click it).
-    pub commit_button_rect: Option<egui::Rect>,
-    pub commit_push_button_rect: Option<egui::Rect>,
-    /// Set when the user clicks Quit or presses `q`.
     pub quit: bool,
-    /// Opened directory is not a git repository yet.
     pub no_repo: bool,
-    /// Path the user opened (may become a repo after init).
     pub repo_path: PathBuf,
-    /// Context lines and whitespace handling, mirrored to the worker.
     pub diff_opts: DiffOpts,
-    /// Search in the diff pane.
     pub diff_search: String,
     pub diff_search_active: bool,
-    pub diff_search_focus: bool,
-    /// Index into the current match list.
     pub diff_match: usize,
-    /// Scroll the diff to the current match on the next frame.
-    pub diff_jump: bool,
-    /// Built-in file editor, shown in place of the diff while open.
-    pub editor: Option<crate::ui::editor::Editor>,
-    /// Opened from the sidebar file tree: the editor takes everything right
-    /// of the sidebar. From the change lists the commit column stays.
-    pub editor_full: bool,
-    /// `--editor` override for Shift+E.
+    pub diff_jump: Cell<bool>,
+    pub editor: Option<Editor>,
     pub editor_cmd: Option<String>,
-    /// `--open`: file for the built-in editor once the first snapshot is in.
     pub open_on_start: Option<String>,
-    /// Sidebar file tree: listing per directory ("" is the root).
-    pub tree: HashMap<String, Vec<crate::git::repo::DirEntry>>,
+    pub tree: HashMap<String, Vec<DirEntry>>,
     pub tree_open: HashSet<String>,
     pub tree_selected: Option<String>,
-    /// Directories with a listing in flight.
     pub tree_requested: HashSet<String>,
-    /// Lines selected in the diff for line-level staging.
     pub line_sel: Option<LineSel>,
-    /// A drag that started on a diff line extends the selection.
-    pub line_drag: bool,
+    pub panes: pane_grid::State<Pane>,
+    /// The pane maximized for a tree-opened editor, restored on close.
+    pub editor_maximized: bool,
 }
 
 impl App {
     pub fn new(theme: Theme, transport: &'static str, scale: f32, repo_path: PathBuf) -> Self {
+        let panes = pane_grid::State::with_configuration(Configuration::Split {
+            axis: Axis::Vertical,
+            ratio: 0.2,
+            a: Box::new(Configuration::Pane(Pane::Sidebar)),
+            b: Box::new(Configuration::Split {
+                axis: Axis::Horizontal,
+                ratio: 0.5,
+                a: Box::new(Configuration::Pane(Pane::Log)),
+                b: Box::new(Configuration::Split {
+                    axis: Axis::Vertical,
+                    ratio: 0.36,
+                    a: Box::new(Configuration::Pane(Pane::Changes)),
+                    b: Box::new(Configuration::Pane(Pane::Detail)),
+                }),
+            }),
+        });
         Self {
             theme,
             snapshot: Arc::new(RepoSnapshot::default()),
@@ -337,47 +478,43 @@ impl App {
             diff_loading: false,
             filter: String::new(),
             filter_active: false,
-            filter_focus_requested: false,
             filtered: Vec::new(),
-            commit_msg: String::new(),
+            commit_msg: text_editor::Content::new(),
             amend: false,
             wrap: false,
             toasts: Vec::new(),
             last_op: None,
             pending: Vec::new(),
-            scroll_to_selection: false,
+            ops: Vec::new(),
+            scroll_to_selection: Cell::new(false),
             frame_ms: 0.0,
             transport,
             scale,
             show_debug: false,
-            tab_pressed: false,
-            show_sidebar: true,
-            show_log: true,
-            show_detail: true,
             sidebar_selected: None,
             modal: None,
+            modal_multiline: text_editor::Content::new(),
+            menu: None,
+            cursor: Point::ORIGIN,
+            modifiers: keyboard::Modifiers::empty(),
+            pending_copy: Vec::new(),
             net: NetLog {
                 label: "",
                 lines: Vec::new(),
                 running: false,
                 open: false,
             },
-            focus_commit_msg: false,
             amend_loaded: false,
             busy: 0,
-            commit_button_rect: None,
-            commit_push_button_rect: None,
             quit: false,
             no_repo: false,
             repo_path,
             diff_opts: DiffOpts::default(),
             diff_search: String::new(),
             diff_search_active: false,
-            diff_search_focus: false,
             diff_match: 0,
-            diff_jump: false,
+            diff_jump: Cell::new(false),
             editor: None,
-            editor_full: false,
             editor_cmd: None,
             open_on_start: None,
             tree: HashMap::new(),
@@ -385,7 +522,8 @@ impl App {
             tree_selected: None,
             tree_requested: HashSet::new(),
             line_sel: None,
-            line_drag: false,
+            panes,
+            editor_maximized: false,
         }
     }
 
@@ -403,10 +541,30 @@ impl App {
         });
     }
 
-    /// Row count in the log including the virtual working tree row.
+    /// Toasts still on screen (drops expired ones).
+    pub fn toasts_active(&mut self) -> bool {
+        self.toasts
+            .retain(|t| t.at.elapsed().as_secs_f32() < if t.error { 8.0 } else { 3.0 });
+        !self.toasts.is_empty()
+    }
+
     pub fn has_worktree_row(&self) -> bool {
         self.snapshot.is_dirty() || self.snapshot.commits.is_empty()
     }
+
+    pub fn commit_message_text(&self) -> String {
+        self.commit_msg.text()
+    }
+
+    fn set_commit_message(&mut self, text: &str) {
+        self.commit_msg = text_editor::Content::with_text(text);
+    }
+
+    pub fn pane_of(&self, kind: Pane) -> Option<pane_grid::Pane> {
+        self.panes.iter().find(|(_, k)| **k == kind).map(|(p, _)| *p)
+    }
+
+    // ---- replies from the worker ----
 
     pub fn apply(&mut self, reply: Reply) {
         match reply {
@@ -424,15 +582,17 @@ impl App {
                 self.rebuild_filter();
                 self.refresh_tree();
                 if first {
-                    self.selection = if self.has_worktree_row() || self.snapshot.commits.is_empty()
-                    {
+                    self.selection = if self.has_worktree_row() || self.snapshot.commits.is_empty() {
                         Selection::WorkingTree
                     } else {
                         Selection::Commit(0)
                     };
                     self.on_selection_changed();
+                    if let Some(path) = self.open_on_start.take() {
+                        self.tree_selected = Some(path.clone());
+                        self.open_editor(path, true);
+                    }
                 } else {
-                    // Keep the selection valid and refresh what it shows.
                     match self.selection {
                         Selection::WorkingTree if !self.has_worktree_row() => {
                             self.selection = Selection::Commit(0);
@@ -447,7 +607,6 @@ impl App {
                             self.on_selection_changed();
                         }
                         Selection::WorkingTree => {
-                            // File list changed: keep the file if still present, else pick first.
                             let still = self
                                 .selected_file
                                 .as_ref()
@@ -510,7 +669,7 @@ impl App {
                 match result {
                     Ok(msg) => {
                         if label == "commit" {
-                            self.commit_msg.clear();
+                            self.set_commit_message("");
                             self.amend = false;
                             self.amend_loaded = false;
                         }
@@ -548,11 +707,8 @@ impl App {
         self.pending.push(cmd);
     }
 
-    pub fn init_repo(&mut self) {
-        self.run(Command::InitRepo);
-    }
+    // ---- selection ----
 
-    /// The file the detail pane currently shows, as (path, staged?).
     pub fn selected_worktree_file(&self) -> Option<(String, bool)> {
         match &self.selected_file {
             Some(DiffTarget::WorkdirUnstaged(p)) => Some((p.clone(), false)),
@@ -560,6 +716,147 @@ impl App {
             _ => None,
         }
     }
+
+    pub fn selected_commit(&self) -> Option<usize> {
+        match self.selection {
+            Selection::Commit(i) if i < self.snapshot.commits.len() => Some(i),
+            _ => None,
+        }
+    }
+
+    fn worktree_has(&self, t: &DiffTarget) -> bool {
+        match t {
+            DiffTarget::WorkdirUnstaged(p) => self
+                .snapshot
+                .unstaged
+                .iter()
+                .chain(self.snapshot.conflicted.iter())
+                .any(|f| &f.path == p),
+            DiffTarget::Staged(p) => self.snapshot.staged.iter().any(|f| &f.path == p),
+            DiffTarget::Commit(..) => false,
+        }
+    }
+
+    pub fn rebuild_filter(&mut self) {
+        let q = self.filter.trim().to_lowercase();
+        self.filtered = if q.is_empty() {
+            (0..self.snapshot.commits.len()).collect()
+        } else {
+            self.snapshot
+                .commits
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| {
+                    c.summary.to_lowercase().contains(&q)
+                        || c.author.to_lowercase().contains(&q)
+                        || c.short.starts_with(&q)
+                })
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let rows = self.log_rows();
+        if !rows.contains(&self.selection) {
+            if let Some(first) = rows.first().copied() {
+                self.select(first);
+                self.scroll_to_selection.set(true);
+            }
+        }
+    }
+
+    pub fn select(&mut self, sel: Selection) {
+        if sel != self.selection {
+            self.selection = sel;
+            self.on_selection_changed();
+        }
+    }
+
+    pub fn on_selection_changed(&mut self) {
+        self.diff = None;
+        self.selected_file = None;
+        match self.selection {
+            Selection::WorkingTree => self.select_first_worktree_file(),
+            Selection::Commit(i) => {
+                if let Some(c) = self.snapshot.commits.get(i) {
+                    let oid = c.oid;
+                    if let Some(files) = self.commit_files.get(&oid) {
+                        let first = files.first().map(|f| DiffTarget::Commit(oid, f.path.clone()));
+                        self.select_file(first);
+                    } else {
+                        self.pending.push(Command::LoadCommitFiles(oid));
+                    }
+                }
+            }
+        }
+    }
+
+    fn select_first_worktree_file(&mut self) {
+        let s = &self.snapshot;
+        let first = s
+            .unstaged
+            .first()
+            .map(|f| DiffTarget::WorkdirUnstaged(f.path.clone()))
+            .or_else(|| s.staged.first().map(|f| DiffTarget::Staged(f.path.clone())))
+            .or_else(|| {
+                s.conflicted
+                    .first()
+                    .map(|f| DiffTarget::WorkdirUnstaged(f.path.clone()))
+            });
+        self.select_file(first);
+    }
+
+    pub fn select_file(&mut self, target: Option<DiffTarget>) {
+        if self.selected_file != target {
+            self.line_sel = None;
+            self.follow_selection_in_editor(target.as_ref());
+        }
+        self.selected_file = target.clone();
+        self.diff = None;
+        if let Some(t) = target {
+            self.diff_loading = true;
+            self.pending.push(Command::LoadDiff(t));
+        } else {
+            self.diff_loading = false;
+        }
+    }
+
+    /// A clean editor switches to the newly selected file; a dirty one stays.
+    fn follow_selection_in_editor(&mut self, target: Option<&DiffTarget>) {
+        let Some(ed) = &self.editor else { return };
+        if ed.dirty() {
+            return;
+        }
+        let Some(t) = target else {
+            self.editor = None;
+            return;
+        };
+        if ed.path == t.path() {
+            return;
+        }
+        let workdir = self.snapshot.path.clone();
+        self.editor = Editor::open(&workdir, t.path()).ok();
+    }
+
+    pub fn log_rows(&self) -> Vec<Selection> {
+        let mut rows = Vec::with_capacity(self.filtered.len() + 1);
+        if self.has_worktree_row() && self.filter.trim().is_empty() {
+            rows.push(Selection::WorkingTree);
+        }
+        rows.extend(self.filtered.iter().map(|i| Selection::Commit(*i)));
+        rows
+    }
+
+    pub fn move_selection(&mut self, delta: i32) {
+        let rows = self.log_rows();
+        if rows.is_empty() {
+            return;
+        }
+        let cur = rows.iter().position(|r| *r == self.selection).unwrap_or(0) as i32;
+        let next = (cur + delta).clamp(0, rows.len() as i32 - 1) as usize;
+        self.select(rows[next]);
+        self.scroll_to_selection.set(true);
+    }
+
+    // ---- staging and commits ----
 
     pub fn stage_selected(&mut self) {
         if let Some((p, false)) = self.selected_worktree_file() {
@@ -573,8 +870,16 @@ impl App {
         }
     }
 
-    pub fn commit_now(&mut self) {
-        let msg = self.commit_msg.trim().to_owned();
+    pub fn toggle_stage_selected(&mut self) {
+        match self.selected_worktree_file() {
+            Some((p, false)) => self.run(Command::Stage(vec![p])),
+            Some((p, true)) => self.run(Command::Unstage(vec![p])),
+            None => {}
+        }
+    }
+
+    fn commit_now(&mut self, push: bool) {
+        let msg = self.commit_message_text().trim().to_owned();
         if msg.is_empty() {
             self.toast("commit message is empty", true);
             return;
@@ -583,37 +888,14 @@ impl App {
             self.toast("nothing staged", true);
             return;
         }
-        self.run(Command::Commit {
-            message: msg,
-            amend: self.amend,
+        let amend = self.amend;
+        self.run(if push {
+            Command::CommitAndPush { message: msg, amend }
+        } else {
+            Command::Commit { message: msg, amend }
         });
     }
 
-    pub fn commit_and_push_now(&mut self) {
-        let msg = self.commit_msg.trim().to_owned();
-        if msg.is_empty() {
-            self.toast("commit message is empty", true);
-            return;
-        }
-        if self.snapshot.staged.is_empty() && !self.amend {
-            self.toast("nothing staged", true);
-            return;
-        }
-        self.run(Command::CommitAndPush {
-            message: msg,
-            amend: self.amend,
-        });
-    }
-
-    /// The selected commit, if the selection is a commit.
-    pub fn selected_commit(&self) -> Option<usize> {
-        match self.selection {
-            Selection::Commit(i) if i < self.snapshot.commits.len() => Some(i),
-            _ => None,
-        }
-    }
-
-    /// Whether commit `idx` can be rewritten by rebasing the current branch.
     pub fn rewrite_info(&self, idx: usize) -> Option<RewriteInfo> {
         let s = &self.snapshot;
         let head = s.head.as_ref()?;
@@ -649,7 +931,6 @@ impl App {
         }
     }
 
-    /// Rebase refuses to start on a dirty tree; say so instead of failing later.
     fn clean_for_rebase(&mut self) -> bool {
         if self.snapshot.state != RepoState::Clean {
             self.toast("finish the current operation first", true);
@@ -678,7 +959,17 @@ impl App {
         if self.busy > 0 {
             return;
         }
+        if matches!(kind, InputKind::Reword { .. }) {
+            self.modal_multiline = text_editor::Content::with_text(&value);
+        }
         self.modal = Some(Modal::Input { kind, value, extra });
+        self.focus_modal_input();
+    }
+
+    fn focus_modal_input(&mut self) {
+        self.ops.push(Box::new(iced_core::widget::operation::focusable::focus(
+            widgets::MODAL_INPUT_ID.clone(),
+        )));
     }
 
     fn commit_label(&self, idx: usize) -> String {
@@ -689,58 +980,94 @@ impl App {
             .unwrap_or_default()
     }
 
-    pub fn commit_new_branch(&mut self, idx: usize) {
-        let Some(c) = self.snapshot.commits.get(idx) else { return };
-        self.modal = Some(Modal::NewBranch {
-            name: String::new(),
-            from: c.oid,
-            from_label: c.short.clone(),
-            checkout: true,
-        });
-    }
-
-    pub fn commit_tag(&mut self, idx: usize) {
-        let Some(c) = self.snapshot.commits.get(idx) else { return };
-        let (oid, label) = (c.oid, self.commit_label(idx));
-        self.input(InputKind::Tag { oid, label }, String::new(), String::new());
-    }
-
-    pub fn commit_cherry_pick(&mut self, idx: usize) {
-        let Some(c) = self.snapshot.commits.get(idx) else { return };
-        let oid = c.oid;
-        let body = format!("Apply {} on top of HEAD as a new commit?", self.commit_label(idx));
-        self.confirm("Cherry-pick", body, "Cherry-pick", Command::CherryPick(oid));
-    }
-
-    pub fn commit_revert(&mut self, idx: usize) {
-        let Some(c) = self.snapshot.commits.get(idx) else { return };
-        let oid = c.oid;
-        let body = format!("Create a commit that undoes {}?", self.commit_label(idx));
-        self.confirm("Revert", body, "Revert", Command::Revert(oid));
-    }
-
-    pub fn commit_reset(&mut self, idx: usize) {
-        let Some(c) = self.snapshot.commits.get(idx) else { return };
-        if self.busy > 0 {
-            return;
+    fn commit_action(&mut self, idx: usize, action: CommitAction) {
+        let Some(c) = self.snapshot.commits.get(idx).cloned() else { return };
+        match action {
+            CommitAction::NewBranch => {
+                self.modal = Some(Modal::NewBranch {
+                    name: String::new(),
+                    from: c.oid,
+                    from_label: c.short.clone(),
+                    checkout: true,
+                });
+                self.focus_modal_input();
+            }
+            CommitAction::Tag => {
+                let label = self.commit_label(idx);
+                self.input(InputKind::Tag { oid: c.oid, label }, String::new(), String::new());
+            }
+            CommitAction::CherryPick => {
+                let body = format!("Apply {} on top of HEAD as a new commit?", self.commit_label(idx));
+                self.confirm("Cherry-pick", body, "Cherry-pick", Command::CherryPick(c.oid));
+            }
+            CommitAction::Revert => {
+                let body = format!("Create a commit that undoes {}?", self.commit_label(idx));
+                self.confirm("Revert", body, "Revert", Command::Revert(c.oid));
+            }
+            CommitAction::Reset => {
+                if self.busy == 0 {
+                    self.modal = Some(Modal::Reset {
+                        oid: c.oid,
+                        label: self.commit_label(idx),
+                    });
+                }
+            }
+            CommitAction::CheckoutDetached => {
+                if self.snapshot.is_dirty() {
+                    self.toast("commit or stash your changes before checking out a commit", true);
+                } else {
+                    self.run(Command::CheckoutDetached(c.oid));
+                }
+            }
+            CommitAction::Rewrite(todo) => self.commit_rewrite(idx, todo),
+            CommitAction::Reword => self.commit_reword(idx),
+            CommitAction::Autosquash => {
+                let Some(info) = self.rewrite_info(idx) else {
+                    self.toast("only commits on the current branch can be autosquashed", true);
+                    return;
+                };
+                if self.clean_for_rebase() {
+                    self.run(Command::Autosquash {
+                        oid: c.oid,
+                        is_root: info.is_root,
+                    });
+                }
+            }
+            CommitAction::CreateFixup => {
+                if self.snapshot.staged.is_empty() {
+                    self.toast("stage the changes for the fixup first", true);
+                    return;
+                }
+                self.run(Command::Commit {
+                    message: format!("fixup! {}", c.summary),
+                    amend: false,
+                });
+            }
+            CommitAction::CopyHash => {
+                self.copy(c.oid.to_string());
+                self.toast(format!("copied {}", c.short), false);
+            }
+            CommitAction::CopyMessage => {
+                let mut msg = c.summary.clone();
+                if !c.body.is_empty() {
+                    msg.push_str("\n\n");
+                    msg.push_str(&c.body);
+                }
+                self.copy(msg);
+                self.toast("copied commit message", false);
+            }
+            CommitAction::OpenBrowser => {
+                let url = self
+                    .web_remote()
+                    .and_then(|r| crate::git::actions::commit_url(r, c.oid));
+                match url {
+                    Some(u) => self.open_url(&u),
+                    None => self.toast("no web remote for this repository", true),
+                }
+            }
         }
-        self.modal = Some(Modal::Reset {
-            oid: c.oid,
-            label: self.commit_label(idx),
-        });
     }
 
-    pub fn commit_checkout_detached(&mut self, idx: usize) {
-        let Some(c) = self.snapshot.commits.get(idx) else { return };
-        let oid = c.oid;
-        if self.snapshot.is_dirty() {
-            self.toast("commit or stash your changes before checking out a commit", true);
-            return;
-        }
-        self.run(Command::CheckoutDetached(oid));
-    }
-
-    /// Drop, squash, fixup, edit or move a commit through a rebase.
     pub fn commit_rewrite(&mut self, idx: usize, action: TodoAction) {
         let Some(info) = self.rewrite_info(idx) else {
             self.toast("only commits on the current branch below HEAD can be rewritten", true);
@@ -758,9 +1085,12 @@ impl App {
             is_root: info.is_root,
         };
         match action {
-            TodoAction::Drop => {
-                self.confirm("Drop commit", format!("Remove {label} from the branch? Later commits are replayed on top."), "Drop", cmd)
-            }
+            TodoAction::Drop => self.confirm(
+                "Drop commit",
+                format!("Remove {label} from the branch? Later commits are replayed on top."),
+                "Drop",
+                cmd,
+            ),
             TodoAction::Squash => self.confirm(
                 "Squash",
                 format!("Squash {label} into the commit below it? Both messages are kept."),
@@ -782,35 +1112,26 @@ impl App {
             self.toast("only commits on the current branch below HEAD can be reworded", true);
             return;
         };
-        if info.is_head {
-            // The HEAD commit needs no rebase: amend keeps everything else.
-            let c = &self.snapshot.commits[idx];
-            let mut msg = c.summary.clone();
-            if !c.body.is_empty() {
-                msg.push_str("\n\n");
-                msg.push_str(&c.body);
-            }
-            self.commit_msg = msg;
-            self.amend = true;
-            self.amend_loaded = true;
-            self.selection = Selection::WorkingTree;
-            self.focus_commit_msg = true;
-            self.focus = Pane::Detail;
-            return;
-        }
-        if !self.clean_for_rebase() {
-            return;
-        }
-        let c = &self.snapshot.commits[idx];
+        let c = self.snapshot.commits[idx].clone();
         let mut msg = c.summary.clone();
         if !c.body.is_empty() {
             msg.push_str("\n\n");
             msg.push_str(&c.body);
         }
-        let oid = c.oid;
+        if info.is_head {
+            self.set_commit_message(&msg);
+            self.amend = true;
+            self.amend_loaded = true;
+            self.selection = Selection::WorkingTree;
+            self.focus_commit_box();
+            return;
+        }
+        if !self.clean_for_rebase() {
+            return;
+        }
         self.input(
             InputKind::Reword {
-                oid,
+                oid: c.oid,
                 is_root: info.is_root,
             },
             msg,
@@ -818,56 +1139,16 @@ impl App {
         );
     }
 
-    /// Squash the `fixup!` / `squash!` commits above `idx` into their targets.
-    pub fn commit_autosquash(&mut self, idx: usize) {
-        let Some(info) = self.rewrite_info(idx) else {
-            self.toast("only commits on the current branch can be autosquashed", true);
-            return;
-        };
-        if !self.clean_for_rebase() {
-            return;
-        }
-        let oid = self.snapshot.commits[idx].oid;
-        self.run(Command::Autosquash {
-            oid,
-            is_root: info.is_root,
-        });
+    fn focus_commit_box(&mut self) {
+        self.ops.push(Box::new(iced_core::widget::operation::focusable::focus(
+            widgets::COMMIT_BOX_ID.clone(),
+        )));
     }
 
-    /// Commit the staged changes as `fixup! <summary of idx>`.
-    pub fn commit_create_fixup(&mut self, idx: usize) {
-        let Some(c) = self.snapshot.commits.get(idx) else { return };
-        if self.snapshot.staged.is_empty() {
-            self.toast("stage the changes for the fixup first", true);
-            return;
-        }
-        let message = format!("fixup! {}", c.summary);
-        self.run(Command::Commit {
-            message,
-            amend: false,
-        });
+    pub fn copy(&mut self, text: String) {
+        self.pending_copy.push(text);
     }
 
-    pub fn commit_copy_hash(&mut self, ctx: &egui::Context, idx: usize) {
-        if let Some(c) = self.snapshot.commits.get(idx) {
-            ctx.copy_text(c.oid.to_string());
-            self.toast(format!("copied {}", c.short), false);
-        }
-    }
-
-    pub fn commit_copy_message(&mut self, ctx: &egui::Context, idx: usize) {
-        if let Some(c) = self.snapshot.commits.get(idx) {
-            let mut msg = c.summary.clone();
-            if !c.body.is_empty() {
-                msg.push_str("\n\n");
-                msg.push_str(&c.body);
-            }
-            ctx.copy_text(msg);
-            self.toast("copied commit message", false);
-        }
-    }
-
-    /// URL of the first remote's web host, origin preferred.
     pub fn web_remote(&self) -> Option<&str> {
         let s = &self.snapshot;
         s.remote_urls
@@ -877,33 +1158,8 @@ impl App {
             .map(|(_, u)| u.as_str())
     }
 
-    pub fn commit_open_in_browser(&mut self, idx: usize) {
-        let Some(c) = self.snapshot.commits.get(idx) else { return };
-        let url = self
-            .web_remote()
-            .and_then(|r| crate::git::actions::commit_url(r, c.oid));
-        match url {
-            Some(u) => self.open_url(&u),
-            None => self.toast("no web remote for this repository", true),
-        }
-    }
-
-    pub fn open_pull_request(&mut self, branch: &str) {
-        let url = self
-            .web_remote()
-            .and_then(|r| crate::git::actions::pull_request_url(r, branch));
-        match url {
-            Some(u) => self.open_url(&u),
-            None => self.toast("no web remote for this repository", true),
-        }
-    }
-
     pub fn open_url(&mut self, url: &str) {
-        let opener = if cfg!(target_os = "macos") {
-            "open"
-        } else {
-            "xdg-open"
-        };
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
         match std::process::Command::new(opener)
             .arg(url)
             .stdin(std::process::Stdio::null())
@@ -950,18 +1206,6 @@ impl App {
         );
     }
 
-    pub fn open_diff_search(&mut self) {
-        self.diff_search_active = true;
-        self.diff_search_focus = true;
-        self.focus = Pane::Detail;
-    }
-
-    pub fn close_diff_search(&mut self) {
-        self.diff_search_active = false;
-        self.diff_search.clear();
-        self.diff_match = 0;
-    }
-
     pub fn diff_next_match(&mut self, dir: i32) {
         if self.diff_search.is_empty() {
             return;
@@ -973,10 +1217,9 @@ impl App {
         }
         let cur = self.diff_match as i32;
         self.diff_match = (cur + dir).rem_euclid(n as i32) as usize;
-        self.diff_jump = true;
+        self.diff_jump.set(true);
     }
 
-    /// Selected lines, with the hunk they belong to, when they can be acted on.
     fn line_action_target(&self) -> Option<(String, bool, usize, Vec<usize>)> {
         let sel = self.line_sel?;
         let d = self.diff.as_ref()?;
@@ -997,9 +1240,13 @@ impl App {
         Some((path, unstaged, sel.hunk, lines))
     }
 
-    /// True when a line selection with changes exists in a working tree diff.
     pub fn has_line_selection(&self) -> bool {
         self.line_action_target().is_some()
+    }
+
+    /// (unstaged side?) when a line selection can be acted on.
+    pub fn line_selection_side(&self) -> Option<bool> {
+        self.line_action_target().map(|(_, unstaged, _, _)| unstaged)
     }
 
     pub fn stage_selected_lines(&mut self) -> bool {
@@ -1038,7 +1285,10 @@ impl App {
                 let n = lines.len();
                 self.confirm(
                     "Discard lines",
-                    format!("Throw away {n} changed line{} of {path}? This cannot be undone.", if n == 1 { "" } else { "s" }),
+                    format!(
+                        "Throw away {n} changed line{} of {path}? This cannot be undone.",
+                        if n == 1 { "" } else { "s" }
+                    ),
                     "Discard",
                     Command::DiscardLines {
                         path,
@@ -1049,24 +1299,6 @@ impl App {
                 true
             }
             _ => false,
-        }
-    }
-
-    // ---- working tree ----
-
-    pub fn toggle_stage_selected(&mut self) {
-        match self.selected_worktree_file() {
-            Some((p, false)) => self.run(Command::Stage(vec![p])),
-            Some((p, true)) => self.run(Command::Unstage(vec![p])),
-            None => {}
-        }
-    }
-
-    pub fn discard_selected(&mut self) {
-        if let Some((p, false)) = self.selected_worktree_file() {
-            if self.busy == 0 {
-                self.modal = Some(Modal::Discard(vec![p]));
-            }
         }
     }
 
@@ -1084,26 +1316,6 @@ impl App {
         self.confirm("Discard all changes", body, "Discard everything", Command::DiscardAll);
     }
 
-    pub fn ignore_selected(&mut self) {
-        let Some((p, false)) = self.selected_worktree_file() else { return };
-        let untracked = self
-            .snapshot
-            .unstaged
-            .iter()
-            .any(|f| f.path == p && f.kind == crate::git::repo::FileKind::Untracked);
-        if !untracked {
-            self.toast("only untracked files can be ignored", true);
-            return;
-        }
-        self.input(InputKind::Ignore, format!("/{p}"), String::new());
-    }
-
-    pub fn resolve_selected(&mut self, side: ConflictSide) {
-        if let Some((p, false)) = self.selected_worktree_file() {
-            self.run(Command::Resolve { path: p, side });
-        }
-    }
-
     pub fn state_action(&mut self, action: StateAction) {
         let Some(sub) = self.snapshot.state.git_subcommand() else {
             self.toast("no operation in progress", true);
@@ -1111,7 +1323,10 @@ impl App {
         };
         if action == StateAction::Continue && !self.snapshot.conflicted.is_empty() {
             self.toast(
-                format!("{} conflicted file(s) left, resolve them first", self.snapshot.conflicted.len()),
+                format!(
+                    "{} conflicted file(s) left, resolve them first",
+                    self.snapshot.conflicted.len()
+                ),
                 true,
             );
             return;
@@ -1133,63 +1348,11 @@ impl App {
         }
     }
 
-    pub fn open_state_menu(&mut self) {
-        if self.snapshot.state != RepoState::Clean && self.busy == 0 {
-            self.modal = Some(Modal::StateMenu);
-        }
-    }
-
-    pub fn open_stash_dialog(&mut self) {
-        if self.snapshot.is_dirty() && self.busy == 0 {
-            self.modal = Some(Modal::StashOpts {
-                message: String::new(),
-                keep_index: false,
-                include_untracked: true,
-            });
-        }
-    }
-
-    pub fn open_help(&mut self) {
-        self.modal = Some(Modal::Help);
-    }
-
-    pub fn open_branch_picker(&mut self) {
-        if self.busy > 0 {
-            return;
-        }
-        self.modal = Some(Modal::BranchPicker {
-            filter: String::new(),
-        });
-    }
-
-    pub fn open_publish_github(&mut self) {
-        if self.busy > 0 || branch_picker::has_origin(&self.snapshot) {
-            return;
-        }
-        self.modal = Some(Modal::PublishGithub {
-            name: branch_picker::default_github_repo_name(&self.snapshot),
-            description: String::new(),
-            private: false,
-        });
-    }
-
-    fn valid_github_repo_name(name: &str) -> bool {
-        let n = name.trim();
-        !n.is_empty()
-            && !n.contains(' ')
-            && n.chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '/' || c == '.')
-    }
-
     pub fn try_switch_branch(&mut self, target: String) {
         if self.busy > 0 {
             return;
         }
-        let current = self
-            .snapshot
-            .head
-            .as_ref()
-            .and_then(|h| h.branch_name.clone());
+        let current = self.snapshot.head.as_ref().and_then(|h| h.branch_name.clone());
         if current.as_deref() == Some(target.as_str()) {
             self.modal = None;
             return;
@@ -1212,165 +1375,36 @@ impl App {
         format!("WIP on {cur} before switching to {target}")
     }
 
-    fn worktree_has(&self, t: &DiffTarget) -> bool {
-        match t {
-            DiffTarget::WorkdirUnstaged(p) => self
-                .snapshot
-                .unstaged
-                .iter()
-                .chain(self.snapshot.conflicted.iter())
-                .any(|f| &f.path == p),
-            DiffTarget::Staged(p) => self.snapshot.staged.iter().any(|f| &f.path == p),
-            DiffTarget::Commit(..) => false,
-        }
+    pub fn has_origin(&self) -> bool {
+        self.snapshot.remotes.iter().any(|r| r == "origin")
     }
 
-    pub fn rebuild_filter(&mut self) {
-        let q = self.filter.trim().to_lowercase();
-        self.filtered = if q.is_empty() {
-            (0..self.snapshot.commits.len()).collect()
-        } else {
-            self.snapshot
-                .commits
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| {
-                    c.summary.to_lowercase().contains(&q)
-                        || c.author.to_lowercase().contains(&q)
-                        || c.short.starts_with(&q)
-                })
-                .map(|(i, _)| i)
-                .collect()
-        };
-        // Keep the selection on a visible row: a commit the filter hid, or
-        // the working tree row while a filter is active, would otherwise make
-        // the next j / k jump to the top.
-        let rows = self.log_rows();
-        if !rows.contains(&self.selection) {
-            if let Some(first) = rows.first().copied() {
-                self.select(first);
-                self.scroll_to_selection = true;
-            }
-        }
+    fn default_github_repo_name(&self) -> String {
+        self.snapshot
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("repository")
+            .to_owned()
     }
 
-    pub fn select(&mut self, sel: Selection) {
-        if sel != self.selection {
-            self.selection = sel;
-            self.on_selection_changed();
-        }
+    fn valid_github_repo_name(name: &str) -> bool {
+        let n = name.trim();
+        !n.is_empty()
+            && !n.contains(' ')
+            && n
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '/' || c == '.')
     }
 
-    pub fn on_selection_changed(&mut self) {
-        self.diff = None;
-        self.selected_file = None;
-        match self.selection {
-            Selection::WorkingTree => self.select_first_worktree_file(),
-            Selection::Commit(i) => {
-                if let Some(c) = self.snapshot.commits.get(i) {
-                    let oid = c.oid;
-                    if let Some(files) = self.commit_files.get(&oid) {
-                        let first = files
-                            .first()
-                            .map(|f| DiffTarget::Commit(oid, f.path.clone()));
-                        self.select_file(first);
-                    } else {
-                        self.pending.push(Command::LoadCommitFiles(oid));
-                    }
-                }
-            }
-        }
-    }
+    // ---- file tree ----
 
-    fn select_first_worktree_file(&mut self) {
-        let s = &self.snapshot;
-        let first = s
-            .unstaged
-            .first()
-            .map(|f| DiffTarget::WorkdirUnstaged(f.path.clone()))
-            .or_else(|| s.staged.first().map(|f| DiffTarget::Staged(f.path.clone())))
-            .or_else(|| {
-                s.conflicted
-                    .first()
-                    .map(|f| DiffTarget::WorkdirUnstaged(f.path.clone()))
-            });
-        self.select_file(first);
-    }
-
-    pub fn select_file(&mut self, target: Option<DiffTarget>) {
-        if self.selected_file != target {
-            self.line_sel = None;
-            self.follow_selection_in_editor(target.as_ref());
-        }
-        self.selected_file = target.clone();
-        self.diff = None;
-        if let Some(t) = target {
-            self.diff_loading = true;
-            self.pending.push(Command::LoadDiff(t));
-        } else {
-            self.diff_loading = false;
-        }
-    }
-
-    pub fn panel_shown(&self, pane: Pane) -> bool {
-        match pane {
-            Pane::Sidebar => self.show_sidebar,
-            Pane::Log => self.show_log,
-            Pane::Detail => self.show_detail,
-        }
-    }
-
-    /// Hide or show a panel; focus moves off a hidden panel.
-    pub fn toggle_panel(&mut self, pane: Pane) {
-        let flag = match pane {
-            Pane::Sidebar => &mut self.show_sidebar,
-            Pane::Log => &mut self.show_log,
-            Pane::Detail => &mut self.show_detail,
-        };
-        *flag = !*flag;
-        if !*flag && self.focus == pane {
-            self.cycle_focus();
-        }
-    }
-
-    /// Tab: next visible pane (sidebar, log, detail), or stay put when the
-    /// others are hidden.
-    pub fn cycle_focus(&mut self) {
-        let order = [Pane::Sidebar, Pane::Log, Pane::Detail];
-        let start = order.iter().position(|p| *p == self.focus).unwrap_or(0);
-        for step in 1..=3 {
-            let next = order[(start + step) % 3];
-            if self.panel_shown(next) {
-                self.focus = next;
-                return;
-            }
-        }
-    }
-
-    /// Small header button that hides `pane`.
-    pub fn hide_button(&mut self, ui: &mut egui::Ui, pane: Pane) {
-        let (tip, key) = match pane {
-            Pane::Sidebar => ("Hide the sidebar", "1"),
-            Pane::Log => ("Hide the commit list", "2"),
-            Pane::Detail => ("Hide the changes and diff pane", "3"),
-        };
-        if ui
-            .add(egui::Button::new("hide").small())
-            .on_hover_text(format!("{tip} ({key} toggles)"))
-            .clicked()
-        {
-            self.toggle_panel(pane);
-        }
-    }
-
-    /// Ask the worker for a directory listing once.
     pub fn request_dir(&mut self, dir: &str) {
         if self.tree_requested.insert(dir.to_owned()) {
             self.pending.push(Command::ListDir(dir.to_owned()));
         }
     }
 
-    /// Re-list the root and every expanded directory after a snapshot.
     fn refresh_tree(&mut self) {
         self.tree_requested.clear();
         let mut dirs: Vec<String> = self.tree_open.iter().cloned().collect();
@@ -1390,9 +1424,9 @@ impl App {
         }
     }
 
-    /// The file the file commands (e, Shift+E, Shift+O) act on: the open
-    /// editor's file, else the tree selection while the sidebar has focus,
-    /// else the file selected in the change lists.
+    /// The file `e`, `Shift+E` and `Shift+O` act on: the open editor's file,
+    /// then the tree selection while the sidebar has focus, then the file
+    /// selected in the change lists.
     pub fn current_file(&self) -> Option<String> {
         if let Some(ed) = &self.editor {
             return Some(ed.path.clone());
@@ -1405,1322 +1439,890 @@ impl App {
         self.selected_file.as_ref().map(|t| t.path().to_owned())
     }
 
-    /// A clean editor switches to the newly selected file; a dirty one stays.
-    fn follow_selection_in_editor(&mut self, target: Option<&DiffTarget>) {
-        let Some(ed) = &self.editor else { return };
-        if ed.dirty() {
-            return;
-        }
-        let Some(t) = target else {
-            self.editor = None;
-            return;
-        };
-        if ed.path == t.path() {
-            return;
+    // ---- editor ----
+
+    pub fn open_editor(&mut self, path: String, full: bool) {
+        if let Some(ed) = &self.editor {
+            if ed.path == path {
+                return;
+            }
+            if ed.dirty() {
+                self.toast(format!("{} has unsaved changes: Ctrl+S or Escape first", ed.path), true);
+                return;
+            }
         }
         let workdir = self.snapshot.path.clone();
-        self.editor = crate::ui::editor::Editor::open(&workdir, t.path()).ok().map(|mut e| {
-            e.quiet();
-            e
-        });
-        self.editor_full = false;
+        match Editor::open(&workdir, &path) {
+            Ok(ed) => {
+                self.editor = Some(ed);
+                self.focus = Pane::Detail;
+                if full {
+                    if let Some(p) = self.pane_of(Pane::Detail) {
+                        self.panes.maximize(p);
+                        self.editor_maximized = true;
+                    }
+                }
+                self.ops.push(Box::new(iced_core::widget::operation::focusable::focus(
+                    widgets::EDITOR_ID.clone(),
+                )));
+            }
+            Err(e) => self.toast(e, true),
+        }
     }
 
-    /// Move the log selection by `delta` rows (keyboard navigation).
-    pub fn move_selection(&mut self, delta: i32) {
-        let rows = self.log_rows();
-        if rows.is_empty() {
+    pub fn save_editor(&mut self) {
+        let Some(ed) = self.editor.as_mut() else { return };
+        match ed.save() {
+            Ok(()) => {
+                let p = ed.path.clone();
+                self.toast(format!("saved {p}"), false);
+                self.pending.push(Command::Refresh);
+            }
+            Err(e) => self.toast(format!("cannot save: {e}"), true),
+        }
+    }
+
+    pub fn close_editor(&mut self) {
+        let Some(ed) = &self.editor else { return };
+        if ed.dirty() {
+            self.modal = Some(Modal::CloseEditor);
+        } else {
+            self.editor = None;
+            self.restore_after_editor();
+        }
+    }
+
+    fn restore_after_editor(&mut self) {
+        if self.editor_maximized {
+            self.panes.restore();
+            self.editor_maximized = false;
+        }
+    }
+
+    pub fn external_editor(&self) -> String {
+        let explicit = self.editor_cmd.as_deref().or(self.snapshot.editor.as_deref());
+        crate::split::editor_command(explicit)
+    }
+
+    pub fn edit_selected_external(&mut self) {
+        let Some(path) = self.current_file() else {
+            self.toast("select a file first", true);
+            return;
+        };
+        let workdir = self.snapshot.path.clone();
+        if !workdir.join(&path).exists() {
+            self.toast(format!("{path} is not in the working tree"), true);
             return;
         }
-        let cur = rows.iter().position(|r| *r == self.selection).unwrap_or(0) as i32;
-        let next = (cur + delta).clamp(0, rows.len() as i32 - 1) as usize;
-        self.select(rows[next]);
-        self.scroll_to_selection = true;
-    }
-
-    /// The rows the log shows, in order.
-    pub fn log_rows(&self) -> Vec<Selection> {
-        let mut rows = Vec::with_capacity(self.filtered.len() + 1);
-        if self.has_worktree_row() && self.filter.trim().is_empty() {
-            rows.push(Selection::WorkingTree);
+        let editor = self.external_editor();
+        match crate::split::open_editor(&workdir, &path, &editor) {
+            Ok(()) => self.toast(format!("opened {path} in {editor}"), false),
+            Err(e) => self.toast(format!("cannot open editor: {e:#}"), true),
         }
-        rows.extend(self.filtered.iter().map(|i| Selection::Commit(*i)));
-        rows
     }
 
-    pub fn handle_keys(&mut self, ctx: &egui::Context) {
-        if ctx.egui_wants_keyboard_input() {
-            // A text field owns the keyboard. Ctrl+Enter commits from the
-            // commit box, Ctrl+Shift+Enter commits and pushes, Escape leaves.
-            if self.editor_focused() && self.modal.is_none() {
-                if ctx.input(|i| ctrl(i, egui::Key::S)) {
-                    self.save_editor();
+    pub fn preview_selected_in_cmux(&mut self) {
+        let Some(path) = self.current_file() else {
+            self.toast("select a file first", true);
+            return;
+        };
+        let workdir = self.snapshot.path.clone();
+        if !workdir.join(&path).exists() {
+            self.toast(format!("{path} is not in the working tree"), true);
+            return;
+        }
+        match crate::split::cmux_open(&workdir, &path) {
+            Ok(()) => self.toast(format!("opened {path} in cmux"), false),
+            Err(e) => self.toast(format!("{e:#}"), true),
+        }
+    }
+
+    // ---- update ----
+
+    pub fn update(&mut self, msg: Message) {
+        match msg {
+            Message::Nothing => {}
+            Message::Key(key, mods) => self.key(key, mods),
+            Message::PaneClicked(p) => {
+                if let Some(kind) = self.panes.get(p) {
+                    self.focus = *kind;
                 }
-                if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    ctx.memory_mut(|m| m.request_focus(egui::Id::NULL));
-                    self.close_editor();
-                    if self.modal.is_some() {
-                        // The dialog must not see the same Escape and close.
-                        ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            }
+            Message::PaneDragged(pane_grid::DragEvent::Dropped { pane, target }) => {
+                self.panes.drop(pane, target);
+            }
+            Message::PaneDragged(_) => {}
+            Message::PaneResized(pane_grid::ResizeEvent { split, ratio }) => {
+                self.panes.resize(split, ratio);
+            }
+            Message::PaneMaximize(p) => self.panes.maximize(p),
+            Message::PaneRestore => {
+                self.panes.restore();
+                self.editor_maximized = false;
+            }
+            Message::SelectRow(sel) => {
+                self.focus = Pane::Log;
+                self.select(sel);
+            }
+            Message::SelectFile(t) => {
+                self.focus = Pane::Changes;
+                if let Some(ed) = &self.editor {
+                    if !ed.dirty() && ed.path != t.path() {
+                        // Fall through: follow_selection_in_editor handles it.
+                    }
+                }
+                self.select_file(Some(t));
+            }
+            Message::SidebarSelect(name, oid) => {
+                self.sidebar_selected = Some(name);
+                self.focus = Pane::Sidebar;
+                if let Some(idx) = self.snapshot.commits.iter().position(|c| c.oid == oid) {
+                    self.select(Selection::Commit(idx));
+                    self.scroll_to_selection.set(true);
+                } else {
+                    self.toast(
+                        format!("{} is not in the loaded log", crate::git::repo::short_id(oid)),
+                        false,
+                    );
+                }
+            }
+            Message::FilterChanged(s) => {
+                self.filter = s;
+                self.filter_active = true;
+                self.rebuild_filter();
+            }
+            Message::FilterClear => {
+                self.filter.clear();
+                self.filter_active = false;
+                self.rebuild_filter();
+            }
+            Message::FilterOpen => {
+                self.filter_active = true;
+                self.focus = Pane::Log;
+                self.ops.push(Box::new(iced_core::widget::operation::focusable::focus(
+                    widgets::FILTER_ID.clone(),
+                )));
+            }
+            Message::Run(cmd) => self.run(cmd),
+            Message::Refresh => {
+                self.pending.push(Command::Refresh);
+                self.toast("refreshing", false);
+            }
+            Message::Switch(name) => self.try_switch_branch(name),
+            Message::CheckoutDetached(oid) => {
+                if self.snapshot.is_dirty() {
+                    self.toast("commit or stash your changes before checking out a commit", true);
+                } else {
+                    self.run(Command::CheckoutDetached(oid));
+                }
+            }
+            Message::Discard(paths) => {
+                if self.busy == 0 {
+                    self.modal = Some(Modal::Discard(paths));
+                }
+            }
+            Message::DiscardAll => self.discard_all(),
+            Message::Ignore(p) => self.input(InputKind::Ignore, format!("/{p}"), String::new()),
+            Message::Resolve(path, side) => self.run(Command::Resolve { path, side }),
+            Message::Commit => self.commit_now(false),
+            Message::CommitAndPush => self.commit_now(true),
+            Message::CommitMsg(action) => self.commit_msg.perform(action),
+            Message::ToggleAmend(on) => {
+                self.amend = on;
+                if on && !self.amend_loaded {
+                    if let Some(m) = self.snapshot.head_message.clone() {
+                        if self.commit_message_text().trim().is_empty() {
+                            self.set_commit_message(&m);
+                        }
+                    }
+                    self.amend_loaded = true;
+                }
+            }
+            Message::CommitAction(idx, action) => self.commit_action(idx, action),
+            Message::StateAction(a) => self.state_action(a),
+            Message::DiffSearch(s) => {
+                self.diff_search = s;
+                self.diff_match = 0;
+                self.diff_jump.set(true);
+            }
+            Message::DiffSearchOpen => {
+                self.diff_search_active = true;
+                self.focus = Pane::Detail;
+                self.ops.push(Box::new(iced_core::widget::operation::focusable::focus(
+                    widgets::DIFF_SEARCH_ID.clone(),
+                )));
+            }
+            Message::DiffSearchClose => {
+                self.diff_search_active = false;
+                self.diff_search.clear();
+                self.diff_match = 0;
+            }
+            Message::DiffNext(dir) => self.diff_next_match(dir),
+            Message::DiffContext(d) => self.change_diff_context(d),
+            Message::DiffWhitespace => self.toggle_whitespace(),
+            Message::DiffWrap(w) => self.wrap = w,
+            Message::DiffLineClick { hunk, line, shift } => {
+                self.focus = Pane::Detail;
+                match self.line_sel {
+                    Some(sel) if shift && sel.hunk == hunk => {
+                        self.line_sel = Some(LineSel {
+                            hunk,
+                            anchor: sel.anchor,
+                            end: line,
+                        });
+                    }
+                    Some(sel) if !shift && sel.hunk == hunk && sel.anchor == line && sel.end == line => {
+                        self.line_sel = None;
+                    }
+                    _ => {
+                        self.line_sel = Some(LineSel {
+                            hunk,
+                            anchor: line,
+                            end: line,
+                        });
+                    }
+                }
+            }
+            Message::DiffDragTo { hunk, line } => {
+                if let Some(sel) = self.line_sel {
+                    if sel.hunk == hunk {
+                        self.line_sel = Some(LineSel { end: line, ..sel });
+                    }
+                }
+            }
+            Message::DiffHunk(action, hunk_index) => {
+                let Some(d) = &self.diff else { return };
+                let path = d.target.path().to_owned();
+                match action {
+                    HunkAction::Stage => self.run(Command::StageHunk { path, hunk_index }),
+                    HunkAction::Unstage => self.run(Command::UnstageHunk { path, hunk_index }),
+                    HunkAction::Discard => self.confirm(
+                        "Discard hunk",
+                        format!("Throw away this hunk of {path}? This cannot be undone."),
+                        "Discard",
+                        Command::DiscardHunk { path, hunk_index },
+                    ),
+                }
+            }
+            Message::LinesStage => {
+                self.stage_selected_lines();
+            }
+            Message::LinesUnstage => {
+                self.unstage_selected_lines();
+            }
+            Message::LinesDiscard => {
+                self.discard_selected_lines();
+            }
+            Message::ClearLineSel => self.line_sel = None,
+            Message::ModalClose => self.modal = None,
+            Message::ModalConfirm => self.modal_confirm(),
+            Message::ModalValue(v) => self.modal_value(v),
+            Message::ModalExtra(v) => match &mut self.modal {
+                Some(Modal::Input { extra, .. }) => *extra = v,
+                Some(Modal::PublishGithub { description, .. }) => *description = v,
+                _ => {}
+            },
+            Message::ModalMultiline(action) => self.modal_multiline.perform(action),
+            Message::ModalCheckbox(on) => match &mut self.modal {
+                Some(Modal::NewBranch { checkout, .. }) => *checkout = on,
+                Some(Modal::StashOpts { keep_index, .. }) => *keep_index = on,
+                Some(Modal::PublishGithub { private, .. }) => *private = on,
+                _ => {}
+            },
+            Message::ModalCheckbox2(on) => {
+                if let Some(Modal::StashOpts {
+                    include_untracked, ..
+                }) = &mut self.modal
+                {
+                    *include_untracked = on;
+                }
+            }
+            Message::ModalReset(kind) => {
+                if let Some(Modal::Reset { oid, .. }) = self.modal.clone() {
+                    self.modal = None;
+                    self.run(Command::Reset { oid, kind });
+                }
+            }
+            Message::ModalCheckoutStash => {
+                if let Some(Modal::CheckoutConfirm { target }) = self.modal.clone() {
+                    self.modal = None;
+                    let message = self.stash_message_for_switch(&target);
+                    self.run(Command::StashAndCheckout {
+                        branch: target,
+                        message,
+                    });
+                }
+            }
+            Message::ModalCheckoutForce => {
+                if let Some(Modal::CheckoutConfirm { target }) = self.modal.clone() {
+                    self.modal = None;
+                    self.run(Command::ForceCheckout(target));
+                }
+            }
+            Message::ModalPick(name) => self.try_switch_branch(name),
+            Message::ModalEditorSave => {
+                self.save_editor();
+                if self.editor.as_ref().is_some_and(|e| !e.dirty()) {
+                    self.editor = None;
+                    self.restore_after_editor();
+                }
+                self.modal = None;
+            }
+            Message::ModalEditorDiscard => {
+                self.editor = None;
+                self.restore_after_editor();
+                self.modal = None;
+            }
+            Message::OpenBranchPicker => {
+                if self.busy == 0 {
+                    self.modal = Some(Modal::BranchPicker {
+                        filter: String::new(),
+                    });
+                    self.focus_modal_input();
+                }
+            }
+            Message::OpenPublish => {
+                if self.busy == 0 && !self.has_origin() {
+                    self.modal = Some(Modal::PublishGithub {
+                        name: self.default_github_repo_name(),
+                        description: String::new(),
+                        private: false,
+                    });
+                    self.focus_modal_input();
+                }
+            }
+            Message::OpenHelp => self.modal = Some(Modal::Help),
+            Message::OpenStateMenu => {
+                if self.snapshot.state != RepoState::Clean && self.busy == 0 {
+                    self.modal = Some(Modal::StateMenu);
+                }
+            }
+            Message::OpenStashDialog => {
+                if self.snapshot.is_dirty() && self.busy == 0 {
+                    self.modal = Some(Modal::StashOpts {
+                        message: String::new(),
+                        keep_index: false,
+                        include_untracked: true,
+                    });
+                    self.focus_modal_input();
+                }
+            }
+            Message::OpenNewBranch => {
+                let Some(head) = self.snapshot.head.as_ref().and_then(|h| h.oid) else { return };
+                let label = self
+                    .snapshot
+                    .head
+                    .as_ref()
+                    .and_then(|h| h.branch_name.clone())
+                    .unwrap_or_else(|| crate::git::repo::short_id(head));
+                self.modal = Some(Modal::NewBranch {
+                    name: String::new(),
+                    from: head,
+                    from_label: label,
+                    checkout: true,
+                });
+                self.focus_modal_input();
+            }
+            Message::MenuOpen(kind) => {
+                self.menu = Some(Menu {
+                    at: self.cursor,
+                    kind,
+                });
+            }
+            Message::MenuClose => self.menu = None,
+            Message::MenuPick(inner) => {
+                self.menu = None;
+                self.update(*inner);
+            }
+            Message::Input(kind, value, extra) => self.input(kind, value, extra),
+            Message::Confirm(title, body, button, cmd) => self.confirm(title, body, button, cmd),
+            Message::Modal(m) => {
+                if self.busy == 0 {
+                    let wants_input = matches!(m, Modal::NewBranch { .. });
+                    self.modal = Some(m);
+                    if wants_input {
+                        self.focus_modal_input();
+                    }
+                }
+            }
+            Message::Copy(s) => {
+                self.copy(s);
+                self.toast("copied", false);
+            }
+            Message::OpenUrl(u) => self.open_url(&u),
+            Message::PullRequest(branch) => {
+                let url = self
+                    .web_remote()
+                    .and_then(|r| crate::git::actions::pull_request_url(r, &branch));
+                match url {
+                    Some(u) => self.open_url(&u),
+                    None => self.toast("no web remote for this repository", true),
+                }
+            }
+            Message::TreeToggle(d) => {
+                self.tree_selected = Some(d.clone());
+                self.focus = Pane::Sidebar;
+                self.toggle_dir(&d);
+            }
+            Message::TreeSelect(p) => {
+                self.tree_selected = Some(p);
+                self.focus = Pane::Sidebar;
+            }
+            Message::TreeOpen(p) => {
+                self.tree_selected = Some(p.clone());
+                self.focus = Pane::Sidebar;
+                self.open_editor(p, true);
+            }
+            Message::TreeRequest(d) => {
+                self.tree_requested.remove(&d);
+                self.request_dir(&d);
+            }
+            Message::ShowChanges(path) => {
+                self.tree_selected = Some(path.clone());
+                if self.editor.as_ref().is_some_and(|e| !e.dirty()) {
+                    self.editor = None;
+                    self.restore_after_editor();
+                }
+                let target = if self.snapshot.unstaged.iter().any(|f| f.path == path) {
+                    DiffTarget::WorkdirUnstaged(path)
+                } else {
+                    DiffTarget::Staged(path)
+                };
+                self.select(Selection::WorkingTree);
+                self.select_file(Some(target));
+                self.focus = Pane::Detail;
+            }
+            Message::Edit => {
+                let Some(path) = self.current_file() else {
+                    self.toast("select a file first", true);
+                    return;
+                };
+                let from_tree = self.focus == Pane::Sidebar && self.tree_selected.as_deref() == Some(path.as_str());
+                self.open_editor(path, from_tree);
+            }
+            Message::EditorAction(action) => {
+                if let Some(ed) = self.editor.as_mut() {
+                    ed.perform(action);
+                }
+            }
+            Message::EditorSave => self.save_editor(),
+            Message::EditorClose => self.close_editor(),
+            Message::EditorExternal => self.edit_selected_external(),
+            Message::EditorPreview => self.preview_selected_in_cmux(),
+            Message::NetClose => self.net.open = false,
+            Message::ToggleDebug => self.show_debug = !self.show_debug,
+            Message::Quit => self.quit = true,
+            Message::InitRepo => self.run(Command::InitRepo),
+        }
+    }
+
+    fn modal_value(&mut self, v: String) {
+        match &mut self.modal {
+            Some(Modal::Input { value, .. }) => *value = v,
+            Some(Modal::NewBranch { name, .. }) => *name = v,
+            Some(Modal::BranchPicker { filter }) => *filter = v,
+            Some(Modal::PublishGithub { name, .. }) => *name = v,
+            Some(Modal::StashOpts { message, .. }) => *message = v,
+            _ => {}
+        }
+    }
+
+    /// Enter or the primary button of the open dialog.
+    fn modal_confirm(&mut self) {
+        let Some(modal) = self.modal.clone() else { return };
+        match modal {
+            Modal::Discard(paths) => {
+                self.modal = None;
+                self.run(Command::Discard(paths));
+            }
+            Modal::NewBranch {
+                name, from, checkout, ..
+            } => {
+                let n = name.trim().to_owned();
+                if n.is_empty() || n.contains(' ') {
+                    return;
+                }
+                self.modal = None;
+                self.run(Command::CreateBranch {
+                    name: n,
+                    from,
+                    checkout,
+                });
+            }
+            Modal::DeleteBranch(name) => {
+                self.modal = None;
+                self.run(Command::DeleteBranch(name));
+            }
+            Modal::DropStash(i) => {
+                self.modal = None;
+                self.run(Command::StashDrop(i));
+            }
+            Modal::BranchPicker { filter } => {
+                let pick = self
+                    .snapshot
+                    .branches
+                    .iter()
+                    .find(|b| modal::branch_matches(&b.name, &filter))
+                    .map(|b| b.name.clone());
+                if let Some(name) = pick {
+                    self.try_switch_branch(name);
+                }
+            }
+            Modal::CheckoutConfirm { .. } => self.update(Message::ModalCheckoutStash),
+            Modal::PublishGithub {
+                name,
+                description,
+                private,
+            } => {
+                if !Self::valid_github_repo_name(&name) {
+                    return;
+                }
+                self.modal = None;
+                self.run(Command::PublishGithub {
+                    name: name.trim().to_owned(),
+                    description: description.trim().to_owned(),
+                    private,
+                });
+            }
+            Modal::Confirm { cmd, .. } => {
+                self.modal = None;
+                self.run(cmd);
+            }
+            Modal::Input { kind, value, extra } => {
+                let value = if matches!(kind, InputKind::Reword { .. }) {
+                    self.modal_multiline.text()
+                } else {
+                    value
+                };
+                if !kind.valid(&value, &extra) {
+                    return;
+                }
+                self.modal = None;
+                self.run(kind.command(&value, &extra));
+            }
+            Modal::Reset { .. } => self.update(Message::ModalReset(ResetKind::Mixed)),
+            Modal::StashOpts {
+                message,
+                keep_index,
+                include_untracked,
+            } => {
+                self.modal = None;
+                self.run(Command::StashPushOpts {
+                    message: message.trim().to_owned(),
+                    keep_index,
+                    include_untracked,
+                });
+            }
+            Modal::StateMenu => self.state_action(StateAction::Continue),
+            Modal::Help => self.modal = None,
+            Modal::CloseEditor => self.update(Message::ModalEditorSave),
+        }
+    }
+
+    // ---- keyboard ----
+
+    fn key(&mut self, key: keyboard::Key, mods: keyboard::Modifiers) {
+        let ctrl = mods.control();
+        let shift = mods.shift();
+        let plain = !ctrl && !mods.alt() && !mods.logo();
+        let ch = match &key {
+            keyboard::Key::Character(s) => s.as_str(),
+            _ => "",
+        };
+        let named = match &key {
+            keyboard::Key::Named(n) => Some(*n),
+            _ => None,
+        };
+
+        // A dialog owns the keyboard.
+        if self.modal.is_some() {
+            match named {
+                Some(Named::Escape) => self.modal = None,
+                Some(Named::Enter) => self.modal_confirm(),
+                _ => {}
+            }
+            return;
+        }
+        if self.menu.is_some() {
+            if named == Some(Named::Escape) {
+                self.menu = None;
+            }
+            return;
+        }
+        if named == Some(Named::Escape) {
+            if self.editor.is_some() {
+                self.close_editor();
+            } else if self.line_sel.is_some() {
+                self.line_sel = None;
+            } else if self.diff_search_active {
+                self.update(Message::DiffSearchClose);
+            } else if self.filter_active {
+                self.update(Message::FilterClear);
+            }
+            return;
+        }
+        if ctrl {
+            match ch {
+                "c" => self.quit = true,
+                "f" => self.update(Message::DiffSearchOpen),
+                "w" => self.toggle_whitespace(),
+                "d" => self.show_debug = !self.show_debug,
+                "s" => self.save_editor(),
+                _ => {}
+            }
+            if named == Some(Named::Enter) {
+                self.commit_now(shift);
+            }
+            return;
+        }
+        if !plain {
+            return;
+        }
+        let commit = self.selected_commit();
+        let searching = !self.diff_search.is_empty();
+        match named {
+            Some(Named::ArrowDown) => return self.nav(1),
+            Some(Named::ArrowUp) => return self.nav(-1),
+            Some(Named::PageDown) => return self.nav(20),
+            Some(Named::PageUp) => return self.nav(-20),
+            Some(Named::Home) => return self.nav(-1_000_000),
+            Some(Named::End) => return self.nav(1_000_000),
+            Some(Named::Tab) => {
+                self.focus = match self.focus {
+                    Pane::Sidebar => Pane::Log,
+                    Pane::Log => Pane::Changes,
+                    Pane::Changes => Pane::Detail,
+                    Pane::Detail => Pane::Sidebar,
+                };
+                return;
+            }
+            Some(Named::Enter) => {
+                if self.focus == Pane::Sidebar {
+                    if let Some(name) = self.sidebar_selected.clone() {
+                        if self.snapshot.branches.iter().any(|b| b.name == name) {
+                            self.try_switch_branch(name);
+                        }
                     }
                 }
                 return;
             }
-            if ctx.input(|i| ctrl(i, egui::Key::Enter)) && self.modal.is_none() {
-                if ctx.input(|i| i.modifiers.shift) {
-                    self.commit_and_push_now();
-                } else {
-                    self.commit_now();
+            Some(Named::Space) => return self.toggle_stage_selected(),
+            _ => {}
+        }
+        match ch {
+            "?" => self.modal = Some(Modal::Help),
+            "j" => self.nav(1),
+            "k" => self.nav(-1),
+            "/" => self.update(Message::FilterOpen),
+            "s" => {
+                if !self.stage_selected_lines() {
+                    self.stage_selected();
                 }
             }
-            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                ctx.memory_mut(|m| m.request_focus(egui::Id::NULL));
-                if self.filter_active {
-                    self.filter_active = false;
-                    self.filter.clear();
-                    self.rebuild_filter();
-                }
-                if self.diff_search_active && self.diff_search.is_empty() {
-                    self.close_diff_search();
+            "u" => {
+                if !self.unstage_selected_lines() {
+                    self.unstage_selected();
                 }
             }
-            return;
-        }
-        if self.modal.is_some() {
-            // Dialogs handle their own keys.
-            return;
-        }
-        if ctx.input(|i| key_press(i, egui::Key::Questionmark).is_some()) {
-            self.open_help();
-            return;
-        }
-        let (down, up, pgdn, pgup, home, end, slash, esc, tab, r, dbg) = ctx.input(|i| {
-            (
-                plain(i, egui::Key::J) || plain(i, egui::Key::ArrowDown),
-                plain(i, egui::Key::K) || plain(i, egui::Key::ArrowUp),
-                plain(i, egui::Key::PageDown),
-                plain(i, egui::Key::PageUp),
-                plain(i, egui::Key::Home),
-                plain(i, egui::Key::End),
-                key_press(i, egui::Key::Slash).is_some(),
-                plain(i, egui::Key::Escape),
-                plain(i, egui::Key::Tab),
-                plain(i, egui::Key::R),
-                ctrl(i, egui::Key::D),
-            )
-        });
-        let (s_key, u_key, a_key, shift_a, shift_s, c_key, f_key, p_key, shift_p, enter) = ctx.input(|i| {
-            (
-                plain(i, egui::Key::S),
-                plain(i, egui::Key::U),
-                plain(i, egui::Key::A),
-                shifted(i, egui::Key::A),
-                shifted(i, egui::Key::S),
-                plain(i, egui::Key::C),
-                plain(i, egui::Key::F),
-                plain(i, egui::Key::P),
-                shifted(i, egui::Key::P),
-                plain(i, egui::Key::Enter),
-            )
-        });
-        let (space, d_key, shift_d, i_key, n_key, shift_n, t_key, shift_t, shift_c, g_key) =
-            ctx.input(|i| {
-                (
-                    plain(i, egui::Key::Space),
-                    plain(i, egui::Key::D),
-                    shifted(i, egui::Key::D),
-                    plain(i, egui::Key::I),
-                    plain(i, egui::Key::N),
-                    shifted(i, egui::Key::N),
-                    plain(i, egui::Key::T),
-                    shifted(i, egui::Key::T),
-                    shifted(i, egui::Key::C),
-                    plain(i, egui::Key::G),
-                )
-            });
-        let (shift_r, shift_k, shift_j, y_key, o_key, m_key, ctrl_f, ctrl_w, ctx_less, ctx_more, e_key) =
-            ctx.input(|i| {
-                (
-                    shifted(i, egui::Key::R),
-                    shifted(i, egui::Key::K),
-                    shifted(i, egui::Key::J),
-                    plain(i, egui::Key::Y),
-                    plain(i, egui::Key::O),
-                    plain(i, egui::Key::M),
-                    ctrl(i, egui::Key::F),
-                    ctrl(i, egui::Key::W),
-                    key_press(i, egui::Key::OpenCurlyBracket).is_some(),
-                    key_press(i, egui::Key::CloseCurlyBracket).is_some(),
-                    plain(i, egui::Key::E),
-                )
-            });
-        let (shift_e, shift_o) = ctx.input(|i| (shifted(i, egui::Key::E), shifted(i, egui::Key::O)));
-        let commit = self.selected_commit();
-        let searching = !self.diff_search.is_empty();
-        if s_key && !self.stage_selected_lines() {
-            self.stage_selected();
-        }
-        if u_key && !self.unstage_selected_lines() {
-            self.unstage_selected();
-        }
-        if space {
-            self.toggle_stage_selected();
-        }
-        if a_key {
-            self.run(Command::StageAll);
-        }
-        if shift_a {
-            self.run(Command::UnstageAll);
-        }
-        if shift_s {
-            self.open_stash_dialog();
-        }
-        if shift_d {
-            self.discard_all();
-        }
-        if i_key {
-            self.ignore_selected();
-        }
-        if d_key {
-            match commit {
+            "a" => self.run(Command::StageAll),
+            "A" => self.run(Command::UnstageAll),
+            "S" => self.update(Message::OpenStashDialog),
+            "D" => self.discard_all(),
+            "i" => {
+                if let Some((p, false)) = self.selected_worktree_file() {
+                    let untracked = self
+                        .snapshot
+                        .unstaged
+                        .iter()
+                        .any(|f| f.path == p && f.kind == crate::git::repo::FileKind::Untracked);
+                    if untracked {
+                        self.input(InputKind::Ignore, format!("/{p}"), String::new());
+                    } else {
+                        self.toast("only untracked files can be ignored", true);
+                    }
+                }
+            }
+            "d" => match commit {
                 Some(idx) => self.commit_rewrite(idx, TodoAction::Drop),
                 None => {
                     if !self.discard_selected_lines() {
-                        self.discard_selected();
-                    }
-                }
-            }
-        }
-        if n_key {
-            if searching {
-                self.diff_next_match(1);
-            } else if let Some(idx) = commit {
-                self.commit_new_branch(idx);
-            }
-        }
-        if shift_n && searching {
-            self.diff_next_match(-1);
-        }
-        if let Some(idx) = commit {
-            if shift_t {
-                self.commit_tag(idx);
-            }
-            if t_key {
-                self.commit_revert(idx);
-            }
-            if shift_c {
-                self.commit_cherry_pick(idx);
-            }
-            if g_key {
-                self.commit_reset(idx);
-            }
-            if shift_r {
-                self.commit_reword(idx);
-            }
-            if shift_k {
-                self.commit_rewrite(idx, TodoAction::MoveUp);
-            }
-            if shift_j {
-                self.commit_rewrite(idx, TodoAction::MoveDown);
-            }
-            if y_key {
-                self.commit_copy_hash(ctx, idx);
-            }
-            if o_key {
-                self.commit_open_in_browser(idx);
-            }
-        }
-        if m_key {
-            self.open_state_menu();
-        }
-        if e_key {
-            self.edit_selected();
-        }
-        if shift_e {
-            self.edit_selected_external();
-        }
-        if shift_o {
-            self.preview_selected_in_cmux();
-        }
-        if ctrl_f {
-            self.open_diff_search();
-        }
-        if ctrl_w {
-            self.toggle_whitespace();
-        }
-        if ctx_less {
-            self.change_diff_context(-1);
-        }
-        if ctx_more {
-            self.change_diff_context(1);
-        }
-        if c_key {
-            self.focus_commit_msg = true;
-            self.selection = Selection::WorkingTree;
-            self.focus = Pane::Detail;
-        }
-        if f_key {
-            self.run(Command::Fetch);
-        }
-        if p_key {
-            self.run(Command::Pull);
-        }
-        if shift_p {
-            self.run(Command::Push);
-        }
-        if enter && self.focus == Pane::Sidebar {
-            if let Some(name) = self.sidebar_selected.clone() {
-                if self.snapshot.branches.iter().any(|b| b.name == name) {
-                    self.run(Command::Checkout(name));
-                }
-            }
-        }
-        if self.focus == Pane::Log || self.focus == Pane::Sidebar {
-            if down {
-                self.move_selection(1);
-            }
-            if up {
-                self.move_selection(-1);
-            }
-            if pgdn {
-                self.move_selection(20);
-            }
-            if pgup {
-                self.move_selection(-20);
-            }
-            if home {
-                self.move_selection(-1_000_000);
-            }
-            if end {
-                self.move_selection(1_000_000);
-            }
-        }
-        if slash {
-            self.filter_active = true;
-            self.filter_focus_requested = true;
-            self.focus = Pane::Log;
-        }
-        if esc {
-            if self.editor.is_some() {
-                self.close_editor();
-                if self.modal.is_some() {
-                    ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-                }
-            } else if self.line_sel.is_some() {
-                self.line_sel = None;
-            } else if self.diff_search_active {
-                self.close_diff_search();
-            } else if self.filter_active {
-                self.filter_active = false;
-                self.filter.clear();
-                self.rebuild_filter();
-            }
-        }
-        if tab || std::mem::take(&mut self.tab_pressed) {
-            self.cycle_focus();
-        }
-        let (k1, k2, k3) = ctx.input(|i| {
-            (
-                plain(i, egui::Key::Num1),
-                plain(i, egui::Key::Num2),
-                plain(i, egui::Key::Num3),
-            )
-        });
-        if k1 {
-            self.toggle_panel(Pane::Sidebar);
-        }
-        if k2 {
-            self.toggle_panel(Pane::Log);
-        }
-        if k3 {
-            self.toggle_panel(Pane::Detail);
-        }
-        if r {
-            self.pending.push(Command::Refresh);
-            self.toast("refreshing", false);
-        }
-        if dbg {
-            self.show_debug = !self.show_debug;
-        }
-    }
-
-    pub fn ui(&mut self, root: &mut egui::Ui) {
-        if self.have_snapshot {
-            if let Some(path) = self.open_on_start.take() {
-                self.open_editor(path);
-            }
-        }
-        let ctx = root.ctx().clone();
-        if !self.no_repo {
-            self.handle_keys(&ctx);
-        } else {
-            self.handle_keys_no_repo(&ctx);
-        }
-        self.toasts
-            .retain(|t| t.at.elapsed().as_secs_f32() < if t.error { 8.0 } else { 3.0 });
-        if !self.toasts.is_empty() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(500));
-        }
-
-        if self.no_repo {
-            self.show_no_repo(root);
-            self.show_toasts(&ctx);
-            return;
-        }
-
-        let sidebar_w = (root.available_width() * 0.25).clamp(140.0, 220.0);
-        if self.show_sidebar {
-            egui::Panel::left("sidebar")
-                .default_size(sidebar_w)
-                .resizable(true)
-                .show(root, |ui| {
-                    sidebar::show(self, ui);
-                });
-        }
-        egui::Panel::bottom("status")
-            .default_size(28.0)
-            .resizable(false)
-            .show(root, |ui| self.status_bar(ui));
-        if self.net.open {
-            egui::Panel::bottom("netlog")
-                .default_size(140.0)
-                .resizable(true)
-                .show(root, |ui| self.net_log(ui));
-        }
-
-        if self.editor.is_some() {
-            // Editor layout: sidebar, then a column with the commit list
-            // above the file column, then the editor at full height.
-            let col_w = (root.available_width() * 0.38).clamp(240.0, 520.0);
-            // Measured on the root: inside the panel the sizing pass reports
-            // a much smaller height and the file column would come out tiny.
-            let avail_h = root.available_height();
-            if !self.editor_full && (self.show_log || self.show_detail) {
-                egui::Panel::left("editor_column")
-                    .default_size(col_w)
-                    .resizable(true)
-                    .show(root, |ui| {
-                        // In the column's sizing pass the nested bottom panel
-                        // would store a tiny height and stay that way.
-                        let sizing = ui.is_sizing_pass();
-                        match (self.show_log, self.show_detail) {
-                            (true, true) if !sizing => {
-                                egui::Panel::bottom("editor_column_files")
-                                    .default_size(avail_h * 0.5)
-                                    .resizable(true)
-                                    .show(ui, |ui| {
-                                        // The file column lays out hard rects and
-                                        // reports less than it uses; without this the
-                                        // panel shrinks a little every frame.
-                                        ui.set_min_size(ui.available_size());
-                                        changes::show_files(self, ui)
-                                    });
-                                egui::CentralPanel::default().show(ui, |ui| log::show(self, ui));
-                            }
-                            (true, _) => {
-                                egui::CentralPanel::default().show(ui, |ui| log::show(self, ui));
-                            }
-                            _ => {
-                                egui::CentralPanel::default().show(ui, |ui| changes::show_files(self, ui));
-                            }
-                        }
-                    });
-            }
-            egui::CentralPanel::default().show(root, |ui| {
-                editor::show(self, ui);
-            });
-            self.show_toasts(&ctx);
-            if let Some(cmd) = diff::take_pending(self) {
-                self.run(cmd);
-            }
-            self.show_modal(&ctx);
-            return;
-        }
-
-        let avail_h = root.available_height();
-        match (self.show_log, self.show_detail) {
-            (true, true) => {
-                egui::Panel::bottom("detail")
-                    .default_size(avail_h * 0.45)
-                    .resizable(true)
-                    .show(root, |ui| {
-                        changes::show_detail(self, ui);
-                    });
-                egui::CentralPanel::default().show(root, |ui| {
-                    log::show(self, ui);
-                });
-            }
-            (true, false) => {
-                egui::CentralPanel::default().show(root, |ui| {
-                    log::show(self, ui);
-                });
-            }
-            (false, true) => {
-                egui::CentralPanel::default().show(root, |ui| {
-                    changes::show_detail(self, ui);
-                });
-            }
-            (false, false) => {
-                egui::CentralPanel::default().show(root, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(ui.available_height() * 0.4);
-                        ui.weak("All panels hidden. Press 1, 2 or 3, or use the footer buttons.");
-                    });
-                });
-            }
-        }
-
-        self.show_toasts(&ctx);
-        if let Some(cmd) = diff::take_pending(self) {
-            self.run(cmd);
-        }
-        self.show_modal(&ctx);
-    }
-
-    fn show_no_repo(&mut self, root: &mut egui::Ui) {
-        egui::Panel::bottom("status")
-            .default_size(28.0)
-            .resizable(false)
-            .show(root, |ui| self.status_bar_no_repo(ui));
-        egui::CentralPanel::default().show(root, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.add_space(ui.available_height() * 0.28);
-                ui.heading("Not a git repository");
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(self.repo_path.display().to_string()).monospace(),
-                );
-                ui.add_space(16.0);
-                ui.label("Initialize a repository here to start using gitgui.");
-                ui.add_space(12.0);
-                let busy = self.busy > 0;
-                if ui
-                    .add_enabled(!busy, egui::Button::new("Initialize git repository"))
-                    .on_hover_text("Runs git init in this folder")
-                    .clicked()
-                {
-                    self.init_repo();
-                }
-            });
-        });
-    }
-
-    fn status_bar_no_repo(&mut self, ui: &mut egui::Ui) {
-        let repo_path = self.repo_path.clone();
-        row::split(
-            ui,
-            |ui| {
-                toolbar::show(self, ui);
-                ui.separator();
-            },
-            |ui| {
-                let path = repo_path.to_string_lossy();
-                let shown = match std::env::var("HOME") {
-                    Ok(h) if path.starts_with(&h) => format!("~{}", &path[h.len()..]),
-                    _ => path.to_string(),
-                };
-                ui.label(shown.trim_end_matches('/').to_owned());
-                ui.separator();
-                ui.weak("no git repository");
-            },
-        );
-    }
-
-    fn handle_keys_no_repo(&mut self, ctx: &egui::Context) {
-        if ctx.input(|i| plain(i, egui::Key::Q)) {
-            self.request_quit();
-        }
-    }
-
-    fn net_log(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.strong(if self.net.label == "publish" {
-                format!("gh {}", self.net.label)
-            } else {
-                format!("git {}", self.net.label)
-            });
-            if self.net.running {
-                ui.spinner();
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(200));
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("close").clicked() {
-                    self.net.open = false;
-                }
-            });
-        });
-        egui::ScrollArea::vertical()
-            .id_salt("netlog_scroll")
-            .auto_shrink([false, false])
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                for l in &self.net.lines {
-                    ui.monospace(l);
-                }
-            });
-    }
-
-    fn show_modal(&mut self, ctx: &egui::Context) {
-        let Some(modal) = self.modal.clone() else {
-            return;
-        };
-        let mut close = false;
-        let mut cmd: Option<Command> = None;
-        let mut switch_branch: Option<String> = None;
-        let mut open_new_branch = false;
-        let mut open_publish = false;
-        let mut discard_editor = false;
-        let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-        let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
-        // Dim the background and swallow clicks outside the dialog.
-        egui::Area::new(egui::Id::new("modal_dim"))
-            .order(egui::Order::Middle)
-            .fixed_pos(egui::pos2(0.0, 0.0))
-            .show(ctx, |ui| {
-                let rect = ctx.content_rect();
-                ui.allocate_rect(rect, egui::Sense::click());
-                ui.painter()
-                    .rect_filled(rect, 0.0, egui::Color32::from_black_alpha(120));
-            });
-        let title = match &modal {
-            Modal::Discard(_) => "Discard changes",
-            Modal::NewBranch { .. } => "New branch",
-            Modal::DeleteBranch(_) => "Delete branch",
-            Modal::DropStash(_) => "Drop stash",
-            Modal::BranchPicker { .. } => "Switch branch",
-            Modal::CheckoutConfirm { .. } => "Uncommitted changes",
-            Modal::PublishGithub { .. } => "Publish to GitHub",
-            Modal::Confirm { title, .. } => title,
-            Modal::Input { kind, .. } => kind.title(),
-            Modal::Reset { .. } => "Reset current branch",
-            Modal::StashOpts { .. } => "Stash changes",
-            Modal::StateMenu => "Operation in progress",
-            Modal::Help => "Keyboard shortcuts",
-            Modal::CloseEditor => "Unsaved changes",
-        };
-        egui::Window::new(title)
-            .collapsible(false)
-            .resizable(false)
-            .order(egui::Order::Foreground)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                // Never wider than the pane: a narrow split would push the
-                // dialog off the left edge.
-                let want: f32 = match modal {
-                    Modal::BranchPicker { .. } | Modal::Help => 460.0,
-                    _ => 360.0,
-                };
-                let room = (ctx.content_rect().width() - 48.0).max(120.0);
-                ui.set_min_width(want.min(room));
-                match modal {
-                    Modal::Discard(paths) => {
-                        ui.label(format!(
-                            "Throw away working tree changes in {} file{}? This cannot be undone.",
-                            paths.len(),
-                            if paths.len() == 1 { "" } else { "s" }
-                        ));
-                        for p in paths.iter().take(8) {
-                            ui.monospace(p);
-                        }
-                        if paths.len() > 8 {
-                            ui.weak(format!("and {} more", paths.len() - 8));
-                        }
-                        ui.horizontal(|ui| {
-                            if ui.button("Discard").clicked() || enter {
-                                cmd = Some(Command::Discard(paths.clone()));
-                                close = true;
-                            }
-                            if ui.button("Cancel").clicked() || esc {
-                                close = true;
-                            }
-                        });
-                    }
-                    Modal::NewBranch {
-                        mut name,
-                        from,
-                        from_label,
-                        mut checkout,
-                    } => {
-                        ui.label(format!("From {from_label}"));
-                        let resp = ui.add(
-                            egui::TextEdit::singleline(&mut name)
-                                .hint_text("branch name")
-                                .desired_width(f32::INFINITY),
-                        );
-                        if !resp.has_focus() && !ctx.egui_wants_keyboard_input() {
-                            resp.request_focus();
-                        }
-                        ui.checkbox(&mut checkout, "check out after creating");
-                        let valid = !name.trim().is_empty() && !name.contains(' ');
-                        ui.horizontal(|ui| {
-                            if ui.add_enabled(valid, egui::Button::new("Create")).clicked()
-                                || (enter && valid)
-                            {
-                                cmd = Some(Command::CreateBranch {
-                                    name: name.trim().to_owned(),
-                                    from,
-                                    checkout,
-                                });
-                                close = true;
-                            }
-                            if ui.button("Cancel").clicked() || esc {
-                                close = true;
-                            }
-                        });
-                        if !close {
-                            self.modal = Some(Modal::NewBranch {
-                                name,
-                                from,
-                                from_label,
-                                checkout,
-                            });
-                        }
-                    }
-                    Modal::DeleteBranch(name) => {
-                        ui.label(format!("Delete local branch {name}?"));
-                        ui.horizontal(|ui| {
-                            if ui.button("Delete").clicked() || enter {
-                                cmd = Some(Command::DeleteBranch(name.clone()));
-                                close = true;
-                            }
-                            if ui.button("Cancel").clicked() || esc {
-                                close = true;
-                            }
-                        });
-                    }
-                    Modal::DropStash(i) => {
-                        ui.label(format!("Drop stash {i}? This cannot be undone."));
-                        ui.horizontal(|ui| {
-                            if ui.button("Drop").clicked() || enter {
-                                cmd = Some(Command::StashDrop(i));
-                                close = true;
-                            }
-                            if ui.button("Cancel").clicked() || esc {
-                                close = true;
-                            }
-                        });
-                    }
-                    Modal::BranchPicker { mut filter } => {
-                        if !close {
-                            let busy = self.busy > 0;
-                            let snapshot = self.snapshot.clone();
-                            let theme = self.theme.clone();
-                            match branch_picker::show(ui, &snapshot, &theme, &mut filter, busy)
-                            {
-                                Some(branch_picker::BranchPickerAction::Select(name)) => {
-                                    switch_branch = Some(name);
-                                    close = true;
-                                }
-                                Some(branch_picker::BranchPickerAction::CreateNew) => {
-                                    open_new_branch = true;
-                                    close = true;
-                                }
-                                Some(branch_picker::BranchPickerAction::PublishGithub) => {
-                                    open_publish = true;
-                                    close = true;
-                                }
-                                None => {}
-                            }
-                        }
-                        if esc {
-                            close = true;
-                        }
-                        if !close {
-                            self.modal = Some(Modal::BranchPicker { filter });
-                        }
-                    }
-                    Modal::CheckoutConfirm { target } => {
-                        let s = &self.snapshot;
-                        ui.label(format!("Switch to `{target}`?"));
-                        ui.add_space(4.0);
-                        ui.label("Your local changes would be overwritten or must be moved first:");
-                        ui.weak(format!(
-                            "{} unstaged, {} staged, {} conflicted",
-                            s.unstaged.len(),
-                            s.staged.len(),
-                            s.conflicted.len()
-                        ));
-                        ui.add_space(4.0);
-                        let stash_msg = self.stash_message_for_switch(&target);
-                        ui.horizontal(|ui| {
-                            if ui.button("Stash and switch").clicked() || enter {
-                                cmd = Some(Command::StashAndCheckout {
-                                    branch: target.clone(),
-                                    message: stash_msg,
-                                });
-                                close = true;
-                            }
-                            if ui.button("Discard and switch").clicked() {
-                                cmd = Some(Command::ForceCheckout(target.clone()));
-                                close = true;
-                            }
-                            if ui.button("Cancel").clicked() || esc {
-                                close = true;
-                            }
-                        });
-                    }
-                    Modal::PublishGithub {
-                        mut name,
-                        mut description,
-                        mut private,
-                    } => {
-                        ui.label("Create a GitHub repository and push the current branch.");
-                        ui.weak("Uses GitHub CLI (gh). Run gh auth login first.");
-                        ui.add_space(4.0);
-                        ui.label("Repository name");
-                        let name_resp = ui.add(
-                            egui::TextEdit::singleline(&mut name)
-                                .hint_text("my-repo or owner/my-repo")
-                                .desired_width(f32::INFINITY),
-                        );
-                        if !name_resp.has_focus() && !ctx.egui_wants_keyboard_input() {
-                            name_resp.request_focus();
-                        }
-                        ui.label("Description (optional)");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut description)
-                                .hint_text("Short description")
-                                .desired_width(f32::INFINITY),
-                        );
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.radio_value(&mut private, false, "Public");
-                            ui.radio_value(&mut private, true, "Private");
-                        });
-                        let valid = Self::valid_github_repo_name(&name);
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add_enabled(valid, egui::Button::new("Create and push"))
-                                .clicked()
-                                || (enter && valid)
-                            {
-                                cmd = Some(Command::PublishGithub {
-                                    name: name.trim().to_owned(),
-                                    description: description.trim().to_owned(),
-                                    private,
-                                });
-                                close = true;
-                            }
-                            if ui.button("Cancel").clicked() || esc {
-                                close = true;
-                            }
-                        });
-                        if !close {
-                            self.modal = Some(Modal::PublishGithub {
-                                name,
-                                description,
-                                private,
-                            });
-                        }
-                    }
-                    Modal::Confirm {
-                        body,
-                        button,
-                        cmd: action,
-                        ..
-                    } => {
-                        ui.add(egui::Label::new(body).wrap());
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            if ui.button(button).clicked() || enter {
-                                cmd = Some(action.clone());
-                                close = true;
-                            }
-                            if ui.button("Cancel").clicked() || esc {
-                                close = true;
-                            }
-                        });
-                    }
-                    Modal::Input {
-                        kind,
-                        mut value,
-                        mut extra,
-                    } => {
-                        let (hint, hint2) = kind.hints();
-                        if let InputKind::Tag { label, .. } = &kind {
-                            ui.label(format!("At {label}"));
-                        }
-                        let edit = if kind.multiline() {
-                            egui::TextEdit::multiline(&mut value)
-                                .hint_text(hint)
-                                .desired_rows(4)
-                                .desired_width(f32::INFINITY)
-                        } else {
-                            egui::TextEdit::singleline(&mut value)
-                                .hint_text(hint)
-                                .desired_width(f32::INFINITY)
-                        };
-                        let resp = ui.add(edit);
-                        if !resp.has_focus() && !ctx.egui_wants_keyboard_input() {
-                            resp.request_focus();
-                        }
-                        if let Some(h2) = hint2 {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut extra)
-                                    .hint_text(h2)
-                                    .desired_width(f32::INFINITY),
-                            );
-                        }
-                        if matches!(kind, InputKind::Reword { .. }) {
-                            ui.weak("Rewrites history from this commit up to HEAD.");
-                        }
-                        let valid = kind.valid(&value, &extra);
-                        // Enter confirms single-line inputs; multiline needs Ctrl+Enter.
-                        let confirm_key = if kind.multiline() {
-                            ctx.input(|i| ctrl(i, egui::Key::Enter))
-                        } else {
-                            enter
-                        };
-                        ui.horizontal(|ui| {
-                            if ui.add_enabled(valid, egui::Button::new("OK")).clicked()
-                                || (confirm_key && valid)
-                            {
-                                cmd = Some(kind.command(&value, &extra));
-                                close = true;
-                            }
-                            if ui.button("Cancel").clicked() || esc {
-                                close = true;
-                            }
-                        });
-                        if !close {
-                            self.modal = Some(Modal::Input { kind, value, extra });
-                        }
-                    }
-                    Modal::Reset { oid, label } => {
-                        ui.label(format!("Move the current branch to {label}"));
-                        ui.add_space(4.0);
-                        let mut pick = |kind: ResetKind, text: &str, tip: &str| {
-                            if ui.button(text).on_hover_text(tip).clicked() {
-                                cmd = Some(Command::Reset { oid, kind });
-                                close = true;
-                            }
-                        };
-                        pick(
-                            ResetKind::Soft,
-                            "Soft: keep changes staged",
-                            "Index and working tree stay as they are",
-                        );
-                        pick(
-                            ResetKind::Mixed,
-                            "Mixed: keep changes unstaged",
-                            "Index is reset, the working tree stays",
-                        );
-                        pick(
-                            ResetKind::Hard,
-                            "Hard: discard changes",
-                            "Index and working tree are reset. Cannot be undone.",
-                        );
-                        if esc {
-                            close = true;
-                        }
-                    }
-                    Modal::StashOpts {
-                        mut message,
-                        mut keep_index,
-                        mut include_untracked,
-                    } => {
-                        let resp = ui.add(
-                            egui::TextEdit::singleline(&mut message)
-                                .hint_text("stash message (optional)")
-                                .desired_width(f32::INFINITY),
-                        );
-                        if !resp.has_focus() && !ctx.egui_wants_keyboard_input() {
-                            resp.request_focus();
-                        }
-                        ui.checkbox(&mut keep_index, "keep staged changes in the index");
-                        ui.checkbox(&mut include_untracked, "include untracked files");
-                        ui.horizontal(|ui| {
-                            if ui.button("Stash").clicked() || enter {
-                                cmd = Some(Command::StashPushOpts {
-                                    message: message.clone(),
-                                    keep_index,
-                                    include_untracked,
-                                });
-                                close = true;
-                            }
-                            if ui.button("Cancel").clicked() || esc {
-                                close = true;
-                            }
-                        });
-                        if !close {
-                            self.modal = Some(Modal::StashOpts {
-                                message,
-                                keep_index,
-                                include_untracked,
-                            });
-                        }
-                    }
-                    Modal::StateMenu => {
-                        let s = &self.snapshot;
-                        let what = s.state.label();
-                        let progress = s
-                            .rebase_progress
-                            .map(|(d, t)| format!(" ({d} of {t})"))
-                            .unwrap_or_default();
-                        ui.label(format!("A {what} is in progress{progress}."));
-                        if !s.conflicted.is_empty() {
-                            ui.colored_label(
-                                self.theme.error,
-                                format!("{} conflicted file(s) to resolve", s.conflicted.len()),
-                            );
-                        }
-                        ui.add_space(4.0);
-                        let mut action = None;
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add_enabled(s.conflicted.is_empty(), egui::Button::new("Continue"))
-                                .clicked()
-                            {
-                                action = Some(StateAction::Continue);
-                            }
-                            if s.state != RepoState::Merge && ui.button("Skip this commit").clicked() {
-                                action = Some(StateAction::Skip);
-                            }
-                            if ui.button("Abort").clicked() {
-                                action = Some(StateAction::Abort);
-                            }
-                            if ui.button("Cancel").clicked() || esc {
-                                close = true;
-                            }
-                        });
-                        if let Some(a) = action {
-                            close = true;
-                            self.modal = None;
-                            self.state_action(a);
-                            if self.modal.is_some() {
-                                // state_action opened a confirmation; keep it.
-                                return;
+                        if let Some((p, false)) = self.selected_worktree_file() {
+                            if self.busy == 0 {
+                                self.modal = Some(Modal::Discard(vec![p]));
                             }
                         }
                     }
-                    Modal::Help => {
-                        help::show(ui);
-                        if esc {
-                            close = true;
-                        }
-                    }
-                    Modal::CloseEditor => {
-                        let path = self.editor.as_ref().map(|e| e.path.clone()).unwrap_or_default();
-                        ui.add(egui::Label::new(format!("{path} has unsaved changes.")).wrap());
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Save and close").on_hover_text("Enter").clicked() || enter {
-                                self.save_editor();
-                                discard_editor = !self.editor.as_ref().is_some_and(|e| e.dirty());
-                                close = true;
-                            }
-                            if ui.button("Discard changes").clicked() {
-                                discard_editor = true;
-                                close = true;
-                            }
-                            if ui.button("Cancel").clicked() || esc {
-                                close = true;
-                            }
-                        });
-                    }
-                }
-                if !close {
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                if ui.button("Close").on_hover_text("Escape").clicked() {
-                                    close = true;
-                                }
-                            },
-                        );
-                    });
-                }
-            });
-        if let Some(c) = cmd {
-            self.run(c);
-        }
-        if discard_editor {
-            self.editor = None;
-        }
-        if let Some(target) = switch_branch {
-            self.try_switch_branch(target);
-            return;
-        }
-        if open_new_branch {
-            let s = &self.snapshot;
-            let from = s
-                .head
-                .as_ref()
-                .and_then(|h| h.oid)
-                .or_else(|| s.commits.first().map(|c| c.oid))
-                .unwrap_or(git2::Oid::ZERO_SHA1.to_owned());
-            let from_label = s
-                .head
-                .as_ref()
-                .and_then(|h| h.branch_name.clone())
-                .unwrap_or_else(|| "HEAD".into());
-            self.modal = Some(Modal::NewBranch {
-                name: String::new(),
-                from,
-                from_label,
-                checkout: true,
-            });
-            return;
-        }
-        if open_publish {
-            self.open_publish_github();
-            return;
-        }
-        if close {
-            self.modal = None;
-            ctx.memory_mut(|m| m.request_focus(egui::Id::NULL));
-        }
-    }
-
-    fn status_bar(&mut self, ui: &mut egui::Ui) {
-        let open_picker = std::cell::Cell::new(false);
-        let state_action: std::cell::Cell<Option<StateAction>> = std::cell::Cell::new(None);
-        let open_state = std::cell::Cell::new(false);
-        let error_color = self.theme.error;
-        let snapshot = self.snapshot.clone();
-        let busy = self.busy;
-        let modal_open = self.modal.is_some();
-        let show_debug = self.show_debug;
-        let debug = format!("{:.1} ms {} x{}", self.frame_ms, self.transport, self.scale);
-        let last_op = self.last_op.clone();
-        // Digits only below 900 pt so the branch and counts keep their room.
-        let compact = ui.available_width() < 900.0;
-        row::split(
-            ui,
-            |ui| {
-                toolbar::show(self, ui);
-                ui.separator();
-                // Panel toggles, rightmost after the toolbar: detail, log,
-                // sidebar in right-to-left order so they read 1 2 3.
-                for (pane, label, short, tip) in [
-                    (Pane::Detail, "detail", "3", "Changes and diff pane (3)"),
-                    (Pane::Log, "commits", "2", "Commit list (2)"),
-                    (Pane::Sidebar, "sidebar", "1", "Sidebar (1)"),
-                ] {
-                    let shown = self.panel_shown(pane);
-                    let text = if compact { short } else { label };
-                    if ui
-                        .add(egui::Button::new(text).small().selected(shown))
-                        .on_hover_text(tip)
-                        .clicked()
-                    {
-                        self.toggle_panel(pane);
-                    }
-                }
-                if show_debug {
-                    ui.separator();
-                    ui.weak(debug);
-                }
-                ui.separator();
-            },
-            |ui| {
-                let s = &snapshot;
-                let can_pick_branch = busy == 0 && !modal_open;
-                let counts = format!("{} unstaged, {} staged", s.unstaged.len(), s.staged.len());
-                let (name, ahead_behind) = match &s.head {
-                    Some(h) => {
-                        let name = h.branch_name.clone().unwrap_or_else(|| {
-                            h.oid
-                                .map(|o| format!("detached {}", crate::git::repo::short_id(o)))
-                                .unwrap_or_else(|| "no HEAD".into())
-                        });
-                        let ab = s
-                            .branches
-                            .iter()
-                            .find(|b| b.is_head)
-                            .filter(|b| b.ahead > 0 || b.behind > 0)
-                            .map(|b| match (b.ahead, b.behind) {
-                                // The bundled fonts have no arrow glyphs.
-                                (a, 0) => format!("{a} ahead"),
-                                (0, b) => format!("{b} behind"),
-                                (a, b) => format!("{a} ahead, {b} behind"),
-                            });
-                        (Some(name), ab)
-                    }
-                    None => (None, None),
-                };
-                // The path is the least important item: give it only what the
-                // branch and the counts leave over, so those two stay visible.
-                let font = egui::TextStyle::Body.resolve(ui.style());
-                let measure = |t: &str| {
-                    ui.painter()
-                        .layout_no_wrap(t.to_owned(), font.clone(), egui::Color32::WHITE)
-                        .size()
-                        .x
-                };
-                let spacing = ui.spacing().item_spacing.x;
-                let mut reserved = measure(name.as_deref().unwrap_or("loading")) + 16.0 + spacing * 4.0 + 8.0;
-                reserved += measure(&counts) + spacing * 2.0 + 8.0;
-                if let Some(ab) = &ahead_behind {
-                    reserved += measure(ab) + spacing;
-                }
-                if let Some(op) = &last_op {
-                    reserved += measure(op) + spacing * 2.0 + 8.0;
-                }
-                let path = s.path.to_string_lossy();
-                let shown = match std::env::var("HOME") {
-                    Ok(h) if path.starts_with(&h) => format!("~{}", &path[h.len()..]),
-                    _ => path.to_string(),
-                };
-                let shown = shown.trim_end_matches('/').to_owned();
-                let in_progress = s.state != crate::git::repo::RepoState::Clean;
-                let state_text = if in_progress {
-                    let progress = s
-                        .rebase_progress
-                        .map(|(d, t)| format!(" {d}/{t}"))
-                        .unwrap_or_default();
-                    format!("{}{progress}", s.state.label().to_uppercase())
-                } else {
-                    String::new()
-                };
-                if in_progress {
-                    reserved += measure(&state_text) + 190.0 + spacing * 5.0;
-                }
-                let path_w = (ui.available_width() - reserved).min(measure(&shown) + 2.0);
-                if path_w > 24.0 && !in_progress {
-                    ui.add_sized(
-                        [path_w, ui.spacing().interact_size.y],
-                        egui::Label::new(shown).truncate(),
-                    );
-                    ui.separator();
-                }
-                if in_progress {
-                    let can_continue = s.conflicted.is_empty() && busy == 0 && !modal_open;
-                    if ui
-                        .add(
-                            egui::Label::new(egui::RichText::new(&state_text).strong().color(error_color))
-                                .sense(egui::Sense::click()),
-                        )
-                        .on_hover_text("m: continue, abort or skip")
-                        .clicked()
-                    {
-                        open_state.set(true);
-                    }
-                    if ui
-                        .add_enabled(can_continue, egui::Button::new("Continue").small())
-                        .on_hover_text(if s.conflicted.is_empty() {
-                            "git --continue".to_owned()
-                        } else {
-                            format!("{} conflicted file(s) left", s.conflicted.len())
-                        })
-                        .clicked()
-                    {
-                        state_action.set(Some(StateAction::Continue));
-                    }
-                    if ui
-                        .add_enabled(busy == 0 && !modal_open, egui::Button::new("Abort").small())
-                        .clicked()
-                    {
-                        state_action.set(Some(StateAction::Abort));
-                    }
-                    ui.separator();
-                }
-                match name {
-                    Some(name) => {
-                        let branch_color = ui.visuals().text_color();
-                        let mut picked = false;
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 3.0;
-                            if ui
-                                .add(
-                                    egui::Label::new(egui::RichText::new(name).strong())
-                                        .sense(egui::Sense::click()),
-                                )
-                                .on_hover_text("Switch branch")
-                                .clicked()
-                            {
-                                picked = true;
-                            }
-                            if icons::chevron_down(ui, branch_color)
-                                .on_hover_text("Switch branch")
-                                .clicked()
-                            {
-                                picked = true;
-                            }
-                        });
-                        if picked && can_pick_branch {
-                            open_picker.set(true);
-                        }
-                        if let Some(ab) = ahead_behind {
-                            ui.weak(ab);
-                        }
-                    }
-                    None => {
-                        ui.weak("loading");
-                    }
-                }
-                ui.separator();
-                ui.weak(counts);
-                if let Some(op) = last_op {
-                    ui.separator();
-                    ui.weak(op);
                 }
             },
-        );
-        if open_picker.get() {
-            self.open_branch_picker();
-        }
-        if open_state.get() {
-            self.open_state_menu();
-        }
-        if let Some(a) = state_action.get() {
-            self.state_action(a);
-        }
-    }
-
-    fn show_toasts(&self, ctx: &egui::Context) {
-        if self.toasts.is_empty() {
-            return;
-        }
-        egui::Area::new(egui::Id::new("toasts"))
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 12.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                for t in &self.toasts {
-                    let color = if t.error {
-                        self.theme.error
+            "n" => {
+                if searching {
+                    self.diff_next_match(1);
+                } else if let Some(idx) = commit {
+                    self.commit_action(idx, CommitAction::NewBranch);
+                }
+            }
+            "N" => {
+                if searching {
+                    self.diff_next_match(-1);
+                }
+            }
+            "T" => {
+                if let Some(idx) = commit {
+                    self.commit_action(idx, CommitAction::Tag);
+                }
+            }
+            "t" => {
+                if let Some(idx) = commit {
+                    self.commit_action(idx, CommitAction::Revert);
+                }
+            }
+            "C" => {
+                if let Some(idx) = commit {
+                    self.commit_action(idx, CommitAction::CherryPick);
+                }
+            }
+            "g" => {
+                if let Some(idx) = commit {
+                    self.commit_action(idx, CommitAction::Reset);
+                }
+            }
+            "R" => {
+                if let Some(idx) = commit {
+                    self.commit_reword(idx);
+                }
+            }
+            "K" => {
+                if let Some(idx) = commit {
+                    self.commit_rewrite(idx, TodoAction::MoveUp);
+                }
+            }
+            "J" => {
+                if let Some(idx) = commit {
+                    self.commit_rewrite(idx, TodoAction::MoveDown);
+                }
+            }
+            "y" => {
+                if let Some(idx) = commit {
+                    self.commit_action(idx, CommitAction::CopyHash);
+                }
+            }
+            "o" => {
+                if let Some(idx) = commit {
+                    self.commit_action(idx, CommitAction::OpenBrowser);
+                }
+            }
+            "m" => self.update(Message::OpenStateMenu),
+            "e" => self.update(Message::Edit),
+            "E" => self.edit_selected_external(),
+            "O" => self.preview_selected_in_cmux(),
+            "{" => self.change_diff_context(-1),
+            "}" => self.change_diff_context(1),
+            "c" => {
+                self.selection = Selection::WorkingTree;
+                self.focus = Pane::Changes;
+                self.focus_commit_box();
+            }
+            "f" => self.run(Command::Fetch),
+            "p" => self.run(Command::Pull),
+            "P" => self.run(Command::Push),
+            "r" => self.update(Message::Refresh),
+            "q" => self.quit = true,
+            "1" | "2" | "3" | "4" => {
+                let kind = match ch {
+                    "1" => Pane::Sidebar,
+                    "2" => Pane::Log,
+                    "3" => Pane::Changes,
+                    _ => Pane::Detail,
+                };
+                if let Some(p) = self.pane_of(kind) {
+                    if self.panes.maximized() == Some(p) {
+                        self.panes.restore();
                     } else {
-                        self.theme.ok
-                    };
-                    egui::Frame::popup(ui.style())
-                        .stroke(egui::Stroke::new(1.0, color))
-                        .show(ui, |ui| {
-                            ui.set_max_width(420.0);
-                            ui.colored_label(color, &t.text);
-                        });
+                        self.panes.maximize(p);
+                    }
                 }
-            });
+            }
+            _ => {}
+        }
     }
-}
 
-/// Modifiers of the first press of `key` in this frame's events, if any.
-/// Terminals deliver modifiers per key event, so this is more reliable
-/// than the global modifier state.
-fn key_press(i: &egui::InputState, key: egui::Key) -> Option<egui::Modifiers> {
-    i.events.iter().find_map(|e| match e {
-        egui::Event::Key {
-            key: k,
-            pressed: true,
-            modifiers,
-            ..
-        } if *k == key => Some(*modifiers),
-        _ => None,
-    })
-}
+    fn nav(&mut self, delta: i32) {
+        if matches!(self.focus, Pane::Log | Pane::Sidebar | Pane::Changes) {
+            self.move_selection(delta);
+        }
+    }
 
-fn plain(i: &egui::InputState, key: egui::Key) -> bool {
-    key_press(i, key).is_some_and(|m| !m.ctrl && !m.shift && !m.alt)
-}
+    // ---- view ----
 
-fn shifted(i: &egui::InputState, key: egui::Key) -> bool {
-    key_press(i, key).is_some_and(|m| m.shift && !m.ctrl && !m.alt)
-}
+    pub fn view(&self) -> Element<'_> {
+        if self.no_repo {
+            return self.view_no_repo();
+        }
+        let grid = pane_grid_widget(&self.panes, |pane, kind, maximized| {
+            let body: Element<'_> = match kind {
+                Pane::Sidebar => sidebar::view(self),
+                Pane::Log => log::view(self),
+                Pane::Changes => changes::view(self),
+                Pane::Detail => {
+                    if self.editor.is_some() {
+                        editor::view(self)
+                    } else {
+                        diff::view(self)
+                    }
+                }
+            };
+            let title = match kind {
+                Pane::Detail if self.editor.is_some() => "Editor",
+                k => k.title(),
+            };
+            widgets::pane(self, pane, title, *kind == self.focus, maximized, body)
+        })
+        .spacing(4)
+        .min_size(80)
+        .on_click(Message::PaneClicked)
+        .on_drag(Message::PaneDragged)
+        .on_resize(8, Message::PaneResized)
+        .style(widgets::pane_grid_style);
 
-fn ctrl(i: &egui::InputState, key: egui::Key) -> bool {
-    key_press(i, key).is_some_and(|m| m.ctrl)
+        let mut main = column![].spacing(0);
+        main = main.push(container(grid).width(Length::Fill).height(Length::Fill).padding(4));
+        if self.net.open {
+            main = main.push(footer::net_log(self));
+        }
+        main = main.push(footer::view(self));
+        let base: Element<'_> = main.into();
+        let mut layers = stack![base];
+        if let Some(m) = &self.menu {
+            layers = layers.push(menu::view(self, m));
+        }
+        if let Some(m) = &self.modal {
+            layers = layers.push(modal::view(self, m));
+        }
+        if !self.toasts.is_empty() {
+            layers = layers.push(widgets::toasts(self));
+        }
+        layers.into()
+    }
+
+    fn view_no_repo(&self) -> Element<'_> {
+        let body = column![
+            text("Not a git repository").size(20),
+            text(self.repo_path.display().to_string()).font(iced_core::Font::MONOSPACE),
+            text("Initialize a repository here to start using gitgui."),
+            widgets::button("Initialize git repository", (self.busy == 0).then_some(Message::InitRepo)),
+        ]
+        .spacing(10)
+        .align_x(iced_core::Alignment::Center);
+        let content = column![
+            iced_widget::center(body).width(Length::Fill).height(Length::Fill),
+            footer::view(self)
+        ];
+        let mut layers = stack![Element::from(content)];
+        if !self.toasts.is_empty() {
+            layers = layers.push(widgets::toasts(self));
+        }
+        layers.into()
+    }
 }
 
 /// Human readable age like "3m", "2h", "5d", "3mo", "2y".
@@ -2747,11 +2349,11 @@ mod tests {
 
     #[test]
     fn age_buckets() {
-        assert_eq!(age(1000, 990), "10s");
-        assert_eq!(age(1000, 1000 - 120), "2m");
-        assert_eq!(age(1000, 1000 - 7200), "2h");
-        assert_eq!(age(1_000_000, 1_000_000 - 86400 * 3), "3d");
-        assert_eq!(age(100_000_000, 100_000_000 - 86400 * 45), "1mo");
-        assert_eq!(age(100_000_000, 100_000_000 - 86400 * 800), "2y");
+        assert_eq!(age(100, 70), "30s");
+        assert_eq!(age(1000, 0), "16m");
+        assert_eq!(age(10_000, 0), "2h");
+        assert_eq!(age(200_000, 0), "2d");
+        assert_eq!(age(5_000_000, 0), "1mo");
+        assert_eq!(age(40_000_000, 0), "1y");
     }
 }

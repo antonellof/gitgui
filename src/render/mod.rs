@@ -1,4 +1,3 @@
-//! Software rendering: egui meshes to an RGBA framebuffer.
+//! The RGBA framebuffer that frames are rendered into and shipped from.
 
 pub mod frame;
-pub mod raster;

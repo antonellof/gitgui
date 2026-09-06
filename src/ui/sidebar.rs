@@ -1,508 +1,192 @@
-//! Branches, remotes, tags, stashes, each with a right-click menu.
+//! Branches, remotes, tags, stashes and the file tree. Right-click opens the
+//! context menu for the row (`menu.rs`), double-click checks a branch out.
+
+use iced_core::{Alignment, Length};
+use iced_widget::{column, mouse_area, row, scrollable, text, Space};
 
 use crate::git::ops::Command;
-use crate::git::repo::short_id;
-use crate::ui::app::{App, InputKind, Modal, Pane, Selection};
-use crate::ui::logo;
+use crate::ui::app::{App, Element, Message, MenuKind, Modal, Pane};
+use crate::ui::widgets::{self, row_button, section, small_button};
+use crate::ui::tree;
 
-/// What a menu item asked for; applied after the lists are drawn.
-enum Act {
-    Cmd(Command),
-    Modal(Modal),
-    Confirm {
-        title: &'static str,
-        body: String,
-        button: &'static str,
-        cmd: Command,
-    },
-    Input {
-        kind: InputKind,
-        value: String,
-    },
-    Copy(String),
-    PullRequest(String),
-    Switch(String),
+pub fn view(app: &App) -> Element<'_> {
+    let t = &app.theme;
+    let s = &app.snapshot;
+    let busy = app.busy > 0;
+    let focused = app.focus == Pane::Sidebar;
+    let mut col = column![].spacing(1).width(Length::Fill);
+
+    // Local branches.
+    col = col.push(section(
+        "Local",
+        Some(small_button("new", (!busy && s.head.is_some()).then_some(Message::OpenNewBranch))),
+        t,
+    ));
+    for b in s.branches.iter().filter(|b| !b.is_remote) {
+        let selected = app.sidebar_selected.as_deref() == Some(b.name.as_str());
+        let mut label = row![].spacing(6).align_y(Alignment::Center);
+        if b.is_head {
+            label = label.push(text("●").size(10).color(t.head_pill));
+        } else {
+            label = label.push(Space::new().width(10));
+        }
+        let mut name = text(&b.name).size(13).wrapping(iced_core::text::Wrapping::None);
+        if b.is_head {
+            name = name.color(t.strong);
+        }
+        label = label.push(name);
+        if b.ahead > 0 || b.behind > 0 {
+            label = label.push(Space::new().width(Length::Fill));
+            let ab = match (b.ahead, b.behind) {
+                (a, 0) => format!("{a} ahead"),
+                (0, bh) => format!("{bh} behind"),
+                (a, bh) => format!("{a} ahead, {bh} behind"),
+            };
+            label = label.push(text(ab).size(11).color(t.weak));
+        }
+        let btn = row_button(label, selected, focused, Message::SidebarSelect(b.name.clone(), b.oid));
+        let name = b.name.clone();
+        let mut area = mouse_area(btn).on_right_press(Message::MenuOpen(MenuKind::Branch(name.clone())));
+        if !b.is_head && !busy {
+            area = area.on_double_click(Message::Switch(name));
+        }
+        col = col.push(area);
+    }
+
+    // Remotes and remote branches.
+    let remote_count = s.branches.iter().filter(|b| b.is_remote).count();
+    let remote_title: &'static str = "Remote";
+    col = col.push(section(
+        remote_title,
+        Some(small_button(
+            "add",
+            (!busy).then_some(Message::Input(
+                crate::ui::app::InputKind::RemoteAdd,
+                if s.remotes.is_empty() { "origin".into() } else { String::new() },
+                String::new(),
+            )),
+        )),
+        t,
+    ));
+    for r in &s.remotes {
+        let url = s
+            .remote_urls
+            .iter()
+            .find(|(n, _)| n == r)
+            .map(|(_, u)| u.clone())
+            .unwrap_or_default();
+        let label = row![text(r).size(12).color(t.weak), text(url).size(11).color(t.line_no).wrapping(iced_core::text::Wrapping::None)]
+            .spacing(8)
+            .align_y(Alignment::Center);
+        let btn = row_button(label, false, focused, Message::Nothing);
+        col = col.push(mouse_area(btn).on_right_press(Message::MenuOpen(MenuKind::Remote(r.clone()))));
+    }
+    if remote_count > 0 {
+        for b in s.branches.iter().filter(|b| b.is_remote) {
+            let selected = app.sidebar_selected.as_deref() == Some(b.name.as_str());
+            let label = row![Space::new().width(10), text(&b.name).size(13)]
+                .spacing(6)
+                .align_y(Alignment::Center);
+            let btn = row_button(label, selected, focused, Message::SidebarSelect(b.name.clone(), b.oid));
+            let name = b.name.clone();
+            let mut area = mouse_area(btn).on_right_press(Message::MenuOpen(MenuKind::RemoteBranch(name.clone())));
+            if !busy {
+                area = area.on_double_click(Message::Switch(name));
+            }
+            col = col.push(area);
+        }
+    } else if s.remotes.is_empty() {
+        col = col.push(
+            row![Space::new().width(10), widgets::weak("none", t)].padding([2, 6]),
+        );
+        if !app.has_origin() {
+            col = col.push(
+                row![
+                    Space::new().width(10),
+                    small_button("publish to GitHub", (!busy).then_some(Message::OpenPublish))
+                ]
+                .padding([2, 6]),
+            );
+        }
+    }
+
+    // Tags.
+    let head_oid = s.head.as_ref().and_then(|h| h.oid);
+    col = col.push(section(
+        "Tags",
+        head_oid.map(|oid| {
+            small_button(
+                "new",
+                (!busy).then_some(Message::Input(
+                    crate::ui::app::InputKind::Tag {
+                        oid,
+                        label: format!("HEAD ({})", crate::git::repo::short_id(oid)),
+                    },
+                    String::new(),
+                    String::new(),
+                )),
+            )
+        }),
+        t,
+    ));
+    for tag in &s.tags {
+        let selected = app.sidebar_selected.as_deref() == Some(tag.name.as_str());
+        let label = row![Space::new().width(10), text(&tag.name).size(13)]
+            .spacing(6)
+            .align_y(Alignment::Center);
+        let btn = row_button(label, selected, focused, Message::SidebarSelect(tag.name.clone(), tag.oid));
+        col = col.push(mouse_area(btn).on_right_press(Message::MenuOpen(MenuKind::Tag(tag.name.clone()))));
+    }
+    if s.tags.is_empty() {
+        col = col.push(row![Space::new().width(10), widgets::weak("none", t)].padding([2, 6]));
+    }
+
+    // Stashes.
+    col = col.push(section(
+        "Stashes",
+        Some(small_button(
+            "stash",
+            (!busy && s.is_dirty()).then_some(Message::OpenStashDialog),
+        )),
+        t,
+    ));
+    for st in &s.stashes {
+        let selected = app.sidebar_selected.as_deref() == Some(st.message.as_str());
+        let label = row![
+            Space::new().width(10),
+            text(format!("{}: {}", st.index, st.message)).size(13)
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+        let btn = row_button(label, selected, focused, Message::SidebarSelect(st.message.clone(), st.oid));
+        col = col.push(mouse_area(btn).on_right_press(Message::MenuOpen(MenuKind::Stash(st.index))));
+    }
+    if s.stashes.is_empty() {
+        col = col.push(row![Space::new().width(10), widgets::weak("none", t)].padding([2, 6]));
+    }
+
+    // Files.
+    col = col.push(section(
+        "Files",
+        Some(small_button("refresh", Some(Message::TreeRequest(String::new())))),
+        t,
+    ));
+    col = col.push(tree::view(app));
+
+    scrollable(col.padding([0, 4]))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
-pub fn show(app: &mut App, ui: &mut egui::Ui) {
-    let focused = app.focus == Pane::Sidebar;
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        logo::show(ui, &app.theme);
-        ui.heading("gitgui");
-        if focused {
-            ui.weak("*");
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            app.hide_button(ui, Pane::Sidebar);
-            if ui.small_button("?").on_hover_text("Keyboard shortcuts").clicked() {
-                app.open_help();
-            }
-        });
-    });
-    ui.separator();
-    let mut acts: Vec<Act> = Vec::new();
-    let mut clicked: Option<(String, git2::Oid)> = None;
-    egui::ScrollArea::vertical()
-        .id_salt("sidebar_scroll")
-        .show(ui, |ui| {
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-            let snapshot = app.snapshot.clone();
-            let busy = app.busy > 0;
-            let current = snapshot
-                .head
-                .as_ref()
-                .and_then(|h| h.branch_name.clone());
-            let has_web = app.web_remote().is_some();
+/// Sidebar-specific messages that need the app: none for now, kept so the
+/// tree module can reuse the menu path.
+#[allow(dead_code)]
+pub fn checkout(name: String) -> Message {
+    Message::Run(Command::Checkout(name))
+}
 
-            egui::CollapsingHeader::new("Local")
-                .default_open(true)
-                .show(ui, |ui| {
-                    for b in snapshot.branches.iter().filter(|b| !b.is_remote) {
-                        let label = if b.is_head {
-                            format!("* {}", b.name)
-                        } else {
-                            format!("  {}", b.name)
-                        };
-                        let selected = app.sidebar_selected.as_deref() == Some(b.name.as_str());
-                        let mut text = egui::RichText::new(label);
-                        if b.is_head {
-                            text = text.strong();
-                        }
-                        let resp = ui.selectable_label(selected, text);
-                        let resp = match (&b.upstream, b.ahead, b.behind) {
-                            (Some(up), a, bh) if a > 0 || bh > 0 => {
-                                resp.on_hover_text(format!("{a} ahead, {bh} behind {up}"))
-                            }
-                            (Some(up), _, _) => resp.on_hover_text(format!("tracks {up}")),
-                            (None, _, _) => resp.on_hover_text("no upstream"),
-                        };
-                        if resp.clicked() {
-                            clicked = Some((b.name.clone(), b.oid));
-                        }
-                        if resp.double_clicked() && !b.is_head && !busy {
-                            acts.push(Act::Switch(b.name.clone()));
-                        }
-                        resp.context_menu(|ui| {
-                            let name = b.name.clone();
-                            let mut item = |ui: &mut egui::Ui, enabled: bool, label: &str, tip: &str, act: Act| {
-                                let r = ui.add_enabled(enabled && !busy, egui::Button::new(label));
-                                let r = if tip.is_empty() { r } else { r.on_hover_text(tip) };
-                                if r.clicked() {
-                                    acts.push(act);
-                                    ui.close();
-                                }
-                            };
-                            item(ui, !b.is_head, "Checkout", "Enter", Act::Switch(name.clone()));
-                            item(
-                                ui,
-                                true,
-                                "New branch from here",
-                                "",
-                                Act::Modal(Modal::NewBranch {
-                                    name: String::new(),
-                                    from: b.oid,
-                                    from_label: name.clone(),
-                                    checkout: true,
-                                }),
-                            );
-                            item(
-                                ui,
-                                true,
-                                "Rename",
-                                "",
-                                Act::Input {
-                                    kind: InputKind::RenameBranch { old: name.clone() },
-                                    value: name.clone(),
-                                },
-                            );
-                            item(ui, !b.is_head, "Delete", "", Act::Modal(Modal::DeleteBranch(name.clone())));
-                            ui.separator();
-                            let cur = current.clone().unwrap_or_else(|| "HEAD".into());
-                            item(
-                                ui,
-                                !b.is_head && current.is_some(),
-                                &format!("Merge into {cur}"),
-                                "",
-                                Act::Confirm {
-                                    title: "Merge",
-                                    body: format!("Merge {name} into {cur}?"),
-                                    button: "Merge",
-                                    cmd: Command::Merge(name.clone()),
-                                },
-                            );
-                            item(
-                                ui,
-                                !b.is_head && current.is_some(),
-                                &format!("Rebase {cur} onto this"),
-                                "git rebase",
-                                Act::Confirm {
-                                    title: "Rebase",
-                                    body: format!("Rebase {cur} onto {name}? Conflicts stop the rebase for you to resolve."),
-                                    button: "Rebase",
-                                    cmd: Command::Rebase(name.clone()),
-                                },
-                            );
-                            item(
-                                ui,
-                                b.upstream.is_some() && b.behind > 0 && b.ahead == 0,
-                                "Fast-forward from upstream",
-                                "",
-                                Act::Cmd(Command::FastForward(name.clone())),
-                            );
-                            ui.separator();
-                            let default_up = b
-                                .upstream
-                                .clone()
-                                .unwrap_or_else(|| format!("origin/{name}"));
-                            item(
-                                ui,
-                                true,
-                                "Set upstream",
-                                "remote branch this one tracks",
-                                Act::Input {
-                                    kind: InputKind::SetUpstream { branch: name.clone() },
-                                    value: default_up,
-                                },
-                            );
-                            item(
-                                ui,
-                                b.upstream.is_some(),
-                                "Unset upstream",
-                                "",
-                                Act::Cmd(Command::SetUpstream {
-                                    branch: name.clone(),
-                                    upstream: None,
-                                }),
-                            );
-                            item(
-                                ui,
-                                has_web,
-                                "Open pull request",
-                                "in the browser",
-                                Act::PullRequest(name.clone()),
-                            );
-                            ui.separator();
-                            item(ui, true, "Copy name", "", Act::Copy(name.clone()));
-                        });
-                    }
-                });
-
-            let remote_count = snapshot.branches.iter().filter(|b| b.is_remote).count();
-            egui::CollapsingHeader::new(format!("Remote ({remote_count})"))
-                .default_open(remote_count <= 30)
-                .show(ui, |ui| {
-                    for r in &snapshot.remotes {
-                        let url = snapshot
-                            .remote_urls
-                            .iter()
-                            .find(|(n, _)| n == r)
-                            .map(|(_, u)| u.clone())
-                            .unwrap_or_default();
-                        let resp = ui
-                            .selectable_label(false, egui::RichText::new(format!("  {r}")).weak())
-                            .on_hover_text(&url);
-                        resp.context_menu(|ui| {
-                            let name = r.clone();
-                            let mut item = |ui: &mut egui::Ui, label: &str, act: Act| {
-                                if ui.add_enabled(!busy, egui::Button::new(label)).clicked() {
-                                    acts.push(act);
-                                    ui.close();
-                                }
-                            };
-                            item(ui, "Fetch", Act::Cmd(Command::FetchRemote(name.clone())));
-                            item(
-                                ui,
-                                "Edit URL",
-                                Act::Input {
-                                    kind: InputKind::RemoteUrl { name: name.clone() },
-                                    value: url.clone(),
-                                },
-                            );
-                            item(
-                                ui,
-                                "Rename",
-                                Act::Input {
-                                    kind: InputKind::RemoteRename { old: name.clone() },
-                                    value: name.clone(),
-                                },
-                            );
-                            item(
-                                ui,
-                                "Remove",
-                                Act::Confirm {
-                                    title: "Remove remote",
-                                    body: format!("Remove remote {name}? Local branches are not affected."),
-                                    button: "Remove",
-                                    cmd: Command::RemoteRemove(name.clone()),
-                                },
-                            );
-                            item(ui, "Copy URL", Act::Copy(url.clone()));
-                        });
-                    }
-                    if ui
-                        .add_enabled(!busy, egui::Button::new("Add remote").small())
-                        .clicked()
-                    {
-                        acts.push(Act::Input {
-                            kind: InputKind::RemoteAdd,
-                            value: if snapshot.remotes.is_empty() {
-                                "origin".into()
-                            } else {
-                                String::new()
-                            },
-                        });
-                    }
-                    for b in snapshot.branches.iter().filter(|b| b.is_remote) {
-                        let selected = app.sidebar_selected.as_deref() == Some(b.name.as_str());
-                        let resp = ui.selectable_label(selected, format!("  {}", b.name));
-                        if resp.clicked() {
-                            clicked = Some((b.name.clone(), b.oid));
-                        }
-                        if resp.double_clicked() && !busy {
-                            acts.push(Act::Switch(b.name.clone()));
-                        }
-                        resp.context_menu(|ui| {
-                            let name = b.name.clone();
-                            let (remote, short) = name
-                                .split_once('/')
-                                .map(|(r, s)| (r.to_owned(), s.to_owned()))
-                                .unwrap_or((String::new(), name.clone()));
-                            let mut item = |ui: &mut egui::Ui, enabled: bool, label: &str, act: Act| {
-                                if ui.add_enabled(enabled && !busy, egui::Button::new(label)).clicked() {
-                                    acts.push(act);
-                                    ui.close();
-                                }
-                            };
-                            item(ui, true, "Checkout (track)", Act::Switch(name.clone()));
-                            item(ui, true, "Checkout (detached HEAD)", Act::Cmd(Command::CheckoutDetached(b.oid)));
-                            item(
-                                ui,
-                                true,
-                                "New branch from here",
-                                Act::Modal(Modal::NewBranch {
-                                    name: String::new(),
-                                    from: b.oid,
-                                    from_label: name.clone(),
-                                    checkout: true,
-                                }),
-                            );
-                            ui.separator();
-                            let cur = current.clone().unwrap_or_else(|| "HEAD".into());
-                            item(
-                                ui,
-                                current.is_some(),
-                                &format!("Merge into {cur}"),
-                                Act::Confirm {
-                                    title: "Merge",
-                                    body: format!("Merge {name} into {cur}?"),
-                                    button: "Merge",
-                                    cmd: Command::Merge(name.clone()),
-                                },
-                            );
-                            item(
-                                ui,
-                                current.is_some(),
-                                &format!("Rebase {cur} onto this"),
-                                Act::Confirm {
-                                    title: "Rebase",
-                                    body: format!("Rebase {cur} onto {name}? Conflicts stop the rebase for you to resolve."),
-                                    button: "Rebase",
-                                    cmd: Command::Rebase(name.clone()),
-                                },
-                            );
-                            item(
-                                ui,
-                                current.is_some(),
-                                &format!("Set as upstream of {cur}"),
-                                Act::Cmd(Command::SetUpstream {
-                                    branch: cur.clone(),
-                                    upstream: Some(name.clone()),
-                                }),
-                            );
-                            ui.separator();
-                            item(
-                                ui,
-                                !remote.is_empty(),
-                                "Delete on remote",
-                                Act::Confirm {
-                                    title: "Delete remote branch",
-                                    body: format!("Delete {short} on {remote}? This runs git push {remote} --delete {short}."),
-                                    button: "Delete",
-                                    cmd: Command::DeleteRemoteBranch {
-                                        remote: remote.clone(),
-                                        branch: short.clone(),
-                                    },
-                                },
-                            );
-                            item(ui, true, "Copy name", Act::Copy(name.clone()));
-                        });
-                    }
-                    if snapshot.branches.iter().all(|b| !b.is_remote) {
-                        ui.weak("  none");
-                    }
-                });
-
-            egui::CollapsingHeader::new("Tags")
-                .default_open(snapshot.tags.len() <= 20)
-                .show(ui, |ui| {
-                    for t in &snapshot.tags {
-                        let selected = app.sidebar_selected.as_deref() == Some(t.name.as_str());
-                        let resp = ui.selectable_label(selected, format!("  {}", t.name));
-                        if resp.clicked() {
-                            clicked = Some((t.name.clone(), t.oid));
-                        }
-                        resp.context_menu(|ui| {
-                            let name = t.name.clone();
-                            let mut item = |ui: &mut egui::Ui, enabled: bool, label: &str, act: Act| {
-                                if ui.add_enabled(enabled && !busy, egui::Button::new(label)).clicked() {
-                                    acts.push(act);
-                                    ui.close();
-                                }
-                            };
-                            item(ui, true, "Checkout (detached HEAD)", Act::Cmd(Command::CheckoutDetached(t.oid)));
-                            item(
-                                ui,
-                                true,
-                                "New branch from here",
-                                Act::Modal(Modal::NewBranch {
-                                    name: String::new(),
-                                    from: t.oid,
-                                    from_label: name.clone(),
-                                    checkout: true,
-                                }),
-                            );
-                            for r in &snapshot.remotes {
-                                item(
-                                    ui,
-                                    true,
-                                    &format!("Push to {r}"),
-                                    Act::Cmd(Command::PushTag {
-                                        remote: r.clone(),
-                                        tag: name.clone(),
-                                    }),
-                                );
-                            }
-                            item(
-                                ui,
-                                true,
-                                "Delete",
-                                Act::Confirm {
-                                    title: "Delete tag",
-                                    body: format!("Delete local tag {name}?"),
-                                    button: "Delete",
-                                    cmd: Command::DeleteTag(name.clone()),
-                                },
-                            );
-                            item(ui, true, "Copy name", Act::Copy(name.clone()));
-                        });
-                    }
-                    if let Some(oid) = snapshot.head.as_ref().and_then(|h| h.oid) {
-                        if ui
-                            .add_enabled(!busy, egui::Button::new("New tag at HEAD").small())
-                            .clicked()
-                        {
-                            acts.push(Act::Input {
-                                kind: InputKind::Tag {
-                                    oid,
-                                    label: format!("HEAD ({})", short_id(oid)),
-                                },
-                                value: String::new(),
-                            });
-                        }
-                    }
-                    if snapshot.tags.is_empty() {
-                        ui.weak("  none");
-                    }
-                });
-
-            egui::CollapsingHeader::new("Stashes")
-                .default_open(true)
-                .show(ui, |ui| {
-                    for s in &snapshot.stashes {
-                        let selected = app.sidebar_selected.as_deref() == Some(s.message.as_str());
-                        let resp =
-                            ui.selectable_label(selected, format!("  {}: {}", s.index, s.message));
-                        if resp.clicked() {
-                            clicked = Some((s.message.clone(), s.oid));
-                        }
-                        resp.context_menu(|ui| {
-                            let mut item = |ui: &mut egui::Ui, label: &str, tip: &str, act: Act| {
-                                let r = ui.add_enabled(!busy, egui::Button::new(label));
-                                let r = if tip.is_empty() { r } else { r.on_hover_text(tip) };
-                                if r.clicked() {
-                                    acts.push(act);
-                                    ui.close();
-                                }
-                            };
-                            item(ui, "Apply", "keep the stash", Act::Cmd(Command::StashApply(s.index)));
-                            item(ui, "Pop", "apply and drop", Act::Cmd(Command::StashPop(s.index)));
-                            item(
-                                ui,
-                                "New branch from stash",
-                                "check out the stash base, create the branch, apply and drop",
-                                Act::Input {
-                                    kind: InputKind::BranchFromStash { index: s.index },
-                                    value: String::new(),
-                                },
-                            );
-                            item(ui, "Drop", "", Act::Modal(Modal::DropStash(s.index)));
-                        });
-                    }
-                    if ui
-                        .add_enabled(
-                            !busy && snapshot.is_dirty(),
-                            egui::Button::new("Stash changes").small(),
-                        )
-                        .on_hover_text("Shift+S")
-                        .clicked()
-                    {
-                        acts.push(Act::Modal(Modal::StashOpts {
-                            message: String::new(),
-                            keep_index: false,
-                            include_untracked: true,
-                        }));
-                    }
-                    if snapshot.stashes.is_empty() {
-                        ui.weak("  none");
-                    }
-                });
-
-            crate::ui::tree::show(app, ui);
-        });
-
-    if let Some((name, oid)) = clicked {
-        app.sidebar_selected = Some(name);
-        app.focus = Pane::Sidebar;
-        if let Some(idx) = app.snapshot.commits.iter().position(|c| c.oid == oid) {
-            app.select(Selection::Commit(idx));
-            app.scroll_to_selection = true;
-        } else {
-            app.toast(format!("{} is not in the loaded log", short_id(oid)), false);
-        }
-    }
-    let ctx = ui.ctx().clone();
-    for act in acts {
-        match act {
-            Act::Cmd(c) => app.run(c),
-            Act::Modal(m) => {
-                if app.busy == 0 {
-                    app.modal = Some(m);
-                }
-            }
-            Act::Confirm {
-                title,
-                body,
-                button,
-                cmd,
-            } => app.confirm(title, body, button, cmd),
-            Act::Input { kind, value } => app.input(kind, value, String::new()),
-            Act::Copy(text) => {
-                ctx.copy_text(text);
-                app.toast("copied", false);
-            }
-            Act::PullRequest(branch) => app.open_pull_request(&branch),
-            Act::Switch(name) => app.try_switch_branch(name),
-        }
-    }
+#[allow(dead_code)]
+pub fn delete_branch(name: String) -> Message {
+    Message::Modal(Modal::DeleteBranch(name))
 }

@@ -1,0 +1,128 @@
+//! Footer: branch switcher, counts, merge / rebase banner, last operation,
+//! fetch / pull / push / refresh / quit. Plus the network log panel.
+
+use iced_core::{Alignment, Background, Border, Font, Length};
+use iced_widget::{column, container, mouse_area, row, scrollable, text, Space};
+
+use crate::git::ops::{Command, StateAction};
+use crate::git::repo::RepoState;
+use crate::ui::app::{App, Element, Message};
+use crate::ui::widgets::{self, small_button};
+
+pub fn view(app: &App) -> Element<'_> {
+    let t = &app.theme;
+    let s = &app.snapshot;
+    let busy = app.busy > 0;
+    let mut r = row![].spacing(8).align_y(Alignment::Center).padding([4, 8]);
+
+    if !app.no_repo {
+        let name = match &s.head {
+            Some(h) => h.branch_name.clone().unwrap_or_else(|| {
+                h.oid
+                    .map(|o| format!("detached {}", crate::git::repo::short_id(o)))
+                    .unwrap_or_else(|| "no HEAD".into())
+            }),
+            None => "no HEAD".into(),
+        };
+        r = r.push(small_button(format!("{name}  ▾"), (!busy && app.modal.is_none()).then_some(Message::OpenBranchPicker)));
+        if let Some(b) = s.branches.iter().find(|b| b.is_head) {
+            if b.ahead > 0 || b.behind > 0 {
+                let ab = match (b.ahead, b.behind) {
+                    (a, 0) => format!("{a} ahead"),
+                    (0, bh) => format!("{bh} behind"),
+                    (a, bh) => format!("{a} ahead, {bh} behind"),
+                };
+                r = r.push(text(ab).size(12).color(t.weak));
+            }
+        }
+        r = r.push(text(format!("{} unstaged, {} staged", s.unstaged.len(), s.staged.len())).size(12).color(t.weak));
+        if s.state != RepoState::Clean {
+            let mut label = s.state.label().to_owned();
+            if let Some((done, total)) = s.rebase_progress {
+                label.push_str(&format!(" {done}/{total}"));
+            }
+            label.push_str(" in progress");
+            let banner = row![
+                text(label).size(12).color(t.strong),
+                small_button("Continue", (!busy).then_some(Message::StateAction(StateAction::Continue))),
+                small_button("Abort", (!busy).then_some(Message::StateAction(StateAction::Abort))),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center);
+            let bg = crate::ui::theme::alpha(t.error, 0.35);
+            r = r.push(container(banner).padding([2, 8]).style(move |_| container::Style {
+                background: Some(Background::Color(bg)),
+                border: Border {
+                    radius: 5.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }));
+        }
+        if let Some(op) = &app.last_op {
+            let short: String = op.chars().take(60).collect();
+            r = r.push(text(short).size(12).color(t.weak));
+        }
+    } else {
+        r = r.push(text(app.repo_path.display().to_string()).size(12).font(Font::MONOSPACE).color(t.weak));
+    }
+    r = r.push(Space::new().width(Length::Fill));
+    if app.show_debug {
+        r = r.push(text(format!("{:.1} ms {} x{}", app.frame_ms, app.transport, app.scale)).size(11).color(t.weak));
+    }
+    if !app.no_repo {
+        let fetch = small_button("Fetch  f", (!busy).then_some(Message::Run(Command::Fetch)));
+        let pull = mouse_area(small_button("Pull  p", (!busy).then_some(Message::Run(Command::Pull))))
+            .on_right_press(Message::Run(Command::PullRebase));
+        let push = mouse_area(small_button("Push  P", (!busy).then_some(Message::Run(Command::Push)))).on_right_press(
+            Message::Confirm(
+                "Force push",
+                "Push with --force-with-lease? Remote commits not in your branch are overwritten.".into(),
+                "Force push",
+                Command::ForcePush,
+            ),
+        );
+        r = r.push(fetch).push(pull).push(push);
+        r = r.push(small_button("Refresh  r", Some(Message::Refresh)));
+    }
+    r = r.push(small_button("?", Some(Message::OpenHelp)));
+    r = r.push(small_button("Quit  q", Some(Message::Quit)));
+    let bg = t.panel;
+    container(r)
+        .width(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(bg)),
+            ..Default::default()
+        })
+        .into()
+}
+
+pub fn net_log(app: &App) -> Element<'_> {
+    let t = &app.theme;
+    let title = format!("git {}{}", app.net.label, if app.net.running { " (running)" } else { "" });
+    let mut lines = column![].spacing(0);
+    for l in app.net.lines.iter().rev().take(200).collect::<Vec<_>>().into_iter().rev() {
+        lines = lines.push(text(l).size(12).font(Font::MONOSPACE));
+    }
+    let header = row![
+        text(title).size(12).color(t.strong),
+        Space::new().width(Length::Fill),
+        small_button("close", Some(Message::NetClose)),
+    ]
+    .align_y(Alignment::Center)
+    .spacing(6);
+    let bg = t.well;
+    container(column![header, scrollable(lines).height(Length::Fixed(110.0)).anchor_bottom()].spacing(4))
+        .padding(6)
+        .width(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(bg)),
+            ..Default::default()
+        })
+        .into()
+}
+
+#[allow(dead_code)]
+fn unused() -> Element<'static> {
+    widgets::button("", None)
+}

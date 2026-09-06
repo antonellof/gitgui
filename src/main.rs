@@ -6,6 +6,7 @@ mod cli;
 mod git;
 mod render;
 mod runtime;
+mod shell;
 mod split;
 mod term;
 mod ui;

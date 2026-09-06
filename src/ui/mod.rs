@@ -1,19 +1,16 @@
-//! egui UI.
+//! iced UI: model, messages and views. Rendered headless by `shell.rs`.
 
 pub mod app;
-pub mod branch_picker;
 pub mod changes;
 pub mod diff;
 pub mod editor;
+pub mod footer;
 pub mod help;
 pub mod highlight;
-pub mod icons;
-pub mod input;
 pub mod log;
-pub mod logo;
-pub mod menus;
-pub mod row;
+pub mod menu;
+pub mod modal;
 pub mod sidebar;
 pub mod theme;
-pub mod toolbar;
 pub mod tree;
+pub mod widgets;

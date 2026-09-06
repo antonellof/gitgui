@@ -2,10 +2,10 @@
 //! dependencies: comments, strings, numbers and keywords per language family,
 //! picked from the file extension. Good enough to read code; not a linter.
 
-use egui::text::{LayoutJob, TextFormat};
-use egui::{Color32, FontId};
+use std::ops::Range;
 
-use crate::ui::theme::Theme;
+use iced_core::text::highlighter::{self, Format};
+use iced_core::{Color, Font};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
@@ -338,63 +338,6 @@ impl Lang {
     }
 }
 
-/// Colors for each token kind, derived from the theme.
-pub struct Palette {
-    pub plain: Color32,
-    pub comment: Color32,
-    pub string: Color32,
-    pub number: Color32,
-    pub keyword: Color32,
-    pub ty: Color32,
-    pub punct: Color32,
-    pub heading: Color32,
-    pub attr: Color32,
-}
-
-impl Palette {
-    pub fn from_theme(theme: &Theme, plain: Color32) -> Self {
-        if theme.dark {
-            Palette {
-                plain,
-                comment: theme.line_no,
-                string: theme.graph[1],
-                number: theme.graph[6],
-                keyword: theme.graph[4],
-                ty: theme.graph[2],
-                punct: Color32::from_rgb(0x9d, 0xa3, 0xb5),
-                heading: theme.graph[0],
-                attr: theme.graph[7],
-            }
-        } else {
-            Palette {
-                plain,
-                comment: theme.line_no,
-                string: theme.graph[1],
-                number: theme.graph[6],
-                keyword: theme.graph[4],
-                ty: theme.graph[2],
-                punct: Color32::from_rgb(0x5c, 0x5f, 0x77),
-                heading: theme.graph[0],
-                attr: theme.graph[7],
-            }
-        }
-    }
-
-    fn color(&self, kind: Kind) -> Color32 {
-        match kind {
-            Kind::Plain => self.plain,
-            Kind::Comment => self.comment,
-            Kind::String => self.string,
-            Kind::Number => self.number,
-            Kind::Keyword => self.keyword,
-            Kind::Type => self.ty,
-            Kind::Punct => self.punct,
-            Kind::Heading => self.heading,
-            Kind::Attr => self.attr,
-        }
-    }
-}
-
 /// Tokenize `text` into `(byte range end, kind)` spans, contiguous from 0.
 pub fn tokenize(text: &str, lang: Lang) -> Vec<(usize, Kind)> {
     if matches!(lang, Lang::Markdown) {
@@ -676,38 +619,150 @@ fn tokenize_html(text: &str) -> Vec<(usize, Kind)> {
     out
 }
 
-/// Lay out `text` as a single monospace job with per-token colors.
-pub fn layout_job(text: &str, lang: Lang, font: FontId, palette: &Palette) -> LayoutJob {
-    let mut job = LayoutJob::default();
-    job.wrap.max_width = f32::INFINITY;
-    let mut start = 0;
-    for (end, kind) in tokenize(text, lang) {
-        if end <= start {
-            continue;
+fn rgb(r: u8, g: u8, b: u8) -> Color {
+    Color::from_rgb8(r, g, b)
+}
+
+/// Token color for the editor, by theme brightness.
+pub fn color(kind: Kind, dark: bool) -> Option<Color> {
+    if dark {
+        Some(match kind {
+            Kind::Plain => return None,
+            Kind::Comment => rgb(0x6c, 0x70, 0x86),
+            Kind::String => rgb(0xa6, 0xe3, 0xa1),
+            Kind::Number => rgb(0xfa, 0xb3, 0x87),
+            Kind::Keyword => rgb(0xcb, 0xa6, 0xf7),
+            Kind::Type => rgb(0xf9, 0xe2, 0xaf),
+            Kind::Punct => rgb(0x9d, 0xa3, 0xb5),
+            Kind::Heading => rgb(0x89, 0xb4, 0xfa),
+            Kind::Attr => rgb(0x74, 0xc7, 0xec),
+        })
+    } else {
+        Some(match kind {
+            Kind::Plain => return None,
+            Kind::Comment => rgb(0x8c, 0x8f, 0xa1),
+            Kind::String => rgb(0x40, 0xa0, 0x2b),
+            Kind::Number => rgb(0xfe, 0x64, 0x0b),
+            Kind::Keyword => rgb(0x88, 0x39, 0xef),
+            Kind::Type => rgb(0xdf, 0x8e, 0x1d),
+            Kind::Punct => rgb(0x5c, 0x5f, 0x77),
+            Kind::Heading => rgb(0x1e, 0x66, 0xf5),
+            Kind::Attr => rgb(0x04, 0xa5, 0xe5),
+        })
+    }
+}
+
+/// `text_editor::highlight_with` formatter: token kind to color.
+pub fn format(kind: &Kind, theme: &iced_core::Theme) -> Format<Font> {
+    Format {
+        color: color(*kind, theme.extended_palette().is_dark),
+        font: None,
+    }
+}
+
+/// Line-by-line highlighter for `text_editor`. Block comments that span
+/// lines are carried over from the previous line.
+pub struct Highlighter {
+    lang: Lang,
+    current: usize,
+    /// Close token of a block comment open at the start of `current`.
+    carry: Option<&'static str>,
+    /// Carry state at the start of each line seen so far, for re-entry.
+    carries: Vec<Option<&'static str>>,
+}
+
+impl highlighter::Highlighter for Highlighter {
+    type Settings = Lang;
+    type Highlight = Kind;
+    type Iterator<'a> = std::vec::IntoIter<(Range<usize>, Kind)>;
+
+    fn new(settings: &Lang) -> Self {
+        Highlighter {
+            lang: *settings,
+            current: 0,
+            carry: None,
+            carries: vec![None],
         }
-        job.append(
-            &text[start..end],
-            0.0,
-            TextFormat {
-                font_id: font.clone(),
-                color: palette.color(kind),
-                ..Default::default()
-            },
-        );
-        start = end;
     }
-    if start < text.len() {
-        job.append(
-            &text[start..],
-            0.0,
-            TextFormat {
-                font_id: font,
-                color: palette.plain,
-                ..Default::default()
-            },
-        );
+
+    fn update(&mut self, new_settings: &Lang) {
+        self.lang = *new_settings;
+        self.change_line(0);
     }
-    job
+
+    fn change_line(&mut self, line: usize) {
+        let line = line.min(self.carries.len().saturating_sub(1));
+        self.current = line;
+        self.carries.truncate(line + 1);
+        self.carry = self.carries.get(line).copied().flatten();
+    }
+
+    fn highlight_line(&mut self, line: &str) -> Self::Iterator<'_> {
+        let (spans, carry) = tokenize_line(line, self.lang, self.carry);
+        self.current += 1;
+        self.carry = carry;
+        if self.carries.len() <= self.current {
+            self.carries.push(carry);
+        } else {
+            self.carries[self.current] = carry;
+        }
+        spans.into_iter()
+    }
+
+    fn current_line(&self) -> usize {
+        self.current
+    }
+}
+
+/// Tokenize one line given the block comment carried in from the previous
+/// line; returns the spans and the carry for the next line.
+pub fn tokenize_line(line: &str, lang: Lang, carry: Option<&'static str>) -> (Vec<(Range<usize>, Kind)>, Option<&'static str>) {
+    let block = lang.rules().block_comment;
+    let mut out = Vec::new();
+    let mut start = 0;
+    if let Some(close) = carry {
+        match line.find(close) {
+            Some(p) => {
+                let end = p + close.len();
+                out.push((0..end, Kind::Comment));
+                start = end;
+            }
+            None => {
+                out.push((0..line.len(), Kind::Comment));
+                return (out, Some(close));
+            }
+        }
+    }
+    let rest = &line[start..];
+    let mut prev = 0;
+    for (end, kind) in tokenize(rest, lang) {
+        if end > prev {
+            out.push((start + prev..start + end, kind));
+        }
+        prev = end;
+    }
+    // An unclosed block comment at the end carries over.
+    let mut next = None;
+    if let Some((open, close)) = block {
+        if let Some(last) = out.last() {
+            if last.1 == Kind::Comment {
+                let text = &line[last.0.clone()];
+                if let Some(p) = text.rfind(open) {
+                    if !text[p + open.len()..].contains(close) && !is_line_comment_start(text, lang) {
+                        next = Some(close);
+                    }
+                }
+            }
+        }
+    }
+    (out, next)
+}
+
+fn is_line_comment_start(text: &str, lang: Lang) -> bool {
+    let rules = lang.rules();
+    let t = text.trim_start();
+    rules.line_comment.iter().any(|p| t.starts_with(p))
+        && !rules.block_comment.is_some_and(|(open, _)| t.starts_with(open))
 }
 
 #[cfg(test)]
@@ -788,6 +843,17 @@ mod tests {
             let end = spans.last().map(|s| s.0).unwrap_or(0);
             assert_eq!(end, text.len(), "{text:?}");
         }
+    }
+
+    #[test]
+    fn block_comment_carries_across_lines() {
+        let (spans, carry) = tokenize_line("a /* open", Lang::C, None);
+        assert_eq!(carry, Some("*/"));
+        assert_eq!(spans.last().map(|s| s.1), Some(Kind::Comment));
+        let (spans, carry) = tokenize_line("still */ int x;", Lang::C, carry);
+        assert_eq!(carry, None);
+        assert_eq!(spans[0], (0..8, Kind::Comment));
+        assert!(spans.iter().any(|(r, k)| *k == Kind::Type && &"still */ int x;"[r.clone()] == "int"));
     }
 
     #[test]

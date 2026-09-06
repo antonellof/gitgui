@@ -4,8 +4,10 @@ version = "0.3.3"
 edition = "2021"
 
 [dependencies]
-egui = { version = "=0.36.1", default-features = false, features = ["default_fonts"] }
-epaint = { version = "=0.36.1", default-features = false }
+iced_core = "=0.14.0"
+iced_runtime = "=0.14.0"
+iced_widget = { version = "=0.14.2", default-features = false, features = ["canvas"] }
+iced_renderer = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "fira-sans", "geometry"] }
 libc = "0.2"
 base64 = "0.22"
 flate2 = "1"
@@ -14,9 +16,6 @@ git2 = { version = "=0.21.0", default-features = false }
 png = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-[dev-dependencies]
-smallvec = "1"
 
 [profile.release]
 opt-level = 3

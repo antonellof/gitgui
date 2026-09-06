@@ -1,56 +1,25 @@
-//! Diff viewer: monospace lines with old/new numbers and colored backgrounds,
-//! hunk buttons, line selection for partial staging, search, context and
-//! whitespace controls.
+//! Diff viewer: a custom widget that draws only the visible rows, with hunk
+//! buttons, line selection for line-level staging and search highlights.
 
-use egui::{pos2, vec2, Color32, FontId, Rect, Sense};
+use iced_core::mouse;
+use iced_core::text;
+use iced_core::Renderer as _;
+use iced_core::widget::{tree, Tree};
+use iced_core::{layout, renderer, Color, Element as CoreElement, Event, Font, Length, Pixels, Point, Rectangle, Shell, Size, Widget};
+use iced_widget::{column, container, row, text as text_widget, text_input, Space};
 
-use crate::git::actions::ConflictSide;
-use crate::git::ops::Command;
-use crate::git::repo::{DiffLine, DiffTarget, DiffText};
-use crate::ui::app::{App, LineSel};
-use crate::ui::theme::Theme;
+use crate::git::repo::{DiffLine, DiffText, DiffTarget, FileKind};
+use crate::ui::app::{App, Element, HunkAction, Message, Pane, Renderer};
+use crate::ui::log::{draw_text, fill, measure};
+use crate::ui::theme::alpha;
+use crate::ui::widgets::{self, small_button};
+
+pub const ROW_H: f32 = 20.0;
+const BUTTON_W: f32 = 96.0;
 
 enum Row<'a> {
     Hunk(usize, &'a str),
-    /// (hunk index, line index within the hunk, line)
     Line(usize, usize, &'a DiffLine),
-}
-
-struct PaintCtx<'a> {
-    theme: &'a Theme,
-    font: FontId,
-    row_h: f32,
-    char_w: f32,
-    digits: usize,
-    gutter: f32,
-    text_color: Color32,
-    strong: Color32,
-    /// (path, unstaged?) when hunk buttons apply.
-    hunk_action: Option<(String, bool)>,
-    busy: bool,
-    sel: Option<LineSel>,
-    query: String,
-    current_match: Option<usize>,
-}
-
-/// What a row interaction asked for; applied after the paint loop.
-enum RowAction {
-    Click { hunk: usize, line: usize, shift: bool },
-    DragStart { hunk: usize, line: usize },
-    DragOver { hunk: usize, line: usize },
-}
-
-/// Width of the stage / unstage button drawn on the right of a hunk header.
-const HUNK_BUTTON_W: f32 = 100.0;
-const DISCARD_BUTTON_W: f32 = 96.0;
-
-thread_local! {
-    static PENDING: std::cell::RefCell<Option<Command>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Command produced by a hunk button click this frame, if any.
-pub fn take_pending(_app: &mut App) -> Option<Command> {
-    PENDING.with(|p| p.borrow_mut().take())
 }
 
 fn flatten(d: &DiffText) -> Vec<Row<'_>> {
@@ -71,7 +40,6 @@ fn row_text<'a>(row: &Row<'a>) -> &'a str {
     }
 }
 
-/// Row indices whose text contains `query` (case-insensitive).
 fn matches(rows: &[Row<'_>], query: &str) -> Vec<usize> {
     if query.is_empty() {
         return Vec::new();
@@ -84,7 +52,6 @@ fn matches(rows: &[Row<'_>], query: &str) -> Vec<usize> {
         .collect()
 }
 
-/// Number of rows matching the current search.
 pub fn match_count(app: &App) -> usize {
     match app.diff.as_ref() {
         Some(d) => matches(&flatten(d), &app.diff_search).len(),
@@ -92,671 +59,466 @@ pub fn match_count(app: &App) -> usize {
     }
 }
 
-fn header(app: &mut App, ui: &mut egui::Ui) {
+pub fn view(app: &App) -> Element<'_> {
+    let t = &app.theme;
+    let busy = app.busy > 0;
     let selected = app.selected_file.clone();
-    let has_sel = app.has_line_selection();
-    let sel_count = app
-        .line_sel
-        .map(|s| {
-            let (a, b) = s.range();
-            b - a + 1
-        })
-        .unwrap_or(0);
-    let unstaged_target = matches!(selected, Some(DiffTarget::WorkdirUnstaged(_)));
+    let mut header = row![].spacing(6).align_y(iced_core::Alignment::Center).padding([4, 6]);
+    match &selected {
+        Some(target) => {
+            header = header.push(text_widget(target.path().to_owned()).size(13).font(Font::MONOSPACE).color(t.strong));
+            let what = match target {
+                DiffTarget::WorkdirUnstaged(_) => "unstaged",
+                DiffTarget::Staged(_) => "staged",
+                DiffTarget::Commit(..) => "commit",
+            };
+            header = header.push(text_widget(what).size(12).color(t.weak));
+        }
+        None => {
+            header = header.push(text_widget("no file selected").size(12).color(t.weak));
+        }
+    }
+    header = header.push(Space::new().width(Length::Fill));
+    if app.has_line_selection() {
+        let n = app
+            .line_sel
+            .map(|s| {
+                let (a, b) = s.range();
+                b - a + 1
+            })
+            .unwrap_or(0);
+        match app.line_selection_side() {
+            Some(true) => {
+                header = header.push(small_button(format!("Stage {n} lines"), (!busy).then_some(Message::LinesStage)));
+                header = header.push(small_button(format!("Discard {n} lines"), (!busy).then_some(Message::LinesDiscard)));
+            }
+            Some(false) => {
+                header = header.push(small_button(format!("Unstage {n} lines"), (!busy).then_some(Message::LinesUnstage)));
+            }
+            None => {}
+        }
+        header = header.push(small_button("clear", Some(Message::ClearLineSel)));
+    }
     let conflicted = selected
         .as_ref()
         .is_some_and(|t| app.snapshot.conflicted.iter().any(|f| f.path == t.path()));
-    let mut resolve: Option<ConflictSide> = None;
-    let mut mark_resolved = false;
-    let busy = app.busy > 0;
-    let mut ctx_delta = 0;
-    let mut toggle_ws = false;
-    let mut toggle_search = false;
-    let mut stage_lines = false;
-    let mut unstage_lines = false;
-    let mut discard_lines = false;
-    let mut clear_sel = false;
-    let context = app.diff_opts.context;
-    let ignore_ws = app.diff_opts.ignore_whitespace;
-    let search_active = app.diff_search_active;
-    crate::ui::row::split(
-        ui,
-        |ui| {
-            app.hide_button(ui, crate::ui::app::Pane::Detail);
-            ui.checkbox(&mut app.wrap, "wrap");
-            if ui
-                .add(egui::Button::new("ws").small().selected(ignore_ws))
-                .on_hover_text("Ignore whitespace (Ctrl+W)")
-                .clicked()
-            {
-                toggle_ws = true;
-            }
-            if ui
-                .small_button("+")
-                .on_hover_text("More context ( } )")
-                .clicked()
-            {
-                ctx_delta = 1;
-            }
-            ui.weak(format!("{context}"));
-            if ui
-                .small_button("-")
-                .on_hover_text("Less context ( { )")
-                .clicked()
-            {
-                ctx_delta = -1;
-            }
-            if ui
-                .add(egui::Button::new("find").small().selected(search_active))
-                .on_hover_text("Search in the diff (Ctrl+F)")
-                .clicked()
-            {
-                toggle_search = true;
-            }
-        },
-        |ui| match &selected {
-            Some(t) => {
-                let kind = match t {
-                    DiffTarget::WorkdirUnstaged(_) => "unstaged",
-                    DiffTarget::Staged(_) => "staged",
-                    DiffTarget::Commit(..) => "commit",
-                };
-                ui.monospace(t.path());
-                ui.weak(if conflicted { "conflicted" } else { kind });
-                if conflicted {
-                    if ui
-                        .add_enabled(!busy, egui::Button::new("Use ours").small())
-                        .on_hover_text("keep the version of the branch you are on")
-                        .clicked()
-                    {
-                        resolve = Some(ConflictSide::Ours);
-                    }
-                    if ui
-                        .add_enabled(!busy, egui::Button::new("Use theirs").small())
-                        .on_hover_text("keep the incoming version")
-                        .clicked()
-                    {
-                        resolve = Some(ConflictSide::Theirs);
-                    }
-                    if ui
-                        .add_enabled(!busy, egui::Button::new("Mark resolved").small())
-                        .on_hover_text("stage the file as it is, markers and all")
-                        .clicked()
-                    {
-                        mark_resolved = true;
-                    }
-                }
-                if has_sel && !conflicted {
-                    let label = |verb: &str| {
-                        format!(
-                            "{verb} {sel_count} line{}",
-                            if sel_count == 1 { "" } else { "s" }
-                        )
-                    };
-                    if unstaged_target {
-                        if ui
-                            .add_enabled(!busy, egui::Button::new(label("Stage")).small())
-                            .on_hover_text("s")
-                            .clicked()
-                        {
-                            stage_lines = true;
-                        }
-                        if ui
-                            .add_enabled(!busy, egui::Button::new(label("Discard")).small())
-                            .on_hover_text("d, asks for confirmation")
-                            .clicked()
-                        {
-                            discard_lines = true;
-                        }
-                    } else if ui
-                        .add_enabled(!busy, egui::Button::new(label("Unstage")).small())
-                        .on_hover_text("u")
-                        .clicked()
-                    {
-                        unstage_lines = true;
-                    }
-                    if ui.small_button("x").on_hover_text("Clear selection (Escape)").clicked() {
-                        clear_sel = true;
-                    }
-                }
-            }
-            None => {
-                ui.weak("no file selected");
-            }
-        },
-    );
-    if ctx_delta != 0 {
-        app.change_diff_context(ctx_delta);
-    }
-    if toggle_ws {
-        app.toggle_whitespace();
-    }
-    if toggle_search {
-        if app.diff_search_active {
-            app.close_diff_search();
-        } else {
-            app.open_diff_search();
+    if conflicted {
+        if let Some(p) = selected.as_ref().map(|t| t.path().to_owned()) {
+            header = header.push(small_button(
+                "ours",
+                (!busy).then_some(Message::Resolve(p.clone(), crate::git::actions::ConflictSide::Ours)),
+            ));
+            header = header.push(small_button(
+                "theirs",
+                (!busy).then_some(Message::Resolve(p.clone(), crate::git::actions::ConflictSide::Theirs)),
+            ));
+            header = header.push(small_button(
+                "resolved",
+                (!busy).then_some(Message::Run(crate::git::ops::Command::Stage(vec![p]))),
+            ));
         }
     }
-    if stage_lines {
-        app.stage_selected_lines();
-    }
-    if unstage_lines {
-        app.unstage_selected_lines();
-    }
-    if discard_lines {
-        app.discard_selected_lines();
-    }
-    if clear_sel {
-        app.line_sel = None;
-    }
-    if let Some(side) = resolve {
-        app.resolve_selected(side);
-    }
-    if mark_resolved {
-        app.stage_selected();
-    }
-}
+    header = header.push(small_button("find", Some(Message::DiffSearchOpen)));
+    header = header.push(small_button("-", (app.diff_opts.context > 0).then_some(Message::DiffContext(-1))));
+    header = header.push(text_widget(app.diff_opts.context.to_string()).size(12).color(t.weak));
+    header = header.push(small_button("+", Some(Message::DiffContext(1))));
+    header = header.push(small_button(
+        if app.diff_opts.ignore_whitespace { "ws off" } else { "ws" },
+        Some(Message::DiffWhitespace),
+    ));
 
-fn search_bar(app: &mut App, ui: &mut egui::Ui, total: usize) {
-    let mut next = 0i32;
-    let mut close = false;
-    ui.horizontal(|ui| {
-        let resp = ui.add(
-            egui::TextEdit::singleline(&mut app.diff_search)
-                .hint_text("search in diff")
-                .desired_width(220.0),
-        );
-        if app.diff_search_focus {
-            resp.request_focus();
-            app.diff_search_focus = false;
-        }
-        if resp.changed() {
-            app.diff_match = 0;
-            app.diff_jump = true;
-        }
-        if resp.has_focus() {
-            let (enter, shift) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.modifiers.shift));
-            if enter {
-                next = if shift { -1 } else { 1 };
-                resp.request_focus();
-            }
-        }
-        if total > 0 {
-            ui.weak(format!("{} of {total}", app.diff_match.min(total.saturating_sub(1)) + 1));
-        } else if !app.diff_search.is_empty() {
-            ui.weak("no matches");
-        }
-        if ui.small_button("prev").on_hover_text("Shift+N").clicked() {
-            next = -1;
-        }
-        if ui.small_button("next").on_hover_text("n").clicked() {
-            next = 1;
-        }
-        if ui.small_button("close").on_hover_text("Escape").clicked() {
-            close = true;
-        }
-    });
-    if next != 0 {
-        app.diff_next_match(next);
-    }
-    if close {
-        app.close_diff_search();
-    }
-}
-
-pub fn show(app: &mut App, ui: &mut egui::Ui) {
-    let theme = app.theme.clone();
-    header(app, ui);
-    let total_matches = match_count(app);
+    let mut col = column![header].spacing(0);
     if app.diff_search_active {
-        search_bar(app, ui, total_matches);
+        let total = match_count(app);
+        let mut bar = row![
+            text_input("search in the diff", &app.diff_search)
+                .id(widgets::DIFF_SEARCH_ID.clone())
+                .on_input(Message::DiffSearch)
+                .on_submit(Message::DiffNext(1))
+                .size(12)
+                .padding([3, 8])
+                .style(widgets::text_input_style)
+                .width(Length::Fill),
+        ]
+        .spacing(6)
+        .align_y(iced_core::Alignment::Center)
+        .padding([2, 6]);
+        let pos = if total == 0 {
+            "no matches".to_owned()
+        } else {
+            format!("{} / {total}", app.diff_match.min(total.saturating_sub(1)) + 1)
+        };
+        bar = bar.push(text_widget(pos).size(12).color(t.weak));
+        bar = bar.push(small_button("prev", (total > 0).then_some(Message::DiffNext(-1))));
+        bar = bar.push(small_button("next", (total > 0).then_some(Message::DiffNext(1))));
+        bar = bar.push(small_button("x", Some(Message::DiffSearchClose)));
+        col = col.push(bar);
     }
-    ui.separator();
-    if app.diff.is_none() {
-        if app.diff_loading {
-            ui.weak("loading diff");
+    let body: Element<'_> = match &app.diff {
+        None => {
+            let msg = if app.diff_loading { "loading diff" } else { "" };
+            container(text_widget(msg).size(12).color(t.weak)).padding(8).into()
         }
-        return;
-    }
-    let d = app.diff.clone().expect("checked above");
-    if d.too_large {
-        ui.colored_label(theme.error, "file too large to diff (over 2 MB)");
-    }
-    if d.binary {
-        ui.weak("binary file");
-    }
-    if d.hunks.is_empty() && !d.binary && !d.too_large {
-        ui.weak("no changes");
-        return;
-    }
-    let rows = flatten(&d);
-    let match_rows = matches(&rows, &app.diff_search);
-    if !match_rows.is_empty() && app.diff_match >= match_rows.len() {
-        app.diff_match = match_rows.len() - 1;
-    }
-    let current_match = match_rows.get(app.diff_match).copied();
-    let jump = std::mem::take(&mut app.diff_jump);
-    let font = egui::TextStyle::Monospace.resolve(ui.style());
-    let row_h = ui.fonts_mut(|f| f.row_height(&font)) + 2.0;
-    let char_w = ui.fonts_mut(|f| f.glyph_width(&font, '0'));
-    let max_no = rows
-        .iter()
-        .filter_map(|r| match r {
-            Row::Line(_, _, l) => Some(l.old_no.unwrap_or(0).max(l.new_no.unwrap_or(0))),
-            _ => None,
-        })
-        .max()
-        .unwrap_or(0);
-    let digits = (max_no.max(1) as f32).log10().floor() as usize + 1;
-    let gutter = char_w * (digits as f32 * 2.0 + 4.0);
-    let longest = rows.iter().map(|r| row_text(r).chars().count()).max().unwrap_or(0);
-    let wrap = app.wrap;
-    let text_color = ui.visuals().text_color();
-    let strong = ui.visuals().strong_text_color();
-    let hunk_action = match &d.target {
-        _ if d.status == crate::git::repo::FileKind::Conflicted => None,
-        DiffTarget::WorkdirUnstaged(p) => Some((p.to_owned(), true)),
-        DiffTarget::Staged(p) => Some((p.to_owned(), false)),
-        DiffTarget::Commit(..) => None,
-    };
-    let ctx = PaintCtx {
-        theme: &theme,
-        font: font.clone(),
-        row_h,
-        char_w,
-        digits,
-        gutter,
-        text_color,
-        strong,
-        hunk_action,
-        busy: app.busy > 0,
-        sel: app.line_sel,
-        query: app.diff_search.to_lowercase(),
-        current_match,
-    };
-    let mut actions: Vec<RowAction> = Vec::new();
-    let pointer_down = ui.input(|i| i.pointer.primary_down());
-    if !pointer_down {
-        app.line_drag = false;
-    }
-    let dragging = app.line_drag;
-
-    if wrap {
-        egui::ScrollArea::vertical()
-            .id_salt("diff_scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let view_w = ui.available_width();
-                for (i, row) in rows.iter().enumerate() {
-                    let rect = paint_row(ui, &ctx, i, row, view_w, view_w, true, dragging, &mut actions);
-                    if jump && Some(i) == current_match {
-                        ui.scroll_to_rect(rect, Some(egui::Align::Center));
-                    }
-                }
-            });
-    } else {
-        let content_w = ui.available_width().max(gutter + longest as f32 * char_w + 16.0);
-        let mut area = egui::ScrollArea::both()
-            .id_salt("diff_scroll")
-            .auto_shrink([false, false]);
-        if jump {
-            if let Some(m) = current_match {
-                let offset = (m as f32 * row_h - ui.available_height() * 0.4).max(0.0);
-                area = area.vertical_scroll_offset(offset);
+        Some(d) => {
+            if d.binary {
+                container(text_widget("binary file").size(12).color(t.weak)).padding(8).into()
+            } else if d.too_large {
+                container(text_widget("file too large to diff (over 2 MB)").size(12).color(t.error))
+                    .padding(8)
+                    .into()
+            } else if d.hunks.is_empty() {
+                let label = match d.status {
+                    FileKind::Untracked | FileKind::Added => "empty file",
+                    _ => "no changes",
+                };
+                container(text_widget(label).size(12).color(t.weak)).padding(8).into()
+            } else {
+                CoreElement::new(DiffView { app, diff: d })
             }
         }
-        area.show_rows(ui, row_h, rows.len(), |ui, range| {
-            let view_w = ui.available_width();
-            for i in range {
-                paint_row(ui, &ctx, i, &rows[i], view_w, content_w, false, dragging, &mut actions);
+    };
+    col.push(container(body).width(Length::Fill).height(Length::Fill)).into()
+}
+
+struct DiffView<'a> {
+    app: &'a App,
+    diff: &'a DiffText,
+}
+
+#[derive(Default)]
+struct State {
+    scroll: f32,
+    scroll_x: f32,
+    dragging: bool,
+}
+
+/// Which hunk buttons apply: (unstaged?, path) for working tree diffs.
+fn hunk_actions(d: &DiffText) -> Option<bool> {
+    match &d.target {
+        DiffTarget::WorkdirUnstaged(_) => Some(true),
+        DiffTarget::Staged(_) => Some(false),
+        DiffTarget::Commit(..) => None,
+    }
+}
+
+struct Geometry {
+    rows: usize,
+    char_w: f32,
+    gutter: f32,
+}
+
+impl DiffView<'_> {
+    fn geometry(&self, renderer: &Renderer) -> Geometry {
+        let size = Pixels(text::Renderer::default_size(renderer).0 - 0.5);
+        let char_w = measure("0", Font::MONOSPACE, size).max(1.0);
+        let max_no = self
+            .diff
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .flat_map(|l| [l.old_no.unwrap_or(0), l.new_no.unwrap_or(0)])
+            .max()
+            .unwrap_or(1);
+        let digits = max_no.max(1).to_string().len().max(2) as f32;
+        let rows = self.diff.hunks.iter().map(|h| h.lines.len() + 1).sum();
+        Geometry {
+            rows,
+            char_w,
+            gutter: (digits * 2.0 + 3.0) * char_w + 12.0,
+        }
+    }
+
+    fn row_at(&self, state: &State, bounds: Rectangle, p: Point) -> Option<usize> {
+        let i = ((p.y + state.scroll) / ROW_H).floor();
+        if i < 0.0 {
+            return None;
+        }
+        let i = i as usize;
+        let _ = bounds;
+        Some(i)
+    }
+
+    /// Button rects on a hunk header row, right-aligned: (rect, action).
+    fn hunk_buttons(&self, bounds: Rectangle, y: f32) -> Vec<(Rectangle, HunkAction)> {
+        let Some(unstaged) = hunk_actions(self.diff) else { return Vec::new() };
+        let busy = self.app.busy > 0;
+        if busy {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        let mut x = bounds.x + bounds.width - 6.0;
+        let mut push = |x: &mut f32, action: HunkAction| {
+            *x -= BUTTON_W;
+            out.push((Rectangle::new(Point::new(*x, y + 2.0), Size::new(BUTTON_W, ROW_H - 4.0)), action));
+            *x -= 6.0;
+        };
+        if unstaged {
+            push(&mut x, HunkAction::Stage);
+            push(&mut x, HunkAction::Discard);
+        } else {
+            push(&mut x, HunkAction::Unstage);
+        }
+        out
+    }
+}
+
+impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
+    fn size(&self) -> Size<Length> {
+        Size::new(Length::Fill, Length::Fill)
+    }
+
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<State>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(State::default())
+    }
+
+    fn layout(&mut self, _tree: &mut Tree, _renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
+        layout::Node::new(limits.max())
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: layout::Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        _clipboard: &mut dyn iced_core::Clipboard,
+        shell: &mut Shell<'_, Message>,
+        _viewport: &Rectangle,
+    ) {
+        let state = tree.state.downcast_mut::<State>();
+        let bounds = layout.bounds();
+        let geo = self.geometry(renderer);
+        let max = (geo.rows as f32 * ROW_H - bounds.height).max(0.0);
+        let rows = flatten(self.diff);
+        match event {
+            Event::Window(iced_core::window::Event::RedrawRequested(_)) => {
+                if self.app.diff_jump.get() {
+                    let m = matches(&rows, &self.app.diff_search);
+                    if let Some(i) = m.get(self.app.diff_match.min(m.len().saturating_sub(1))) {
+                        let top = *i as f32 * ROW_H;
+                        state.scroll = (top - bounds.height / 2.0).max(0.0);
+                        shell.request_redraw();
+                    }
+                    self.app.diff_jump.set(false);
+                }
+                state.scroll = state.scroll.clamp(0.0, max);
+            }
+            Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                if cursor.is_over(bounds) {
+                    let (dx, dy) = match delta {
+                        mouse::ScrollDelta::Lines { x, y } => (-x * geo.char_w * 8.0, -y * ROW_H * 3.0),
+                        mouse::ScrollDelta::Pixels { x, y } => (-x, -y),
+                    };
+                    if self.app.modifiers.shift() {
+                        state.scroll_x = (state.scroll_x + dy).max(0.0);
+                    } else {
+                        state.scroll = (state.scroll + dy).clamp(0.0, max);
+                        state.scroll_x = (state.scroll_x + dx).max(0.0);
+                    }
+                    shell.capture_event();
+                    shell.request_redraw();
+                }
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                let Some(p) = cursor.position_in(bounds) else { return };
+                let Some(i) = self.row_at(state, bounds, p) else { return };
+                let Some(r) = rows.get(i) else { return };
+                shell.capture_event();
+                match r {
+                    Row::Hunk(hunk, _) => {
+                        let y = bounds.y + i as f32 * ROW_H - state.scroll;
+                        let abs = Point::new(p.x + bounds.x, p.y + bounds.y);
+                        for (rect, action) in self.hunk_buttons(bounds, y) {
+                            if rect.contains(abs) {
+                                shell.publish(Message::DiffHunk(action, *hunk));
+                                return;
+                            }
+                        }
+                    }
+                    Row::Line(hunk, line, _) => {
+                        if hunk_actions(self.diff).is_some() {
+                            shell.publish(Message::DiffLineClick {
+                                hunk: *hunk,
+                                line: *line,
+                                shift: self.app.modifiers.shift(),
+                            });
+                            state.dragging = true;
+                        }
+                    }
+                }
+            }
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                if state.dragging {
+                    if let Some(p) = cursor.position_in(bounds) {
+                        if let Some(i) = self.row_at(state, bounds, p) {
+                            if let Some(Row::Line(hunk, line, _)) = rows.get(i) {
+                                shell.publish(Message::DiffDragTo {
+                                    hunk: *hunk,
+                                    line: *line,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                state.dragging = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn mouse_interaction(
+        &self,
+        _tree: &Tree,
+        layout: layout::Layout<'_>,
+        cursor: mouse::Cursor,
+        _viewport: &Rectangle,
+        _renderer: &Renderer,
+    ) -> mouse::Interaction {
+        if cursor.is_over(layout.bounds()) && hunk_actions(self.diff).is_some() {
+            mouse::Interaction::Pointer
+        } else {
+            mouse::Interaction::None
+        }
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut Renderer,
+        _theme: &iced_core::Theme,
+        _style: &renderer::Style,
+        layout: layout::Layout<'_>,
+        cursor: mouse::Cursor,
+        _viewport: &Rectangle,
+    ) {
+        let state = tree.state.downcast_ref::<State>();
+        let bounds = layout.bounds();
+        let app = self.app;
+        let t = &app.theme;
+        let geo = self.geometry(renderer);
+        let size = Pixels(text::Renderer::default_size(renderer).0 - 0.5);
+        let mono = Font::MONOSPACE;
+        let rows = flatten(self.diff);
+        let match_rows = matches(&rows, &app.diff_search);
+        let current_match = match_rows.get(app.diff_match.min(match_rows.len().saturating_sub(1))).copied();
+        let first = (state.scroll / ROW_H).floor() as usize;
+        let last = ((state.scroll + bounds.height) / ROW_H).ceil() as usize;
+        let focused = app.focus == Pane::Detail;
+        let digits = ((geo.gutter - 12.0) / geo.char_w - 3.0) / 2.0;
+        let digits = digits.round() as usize;
+
+        renderer.with_layer(bounds, |renderer| {
+            fill(renderer, bounds, t.well, 0.0);
+            for i in first..last.min(rows.len()) {
+                let y = bounds.y + i as f32 * ROW_H - state.scroll;
+                let full = Rectangle::new(Point::new(bounds.x, y), Size::new(bounds.width, ROW_H));
+                let Some(rect) = full.intersection(&bounds) else { continue };
+                let cy = full.center_y();
+                match &rows[i] {
+                    Row::Hunk(hunk, header) => {
+                        fill(renderer, rect, t.hunk_bg, 0.0);
+                        let buttons = self.hunk_buttons(bounds, y);
+                        let text_w = buttons
+                            .iter()
+                            .map(|(r, _)| r.x)
+                            .fold(bounds.x + bounds.width, f32::min)
+                            - bounds.x
+                            - 8.0;
+                        let clip = Rectangle::new(Point::new(bounds.x, rect.y), Size::new(text_w.max(20.0), rect.height));
+                        draw_text(renderer, header.to_string(), Point::new(bounds.x + 8.0 - state.scroll_x, cy), mono, size, t.hunk_fg, clip);
+                        for (brect, action) in buttons {
+                            let Some(brect) = brect.intersection(&bounds) else { continue };
+                            let hovered = cursor.is_over(brect);
+                            fill(
+                                renderer,
+                                brect,
+                                if hovered { alpha(t.accent, 0.35) } else { alpha(t.accent, 0.18) },
+                                4.0,
+                            );
+                            let label = match action {
+                                HunkAction::Stage => "Stage hunk",
+                                HunkAction::Unstage => "Unstage hunk",
+                                HunkAction::Discard => "Discard hunk",
+                            };
+                            let w = measure(label, text::Renderer::default_font(renderer), Pixels(size.0 - 1.0));
+                            draw_text(
+                                renderer,
+                                label.to_owned(),
+                                Point::new(brect.center_x() - w / 2.0, brect.center_y()),
+                                text::Renderer::default_font(renderer),
+                                Pixels(size.0 - 1.0),
+                                t.strong,
+                                brect,
+                            );
+                        }
+                        let _ = hunk;
+                    }
+                    Row::Line(hunk, line, l) => {
+                        let (bg, fg) = match l.origin {
+                            '+' => (Some(t.add_bg), t.add_fg),
+                            '-' => (Some(t.del_bg), t.del_fg),
+                            _ => (None, t.text),
+                        };
+                        if let Some(bg) = bg {
+                            fill(renderer, rect, bg, 0.0);
+                        }
+                        if app.line_sel.is_some_and(|s| s.contains(*hunk, *line)) {
+                            fill(
+                                renderer,
+                                rect,
+                                if focused { alpha(t.selection, 0.85) } else { alpha(t.selection_inactive, 0.85) },
+                                0.0,
+                            );
+                        }
+                        if match_rows.binary_search(&i).is_ok() {
+                            fill(
+                                renderer,
+                                rect,
+                                if current_match == Some(i) { alpha(t.warn, 0.35) } else { alpha(t.warn, 0.15) },
+                                0.0,
+                            );
+                        }
+                        let gutter_rect = Rectangle::new(Point::new(bounds.x, rect.y), Size::new(geo.gutter, rect.height));
+                        let old = l.old_no.map(|n| n.to_string()).unwrap_or_default();
+                        let new = l.new_no.map(|n| n.to_string()).unwrap_or_default();
+                        let numbers = format!("{old:>digits$} {new:>digits$} {}", l.origin);
+                        draw_text(renderer, numbers, Point::new(bounds.x + 6.0, cy), mono, size, t.line_no, gutter_rect);
+                        let text_clip = Rectangle::new(
+                            Point::new(bounds.x + geo.gutter, rect.y),
+                            Size::new((bounds.width - geo.gutter).max(0.0), rect.height),
+                        );
+                        let content = if l.no_newline {
+                            format!("{} \\ No newline at end of file", l.text)
+                        } else {
+                            l.text.clone()
+                        };
+                        draw_text(renderer, content, Point::new(bounds.x + geo.gutter - state.scroll_x, cy), mono, size, fg, text_clip);
+                    }
+                }
+            }
+            // Scrollbar hint.
+            if geo.rows as f32 * ROW_H > bounds.height {
+                let total = geo.rows as f32 * ROW_H;
+                let frac = bounds.height / total;
+                let h = (bounds.height * frac).max(16.0);
+                let y = bounds.y + (state.scroll / total) * bounds.height;
+                fill(
+                    renderer,
+                    Rectangle::new(Point::new(bounds.x + bounds.width - 6.0, y), Size::new(4.0, h)),
+                    alpha(t.weak, 0.5),
+                    2.0,
+                );
             }
         });
     }
-    for a in actions {
-        match a {
-            RowAction::Click { hunk, line, shift } => {
-                app.line_sel = match app.line_sel {
-                    Some(mut s) if shift && s.hunk == hunk => {
-                        s.end = line;
-                        Some(s)
-                    }
-                    Some(s) if s.hunk == hunk && s.anchor == line && s.end == line => None,
-                    _ => Some(LineSel {
-                        hunk,
-                        anchor: line,
-                        end: line,
-                    }),
-                };
-            }
-            RowAction::DragStart { hunk, line } => {
-                app.line_drag = true;
-                app.line_sel = Some(LineSel {
-                    hunk,
-                    anchor: line,
-                    end: line,
-                });
-            }
-            RowAction::DragOver { hunk, line } => {
-                if let Some(s) = app.line_sel.as_mut() {
-                    if s.hunk == hunk {
-                        s.end = line;
-                    }
-                }
-            }
-        }
-    }
 }
 
-fn line_colors(origin: char, ctx: &PaintCtx) -> (Option<Color32>, Color32) {
-    match origin {
-        '+' => (Some(ctx.theme.add_bg), ctx.theme.add_fg),
-        '-' => (Some(ctx.theme.del_bg), ctx.theme.del_fg),
-        _ => (None, ctx.text_color),
-    }
-}
-
-/// Paint highlights behind every occurrence of the query in `text`.
-fn paint_matches(
-    p: &egui::Painter,
-    ctx: &PaintCtx,
-    text: &str,
-    origin_x: f32,
-    rect: Rect,
-    current: bool,
-) {
-    if ctx.query.is_empty() {
-        return;
-    }
-    let lower = text.to_lowercase();
-    let qlen = ctx.query.chars().count();
-    let mut from = 0;
-    while let Some(pos) = lower[from..].find(&ctx.query) {
-        let byte = from + pos;
-        let col = lower[..byte].chars().count();
-        let x0 = origin_x + col as f32 * ctx.char_w;
-        let x1 = x0 + qlen as f32 * ctx.char_w;
-        let color = if current {
-            ctx.theme.tag_pill
-        } else {
-            ctx.theme.tag_pill.gamma_multiply(0.45)
-        };
-        p.rect_filled(
-            Rect::from_min_max(pos2(x0, rect.min.y + 1.0), pos2(x1, rect.max.y - 1.0)),
-            2.0,
-            color,
-        );
-        from = byte + ctx.query.len();
-        if from >= lower.len() {
-            break;
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn paint_row(
-    ui: &mut egui::Ui,
-    ctx: &PaintCtx,
-    row_index: usize,
-    row: &Row<'_>,
-    view_w: f32,
-    content_w: f32,
-    wrap: bool,
-    dragging: bool,
-    actions: &mut Vec<RowAction>,
-) -> Rect {
-    let p = ui.painter().clone();
-    let is_current = ctx.current_match == Some(row_index);
-    match row {
-        Row::Hunk(hunk_index, header) => {
-            let buttons_w = match &ctx.hunk_action {
-                Some((_, true)) => HUNK_BUTTON_W + DISCARD_BUTTON_W + 8.0,
-                Some((_, false)) => HUNK_BUTTON_W,
-                None => 0.0,
-            };
-            let header_galley = if wrap {
-                Some(p.layout(
-                    (*header).to_owned(),
-                    ctx.font.clone(),
-                    ctx.theme.hunk_fg,
-                    (view_w - buttons_w - 20.0).max(1.0),
-                ))
-            } else {
-                None
-            };
-            let height = header_galley
-                .as_ref()
-                .map(|g| g.size().y.max(ctx.row_h))
-                .unwrap_or(ctx.row_h);
-            let (rect, _resp) = ui.allocate_exact_size(vec2(content_w, height), Sense::hover());
-            p.rect_filled(rect, 0.0, ctx.theme.hunk_bg);
-            let text_right = rect.min.x + view_w - buttons_w - 14.0;
-            let pc = p.with_clip_rect(
-                Rect::from_min_max(rect.min, pos2(text_right, rect.max.y)).intersect(p.clip_rect()),
-            );
-            paint_matches(&pc, ctx, header, rect.min.x + 6.0, rect, is_current);
-            if let Some(galley) = &header_galley {
-                pc.galley(
-                    pos2(rect.min.x + 6.0, rect.min.y + 1.0),
-                    galley.clone(),
-                    ctx.theme.hunk_fg,
-                );
-            } else {
-                pc.text(
-                    pos2(rect.min.x + 6.0, rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    *header,
-                    ctx.font.clone(),
-                    ctx.theme.hunk_fg,
-                );
-            }
-            if let Some((path, unstaged)) = &ctx.hunk_action {
-                let label = if *unstaged { "Stage hunk" } else { "Unstage hunk" };
-                let brect = Rect::from_min_size(
-                    pos2(rect.min.x + view_w - HUNK_BUTTON_W - 8.0, rect.min.y + 1.0),
-                    vec2(HUNK_BUTTON_W, ctx.row_h - 2.0),
-                );
-                let clicked = ui.put(brect, egui::Button::new(label).small()).clicked();
-                if clicked && !ctx.busy {
-                    let cmd = if *unstaged {
-                        Command::StageHunk {
-                            path: path.clone(),
-                            hunk_index: *hunk_index,
-                        }
-                    } else {
-                        Command::UnstageHunk {
-                            path: path.clone(),
-                            hunk_index: *hunk_index,
-                        }
-                    };
-                    PENDING.with(|pending| *pending.borrow_mut() = Some(cmd));
-                }
-                if *unstaged {
-                    let drect = Rect::from_min_size(
-                        pos2(brect.min.x - DISCARD_BUTTON_W - 8.0, rect.min.y + 1.0),
-                        vec2(DISCARD_BUTTON_W, ctx.row_h - 2.0),
-                    );
-                    let clicked = ui
-                        .put(drect, egui::Button::new("Discard hunk").small())
-                        .on_hover_text("Undo this hunk in the working tree. Cannot be undone.")
-                        .clicked();
-                    if clicked && !ctx.busy {
-                        PENDING.with(|pending| {
-                            *pending.borrow_mut() = Some(Command::DiscardHunk {
-                                path: path.clone(),
-                                hunk_index: *hunk_index,
-                            })
-                        });
-                    }
-                }
-            }
-            rect
-        }
-        Row::Line(hunk, line, l) => {
-            let (bg, fg) = line_colors(l.origin, ctx);
-            let text_w = (content_w - ctx.gutter).max(1.0);
-            let galley = if wrap {
-                p.layout(l.text.clone(), ctx.font.clone(), fg, text_w)
-            } else {
-                p.layout_no_wrap(l.text.clone(), ctx.font.clone(), fg)
-            };
-            let height = if wrap {
-                galley.size().y.max(ctx.row_h)
-            } else {
-                ctx.row_h
-            };
-            let selectable = ctx.hunk_action.is_some();
-            let sense = if selectable {
-                Sense::click_and_drag()
-            } else {
-                Sense::hover()
-            };
-            let (rect, resp) = ui.allocate_exact_size(vec2(content_w, height), sense);
-            if selectable {
-                let shift = ui.input(|i| i.modifiers.shift);
-                if resp.drag_started() {
-                    actions.push(RowAction::DragStart {
-                        hunk: *hunk,
-                        line: *line,
-                    });
-                } else if resp.clicked() {
-                    actions.push(RowAction::Click {
-                        hunk: *hunk,
-                        line: *line,
-                        shift,
-                    });
-                } else if dragging && ui.rect_contains_pointer(rect) {
-                    actions.push(RowAction::DragOver {
-                        hunk: *hunk,
-                        line: *line,
-                    });
-                }
-            }
-            let text_rect =
-                Rect::from_min_max(pos2(rect.min.x + ctx.gutter, rect.min.y), rect.max);
-            if let Some(bg) = bg {
-                p.rect_filled(rect, 0.0, bg);
-            }
-            let selected = ctx.sel.is_some_and(|s| s.contains(*hunk, *line));
-            if selected {
-                let c = ctx.theme.selection;
-                p.rect_filled(
-                    rect,
-                    0.0,
-                    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 120),
-                );
-                p.rect_stroke(
-                    Rect::from_min_max(pos2(rect.min.x + 1.0, rect.min.y), pos2(rect.min.x + 4.0, rect.max.y)),
-                    0.0,
-                    egui::Stroke::new(3.0, ctx.theme.hunk_fg),
-                    egui::StrokeKind::Inside,
-                );
-            } else if selectable && resp.hovered() {
-                p.rect_filled(rect, 0.0, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.5));
-            }
-            paint_line_gutter(&p, rect, l, ctx, wrap);
-            let galley_pos = if wrap {
-                pos2(text_rect.min.x, text_rect.min.y + 1.0)
-            } else {
-                pos2(text_rect.min.x, rect.center().y - galley.size().y / 2.0)
-            };
-            let pc = p.with_clip_rect(text_rect);
-            if !wrap {
-                paint_matches(&pc, ctx, &l.text, text_rect.min.x, rect, is_current);
-            } else if is_current {
-                pc.rect_filled(text_rect, 0.0, ctx.theme.tag_pill.gamma_multiply(0.35));
-            }
-            pc.galley(galley_pos, galley, fg);
-            rect
-        }
-    }
-}
-
-fn paint_line_gutter(p: &egui::Painter, rect: Rect, l: &DiffLine, ctx: &PaintCtx, wrap: bool) {
-    let old = l.old_no.map(|n| n.to_string()).unwrap_or_default();
-    let new = l.new_no.map(|n| n.to_string()).unwrap_or_default();
-    let no_x = rect.min.x + 4.0;
-    let line_y = if wrap {
-        rect.min.y + 1.0 + ctx.row_h / 2.0
-    } else {
-        rect.center().y
-    };
-    p.text(
-        pos2(no_x + ctx.char_w * ctx.digits as f32, line_y),
-        egui::Align2::RIGHT_CENTER,
-        old,
-        ctx.font.clone(),
-        ctx.theme.line_no,
-    );
-    p.text(
-        pos2(
-            no_x + ctx.char_w * (ctx.digits as f32 * 2.0 + 1.0),
-            line_y,
-        ),
-        egui::Align2::RIGHT_CENTER,
-        new,
-        ctx.font.clone(),
-        ctx.theme.line_no,
-    );
-    let sign_x = rect.min.x + ctx.gutter - ctx.char_w * 1.5;
-    p.text(
-        pos2(sign_x, line_y),
-        egui::Align2::CENTER_CENTER,
-        l.origin.to_string(),
-        ctx.font.clone(),
-        if l.origin == ' ' {
-            ctx.text_color
-        } else {
-            ctx.strong
-        },
-    );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::git::repo::{FileKind, Hunk};
-
-    fn line(origin: char, text: &str) -> DiffLine {
-        DiffLine {
-            origin,
-            old_no: None,
-            new_no: None,
-            text: text.into(),
-            no_newline: false,
-        }
-    }
-
-    #[test]
-    fn search_matches_rows_case_insensitively() {
-        let d = DiffText {
-            target: DiffTarget::Staged("f".into()),
-            binary: false,
-            too_large: false,
-            status: FileKind::Modified,
-            hunks: vec![Hunk {
-                header: "@@ -1 +1 @@ fn Main".into(),
-                lines: vec![line(' ', "let x = 1;"), line('+', "MAIN loop"), line('-', "old")],
-            }],
-        };
-        let rows = flatten(&d);
-        assert_eq!(rows.len(), 4);
-        assert_eq!(matches(&rows, "main"), vec![0, 2]);
-        assert!(matches(&rows, "").is_empty());
-        assert_eq!(matches(&rows, "OLD"), vec![3]);
-    }
-
-    #[test]
-    fn line_selection_ranges() {
-        let s = LineSel {
-            hunk: 1,
-            anchor: 5,
-            end: 2,
-        };
-        assert_eq!(s.range(), (2, 5));
-        assert_eq!(s.lines(), vec![2, 3, 4, 5]);
-        assert!(s.contains(1, 3));
-        assert!(!s.contains(0, 3));
-        assert!(!s.contains(1, 6));
-    }
-}
+#[allow(dead_code)]
+fn unused(_: Color) {}

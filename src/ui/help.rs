@@ -1,14 +1,20 @@
 //! Keyboard reference shown by the `?` dialog. One table, so the dialog and
 //! the docs cannot drift apart.
 
+use iced_core::{Font, Length};
+use iced_widget::{column, row, scrollable, text};
+
+use crate::ui::app::{App, Element};
+
 /// (section, key, action)
 pub const KEYS: &[(&str, &str, &str)] = &[
     ("Navigation", "j / k, Down / Up", "move selection"),
     ("Navigation", "PageDown / PageUp, Home / End", "jump in the list"),
-    ("Navigation", "Tab", "cycle focus: sidebar, log, detail"),
-    ("Navigation", "1 / 2 / 3", "hide or show the sidebar / commit list / detail pane"),
-    ("Navigation", "Enter", "open selection / check out branch"),
+    ("Navigation", "Tab", "cycle focus: sidebar, commits, changes, diff"),
+    ("Navigation", "Enter", "check out the selected branch"),
     ("Navigation", "/", "filter commits (summary, author, hash)"),
+    ("Navigation", "1 / 2 / 3 / 4", "maximize or restore a pane"),
+    ("Navigation", "drag a title bar", "move a pane; drag the gaps to resize"),
     ("Navigation", "Escape", "clear filter, search, selection; close dialog"),
     ("Navigation", "?", "this help"),
     ("Navigation", "q, Ctrl+C", "quit"),
@@ -21,13 +27,13 @@ pub const KEYS: &[(&str, &str, &str)] = &[
     ("Working tree", "e", "edit the selected file (built-in editor)"),
     ("Working tree", "Shift+E", "open the selected file in your editor (--editor, gitgui.editor, $EDITOR)"),
     ("Working tree", "Shift+O", "open the selected file in a cmux preview tab"),
-    ("Editor", "Ctrl+S", "save"),
-    ("Editor", "Escape", "close (asks when unsaved)"),
-    ("Editor", "Ctrl+Z / Ctrl+Y", "undo / redo"),
     ("Working tree", "c", "focus the commit message"),
     ("Working tree", "Ctrl+Enter", "commit"),
     ("Working tree", "Ctrl+Shift+Enter", "commit and push"),
     ("Working tree", "Shift+S", "stash"),
+    ("Editor", "Ctrl+S", "save"),
+    ("Editor", "Escape", "close (asks when unsaved)"),
+    ("Editor", "Ctrl+Z / Ctrl+Y", "undo / redo"),
     ("Diff", "click, Shift+click, drag", "select lines"),
     ("Diff", "Ctrl+F", "search in the diff"),
     ("Diff", "n / Shift+N", "next / previous match"),
@@ -49,28 +55,23 @@ pub const KEYS: &[(&str, &str, &str)] = &[
     ("Remote", "m", "continue, abort or skip a merge or rebase"),
 ];
 
-pub fn show(ui: &mut egui::Ui) {
-    egui::ScrollArea::vertical()
-        .id_salt("help_scroll")
-        .max_height(420.0)
-        .show(ui, |ui| {
-            let mut section = "";
-            egui::Grid::new("help_grid")
-                .num_columns(2)
-                .spacing([18.0, 3.0])
-                .show(ui, |ui| {
-                    for (sec, key, action) in KEYS {
-                        if *sec != section {
-                            section = sec;
-                            ui.strong(*sec);
-                            ui.end_row();
-                        }
-                        ui.monospace(*key);
-                        ui.label(*action);
-                        ui.end_row();
-                    }
-                });
-            ui.add_space(6.0);
-            ui.weak("Right click branches, remotes, tags, stashes, files and commits for more.");
-        });
+pub fn view(app: &App) -> Element<'_> {
+    let t = &app.theme;
+    let mut col = column![].spacing(2);
+    let mut section = "";
+    for (sec, key, action) in KEYS {
+        if *sec != section {
+            section = sec;
+            col = col.push(text(*sec).size(13).color(t.strong));
+        }
+        col = col.push(
+            row![
+                text(*key).size(12).font(Font::MONOSPACE).width(Length::Fixed(220.0)),
+                text(*action).size(12).color(t.text),
+            ]
+            .spacing(12),
+        );
+    }
+    col = col.push(text("Right click branches, remotes, tags, stashes, files and commits for more.").size(12).color(t.weak));
+    scrollable(col).height(Length::Fixed(400.0)).into()
 }

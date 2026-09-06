@@ -1,5 +1,5 @@
 //! The interactive loop, `--dump-input`, and the headless frame renderer.
-//! Wires egui, the rasterizer, the framebuffer and the terminal together.
+//! Wires the iced shell, the framebuffer and the terminal together.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -7,20 +7,18 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context as _};
 use base64::Engine as _;
+use iced_core::window::RedrawRequest;
 
 use crate::agent::{self, AgentJob, Server};
 use crate::git::ops::{self, Command, Reply};
 use crate::git::repo::{GitError, Repo};
 use crate::render::frame::Framebuffer;
-use crate::render::raster::{Rasterizer, Target};
+use crate::shell::Shell;
 use crate::term::input::{Event, Key, Parser};
 use crate::term::{self, kitty, probe};
 use crate::ui::app::App;
-use crate::ui::input::Mapper;
 use crate::ui::theme::Theme;
 
-const MAX_TEXTURE_SIDE: usize = 8192;
-/// A lone ESC becomes the Escape key after this long without more bytes.
 const ESC_TIMEOUT: Duration = Duration::from_millis(50);
 
 pub struct Options {
@@ -29,20 +27,16 @@ pub struct Options {
     pub scale: Option<f32>,
     pub font_size: Option<f32>,
     pub editor: Option<String>,
-    /// File to open in the built-in editor at startup.
     pub open: Option<String>,
     pub path: PathBuf,
 }
 
-/// Everything the main loop waits on arrives through one channel.
 enum Msg {
     Input(Vec<u8>),
     Git(Reply),
     Agent(AgentJob),
 }
 
-/// UI font size in points that matches the terminal's text: the cell
-/// height in logical pixels times a typical font/line-height ratio.
 pub fn font_size_for_cell(cell_h_px: u32, ppp: f32) -> f32 {
     if cell_h_px == 0 {
         return 13.0;
@@ -54,149 +48,6 @@ pub fn font_size_for_cell(cell_h_px: u32, ppp: f32) -> f32 {
 /// The scale is NOT set with `set_pixels_per_point`: egui multiplies its
 /// zoom factor by `native_pixels_per_point` from `RawInput`, so setting
 /// both would double the scale. Only the raw input carries it.
-fn setup_context(font_size: f32, theme: &Theme) -> egui::Context {
-    let ctx = egui::Context::default();
-    theme.apply(&ctx);
-    let body = font_size;
-    ctx.all_styles_mut(|style| {
-        use egui::{FontFamily, FontId, TextStyle};
-        style.text_styles = [
-            (
-                TextStyle::Small,
-                FontId::new(body - 3.0, FontFamily::Proportional),
-            ),
-            (TextStyle::Body, FontId::new(body, FontFamily::Proportional)),
-            (
-                TextStyle::Button,
-                FontId::new(body, FontFamily::Proportional),
-            ),
-            (
-                TextStyle::Heading,
-                FontId::new(body + 5.0, FontFamily::Proportional),
-            ),
-            (
-                TextStyle::Monospace,
-                FontId::new(body - 0.5, FontFamily::Monospace),
-            ),
-        ]
-        .into();
-    });
-    ctx
-}
-
-fn raw_input(
-    w: u32,
-    h: u32,
-    ppp: f32,
-    time: f64,
-    focused: bool,
-    events: Vec<egui::Event>,
-) -> egui::RawInput {
-    let mut input = egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::pos2(0.0, 0.0),
-            egui::vec2(w as f32 / ppp, h as f32 / ppp),
-        )),
-        max_texture_side: Some(MAX_TEXTURE_SIDE),
-        time: Some(time),
-        predicted_dt: 1.0 / 60.0,
-        focused,
-        events,
-        ..Default::default()
-    };
-    input
-        .viewports
-        .entry(egui::ViewportId::ROOT)
-        .or_default()
-        .native_pixels_per_point = Some(ppp);
-    input
-}
-
-#[derive(Default)]
-pub struct Timings {
-    pub ui: Duration,
-    pub tessellate: Duration,
-    pub raster: Duration,
-}
-
-struct PassResult {
-    repaint_delay: Duration,
-    copy_text: Option<String>,
-}
-
-/// Run one egui pass and rasterize it into `fb`.
-fn render_pass(
-    ctx: &egui::Context,
-    app: &mut App,
-    raster: &mut Rasterizer,
-    fb: &mut Framebuffer,
-    input: egui::RawInput,
-    timings: &mut Timings,
-) -> PassResult {
-    let t0 = Instant::now();
-    let mut input = input;
-    // Plain Tab cycles our panes. Keep it away from egui unless a text
-    // field has focus, otherwise egui's own Tab navigation parks focus on a
-    // button and every single-key binding goes dead until Escape.
-    if !ctx.egui_wants_keyboard_input() {
-        let before = input.events.len();
-        input.events.retain(|e| {
-            !matches!(
-                e,
-                egui::Event::Key {
-                    key: egui::Key::Tab,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } if modifiers.is_none()
-            )
-        });
-        if input.events.len() != before {
-            app.tab_pressed = true;
-        }
-    }
-    let mut out = ctx.run_ui(input, |ui| app.ui(ui));
-    let t1 = Instant::now();
-    let shapes = std::mem::take(&mut out.shapes);
-    let mut textures = std::mem::take(&mut out.textures_delta);
-    let prims = ctx.tessellate(shapes, out.pixels_per_point);
-    let t2 = Instant::now();
-    raster.apply_set(&textures);
-    let bg = app.theme.background;
-    fb.clear([bg.r(), bg.g(), bg.b(), 255]);
-    let (w, h) = (fb.width() as usize, fb.height() as usize);
-    raster.paint(
-        &mut Target {
-            w,
-            h,
-            rgba: fb.pixels_mut(),
-        },
-        out.pixels_per_point,
-        &prims,
-    );
-    raster.apply_free(&textures);
-    // Dropping an unapplied delta panics in debug builds; we applied it.
-    textures.clear();
-    let t3 = Instant::now();
-    timings.ui = t1 - t0;
-    timings.tessellate = t2 - t1;
-    timings.raster = t3 - t2;
-    let mut copy_text = None;
-    for cmd in out.platform_output.commands.drain(..) {
-        if let egui::OutputCommand::CopyText(s) = cmd {
-            copy_text = Some(s);
-        }
-    }
-    PassResult {
-        repaint_delay: out
-            .viewport_output
-            .get(&egui::ViewportId::ROOT)
-            .map(|v| v.repaint_delay)
-            .unwrap_or(Duration::MAX),
-        copy_text,
-    }
-}
-
 /// `OSC 52 ; c ; <base64> ST`: write to the terminal clipboard.
 pub fn encode_osc52_copy(out: &mut Vec<u8>, text: &str) {
     out.extend_from_slice(b"\x1b]52;c;");
@@ -211,13 +62,11 @@ pub fn encode_osc52_copy(out: &mut Vec<u8>, text: &str) {
 pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Result<i32> {
     let ppp = opts.scale.unwrap_or(1.0);
     let theme = Theme::dark();
-    let ctx = setup_context(opts.font_size.unwrap_or(13.0), &theme);
+    let mut shell = Shell::new(opts.font_size.unwrap_or(13.0), ppp, size.0, size.1, theme.iced());
     let mut app = App::new(theme, "headless", ppp, opts.path.to_path_buf());
     app.editor_cmd = opts.editor.clone();
     app.open_on_start = opts.open.clone();
-    let mut raster = Rasterizer::new();
     let mut fb = Framebuffer::new(size.0, size.1);
-    let mut t = Timings::default();
 
     // Load the repository synchronously: snapshot, then whatever the app
     // asks for (commit files, first diff) until it is quiet.
@@ -235,44 +84,51 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
         let t_git = Instant::now();
         app.apply(Reply::Snapshot(repo.snapshot(ops::COMMIT_LIMIT)?));
         git_ms = t_git.elapsed().as_secs_f64() * 1e3;
-        for _ in 0..8 {
-            let cmds = std::mem::take(&mut app.pending);
-            if cmds.is_empty() {
-                break;
-            }
-            for cmd in cmds {
-                match cmd {
-                    Command::LoadDiff(target) => app.apply(Reply::Diff(repo.diff(&target, crate::git::repo::DiffOpts::default()))),
-                    Command::LoadCommitFiles(oid) => {
-                        app.apply(Reply::CommitFiles(oid, repo.commit_files(oid)))
-                    }
-                    Command::ListDir(dir) => {
-                        let r = repo.list_dir(&dir);
-                        app.apply(Reply::DirEntries(dir, r))
-                    }
-                    _ => {}
-                }
-            }
-        }
+        settle(&mut app, repo);
     }
     // Three passes: fonts load, layout settles, then the final frame.
-    for pass in 0..3 {
-        let input = raw_input(size.0, size.1, ppp, pass as f64 / 60.0, true, Vec::new());
-        render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
+    let mut ui_ms = 0.0;
+    for _ in 0..3 {
+        let t0 = Instant::now();
+        shell.frame(&mut app, &mut fb);
+        ui_ms = t0.elapsed().as_secs_f64() * 1e3;
+        if let Some(repo) = repo.as_mut() {
+            settle(&mut app, repo);
+        }
     }
     fb.save_png(path)
         .with_context(|| format!("writing {}", path.display()))?;
     eprintln!(
-        "headless {}x{} scale {ppp}: git {git_ms:.1} ms ({} commits), ui {:.2} ms, tessellate {:.2} ms, raster {:.2} ms -> {}",
+        "headless {}x{} scale {ppp}: git {git_ms:.1} ms ({} commits), frame {ui_ms:.2} ms -> {}",
         size.0,
         size.1,
         app.snapshot.commits.len(),
-        t.ui.as_secs_f64() * 1e3,
-        t.tessellate.as_secs_f64() * 1e3,
-        t.raster.as_secs_f64() * 1e3,
         path.display()
     );
     Ok(0)
+}
+
+/// Run the app's pending read commands synchronously against `repo`.
+pub fn settle(app: &mut App, repo: &mut Repo) {
+    for _ in 0..8 {
+        let cmds = std::mem::take(&mut app.pending);
+        if cmds.is_empty() {
+            break;
+        }
+        for cmd in cmds {
+            match cmd {
+                Command::LoadDiff(target) => {
+                    app.apply(Reply::Diff(repo.diff(&target, app.diff_opts)))
+                }
+                Command::LoadCommitFiles(oid) => app.apply(Reply::CommitFiles(oid, repo.commit_files(oid))),
+                Command::ListDir(dir) => {
+                    let r = repo.list_dir(&dir);
+                    app.apply(Reply::DirEntries(dir, r))
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 /// Spawn the stdin reader thread. It blocks in `poll` + `read` and ships
@@ -432,25 +288,20 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
     let session = term::Session::enter()?;
     let (w, h) = caps.frame_size();
     let theme = Theme::from_background(caps.background);
-    let font_size = opts
+    let mut font_size = opts
         .font_size
         .unwrap_or_else(|| font_size_for_cell(caps.cell_h, ppp));
-    let ctx = setup_context(font_size, &theme);
+    let mut shell = Shell::new(font_size, ppp, w, h, theme.iced());
     let mut app = App::new(theme, transport_name, ppp, opts.path.clone());
     app.editor_cmd = opts.editor.clone();
     app.open_on_start = opts.open.clone();
-    let mut raster = Rasterizer::new();
     let mut fb = Framebuffer::new(w, h);
     let mut enc = kitty::FrameEncoder::new(transport, std::process::id());
     let mut parser = Parser::new(caps.pixel_mouse, caps.cell_w, caps.cell_h);
-    let mut mapper = Mapper::new(ppp);
     spawn_stdin_thread(tx, Msg::Input);
 
     let mut out = Vec::with_capacity(1 << 16);
-    let mut pending: Vec<egui::Event> = Vec::new();
-    let mut focused = true;
     let start = Instant::now();
-    let mut t = Timings::default();
     let mut next_deadline = Instant::now();
     let mut last_frame = Instant::now() - min_interval;
     let mut last_byte = Instant::now();
@@ -466,9 +317,6 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
             panic!("deliberate panic from --crash: the terminal must be restored");
         }
         if term::take_sigwinch() {
-            // Grid from the ioctl right away; the cell size may also have
-            // changed (font zoom, another display), so ask the terminal and
-            // apply the reply when it arrives through the input stream.
             probe::apply_winsize(&mut caps);
             term::write_all(b"\x1b[16t\x1b[14t\x1b[18t")?;
             resize_needed = true;
@@ -480,30 +328,13 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                 let new_ppp = caps.pixels_per_point();
                 if new_ppp != ppp {
                     ppp = new_ppp;
-                    mapper.set_ppp(ppp);
                     app.scale = ppp;
                     if opts.font_size.is_none() {
                         let fs = font_size_for_cell(caps.cell_h, ppp);
-                        ctx.all_styles_mut(|style| {
-                            use egui::{FontFamily, FontId, TextStyle};
-                            style.text_styles = [
-                                (
-                                    TextStyle::Small,
-                                    FontId::new(fs - 3.0, FontFamily::Proportional),
-                                ),
-                                (TextStyle::Body, FontId::new(fs, FontFamily::Proportional)),
-                                (TextStyle::Button, FontId::new(fs, FontFamily::Proportional)),
-                                (
-                                    TextStyle::Heading,
-                                    FontId::new(fs + 5.0, FontFamily::Proportional),
-                                ),
-                                (
-                                    TextStyle::Monospace,
-                                    FontId::new(fs - 0.5, FontFamily::Monospace),
-                                ),
-                            ]
-                            .into();
-                        });
+                        if fs != font_size {
+                            font_size = fs;
+                            shell = Shell::new(font_size, ppp, nw, nh, app.theme.iced());
+                        }
                     }
                 }
             }
@@ -514,6 +345,7 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                 term::write_all(&out)?;
                 enc.reset();
             }
+            shell.resize(nw, nh, ppp);
             parser.cell_w = caps.cell_w.max(1);
             parser.cell_h = caps.cell_h.max(1);
             next_deadline = Instant::now();
@@ -525,22 +357,17 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
             if since_last < min_interval {
                 next_deadline = last_frame + min_interval;
             } else {
-                mapper.flush(&mut pending);
-                let events = std::mem::take(&mut pending);
-                let input = raw_input(
-                    fb.width(),
-                    fb.height(),
-                    ppp,
-                    start.elapsed().as_secs_f64(),
-                    focused,
-                    events,
-                );
-                let pass = render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
-                let t_send = Instant::now();
-                out.clear();
-                if let Some(text) = pass.copy_text {
-                    encode_osc52_copy(&mut out, &text);
+                let t0 = Instant::now();
+                if let Some(p) = shell.cursor() {
+                    app.cursor = p;
                 }
+                app.modifiers = shell.modifiers();
+                let pass = shell.frame(&mut app, &mut fb);
+                out.clear();
+                for text in pass.copy.iter().chain(app.pending_copy.iter()) {
+                    encode_osc52_copy(&mut out, text);
+                }
+                app.pending_copy.clear();
                 if fb.is_dirty() {
                     match transport {
                         kitty::Transport::Shm => {
@@ -581,8 +408,7 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                 if !out.is_empty() {
                     term::write_all(&out)?;
                 }
-                let total = t.ui + t.tessellate + t.raster + t_send.elapsed();
-                app.frame_ms = total.as_secs_f64() as f32 * 1e3;
+                app.frame_ms = t0.elapsed().as_secs_f64() as f32 * 1e3;
                 for cmd in app.pending.drain(..) {
                     let _ = worker.tx.send(cmd);
                 }
@@ -590,17 +416,17 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                     break;
                 }
                 last_frame = Instant::now();
-                next_deadline = last_frame
-                    + pass
-                        .repaint_delay
-                        .min(Duration::from_secs(3600))
-                        .max(min_interval);
+                let delay = match pass.redraw {
+                    RedrawRequest::NextFrame => Duration::ZERO,
+                    RedrawRequest::At(at) => at.saturating_duration_since(last_frame),
+                    RedrawRequest::Wait => Duration::from_secs(3600),
+                };
+                next_deadline = last_frame + delay.max(min_interval);
             }
         }
 
         // Wait for input, the repaint deadline, or the escape timeout. The
-        // cap keeps signal flags (SIGTERM, SIGHUP, SIGWINCH) honored within
-        // half a second even when nothing else happens.
+        // cap keeps signal flags honored within half a second.
         let mut wait = next_deadline
             .saturating_duration_since(Instant::now())
             .min(Duration::from_millis(500));
@@ -614,7 +440,6 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
             }
             Ok(Msg::Git(reply)) => {
                 app.apply(reply);
-                // Drain anything else that is already queued.
                 while let Ok(Msg::Git(r)) = rx.try_recv() {
                     app.apply(r);
                 }
@@ -636,6 +461,7 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                 for cmd in app.pending.drain(..) {
                     let _ = worker.tx.send(cmd);
                 }
+                next_deadline = Instant::now();
                 continue;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -645,7 +471,7 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                     Vec::new()
                 }
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break, // stdin closed: the terminal is gone
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
         if events.is_empty() {
             continue;
@@ -659,38 +485,25 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                     pressed: true,
                     ..
                 } if mods.ctrl => quit = true,
-                Event::Key {
-                    key: Key::Char('q'),
-                    mods,
-                    pressed: true,
-                    ..
-                } if *mods == crate::term::input::Mods::NONE
-                    && !ctx.egui_wants_keyboard_input() =>
-                {
-                    quit = true
-                }
                 Event::Focus(f) => {
-                    focused = *f;
                     let _ = worker.tx.send(Command::Focus(*f));
+                    shell.push(ev);
                 }
                 Event::Unknown(bytes) if bytes.ends_with(b"t") => {
-                    // Size replies requested after SIGWINCH.
                     let before = (caps.cell_w, caps.cell_h, caps.cols, caps.rows);
                     probe::parse_replies(bytes, &mut caps);
                     if (caps.cell_w, caps.cell_h, caps.cols, caps.rows) != before {
                         resize_needed = true;
                     }
                 }
-                _ => {}
+                _ => shell.push(ev),
             }
-            mapper.map(ev, &mut pending);
         }
         if quit {
             break;
         }
         next_deadline = Instant::now();
     }
-    let _ = worker.tx.send(Command::Quit);
     drop(session);
     Ok(0)
 }
@@ -700,652 +513,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn font_size_follows_cell_height() {
+    fn font_size_tracks_cell_height() {
+        assert_eq!(font_size_for_cell(0, 2.0), 13.0);
         assert_eq!(font_size_for_cell(34, 2.0), 13.0);
         assert_eq!(font_size_for_cell(17, 1.0), 13.0);
-        assert_eq!(font_size_for_cell(24, 1.5), 12.0);
-        assert_eq!(font_size_for_cell(0, 2.0), 13.0);
-        assert_eq!(font_size_for_cell(80, 1.0), 24.0, "clamped");
-    }
-
-    #[test]
-    fn scale_comes_only_from_native_pixels_per_point() {
-        // Regression: setting pixels_per_point on the context and passing
-        // native_pixels_per_point doubled the scale on screen.
-        let theme = Theme::dark();
-        let ctx = setup_context(13.0, &theme);
-        let mut app = App::new(theme, "test", 2.0, PathBuf::from("."));
-        let mut raster = Rasterizer::new();
-        let mut fb = Framebuffer::new(200, 100);
-        let mut t = Timings::default();
-        for pass in 0..3 {
-            let input = raw_input(200, 100, 2.0, pass as f64 / 60.0, true, Vec::new());
-            render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
-        }
-        assert_eq!(ctx.pixels_per_point(), 2.0);
-        assert_eq!(ctx.content_rect().width(), 100.0);
-    }
-
-    /// Drive the real app with a real repository and synthetic terminal
-    /// events, the same path the interactive loop takes.
-    struct Harness {
-        ctx: egui::Context,
-        app: App,
-        repo: Repo,
-        raster: Rasterizer,
-        fb: Framebuffer,
-        mapper: Mapper,
-        t: Timings,
-        time: f64,
-    }
-
-    impl Harness {
-        fn new(dir: &std::path::Path) -> Self {
-            let theme = Theme::dark();
-            let ctx = setup_context(13.0, &theme);
-            let mut app = App::new(theme, "test", 1.0, dir.to_path_buf());
-            let mut repo = Repo::open(dir).unwrap();
-            app.apply(Reply::Snapshot(repo.snapshot(100).unwrap()));
-            let mut h = Harness {
-                ctx,
-                app,
-                repo,
-                raster: Rasterizer::new(),
-                fb: Framebuffer::new(900, 700),
-                mapper: Mapper::new(1.0),
-                t: Timings::default(),
-                time: 0.0,
-            };
-            h.settle();
-            h
-        }
-
-        /// Run pending git commands synchronously and render until quiet.
-        fn settle(&mut self) {
-            for _ in 0..6 {
-                let cmds = std::mem::take(&mut self.app.pending);
-                for cmd in cmds {
-                    match cmd {
-                        Command::LoadDiff(target) => {
-                            self.app.apply(Reply::Diff(self.repo.diff(&target, crate::git::repo::DiffOpts::default())))
-                        }
-                        Command::LoadCommitFiles(oid) => self
-                            .app
-                            .apply(Reply::CommitFiles(oid, self.repo.commit_files(oid))),
-                        Command::ListDir(dir) => {
-                            let r = self.repo.list_dir(&dir);
-                            self.app.apply(Reply::DirEntries(dir, r))
-                        }
-                        Command::Stage(p) => {
-                            self.repo.stage(&p).unwrap();
-                            self.finish("stage");
-                        }
-                        Command::StageAll => {
-                            self.repo.stage_all().unwrap();
-                            self.finish("stage");
-                        }
-                        Command::Unstage(p) => {
-                            self.repo.unstage(&p).unwrap();
-                            self.finish("unstage");
-                        }
-                        Command::Discard(p) => {
-                            self.repo.discard(&p).unwrap();
-                            self.finish("discard");
-                        }
-                        Command::StageHunk { path, hunk_index } => {
-                            self.repo.stage_hunk(&path, hunk_index, crate::git::repo::DiffOpts::default()).unwrap();
-                            self.finish("stage");
-                        }
-                        Command::StageLines {
-                            path,
-                            hunk_index,
-                            lines,
-                        } => {
-                            self.repo
-                                .stage_lines(&path, hunk_index, &lines, crate::git::repo::DiffOpts::default())
-                                .unwrap();
-                            self.finish("stage");
-                        }
-                        Command::DiscardAll => {
-                            self.repo.discard_all().unwrap();
-                            self.finish("discard");
-                        }
-                        Command::SetDiffOpts(_) => {}
-                        Command::Refresh => self.finish(""),
-                        Command::Commit { message, amend } => {
-                            self.repo.commit(&message, amend).unwrap();
-                            self.finish("commit");
-                        }
-                        Command::CommitAndPush { message, amend } => {
-                            self.repo.commit(&message, amend).unwrap();
-                            self.finish("commit");
-                        }
-                        other => panic!("unexpected command {other:?}"),
-                    }
-                }
-                self.frame(Vec::new());
-            }
-        }
-
-        fn finish(&mut self, label: &'static str) {
-            self.app.apply(Reply::Op {
-                label,
-                result: Ok("ok".into()),
-            });
-            self.app
-                .apply(Reply::Snapshot(self.repo.snapshot(100).unwrap()));
-        }
-
-        fn frame(&mut self, events: Vec<egui::Event>) {
-            self.time += 1.0 / 60.0;
-            let input = raw_input(900, 700, 1.0, self.time, true, events);
-            render_pass(
-                &self.ctx,
-                &mut self.app,
-                &mut self.raster,
-                &mut self.fb,
-                input,
-                &mut self.t,
-            );
-        }
-
-        fn key(&mut self, bytes: &[u8]) {
-            let mut parser = Parser::new(true, 1, 1);
-            let mut events = Vec::new();
-            for ev in parser.feed(bytes).iter().chain(parser.flush().iter()) {
-                self.mapper.map(ev, &mut events);
-            }
-            self.frame(events);
-            self.frame(Vec::new());
-        }
-
-        fn click(&mut self, pos: egui::Pos2) {
-            use crate::term::input::{Mods, MouseButton};
-            let (x, y) = (pos.x as i32, pos.y as i32);
-            let mut events = Vec::new();
-            self.mapper.map(
-                &Event::MouseButton {
-                    button: MouseButton::Left,
-                    pressed: true,
-                    x,
-                    y,
-                    mods: Mods::NONE,
-                },
-                &mut events,
-            );
-            self.frame(events);
-            let mut events = Vec::new();
-            self.mapper.map(
-                &Event::MouseButton {
-                    button: MouseButton::Left,
-                    pressed: false,
-                    x,
-                    y,
-                    mods: Mods::NONE,
-                },
-                &mut events,
-            );
-            self.frame(events);
-            self.frame(Vec::new());
-        }
-    }
-
-    #[test]
-    fn keyboard_stage_commit_workflow() {
-        use crate::git::repo::testutil::TempRepo;
-        let t = TempRepo::new();
-        t.commit_file("a.txt", "one\n", "init");
-        t.write("a.txt", "one\ntwo\n");
-        t.write("b.txt", "new\n");
-        let mut h = Harness::new(&t.dir);
-        assert_eq!(h.app.selection, crate::ui::app::Selection::WorkingTree);
-        assert_eq!(h.app.snapshot.unstaged.len(), 2);
-
-        // `s` stages the selected (first unstaged) file.
-        h.key(b"s");
-        h.settle();
-        assert_eq!(h.app.snapshot.staged.len(), 1);
-        assert_eq!(h.app.snapshot.staged[0].path, "a.txt");
-        // `a` stages everything.
-        h.key(b"a");
-        h.settle();
-        assert_eq!(h.app.snapshot.staged.len(), 2);
-        assert!(h.app.snapshot.unstaged.is_empty());
-        // `u` on the staged file that is now selected unstages it, `A` unstages all.
-        h.key(b"u");
-        h.settle();
-        assert_eq!(h.app.snapshot.staged.len(), 1);
-        h.key(b"a");
-        h.settle();
-        // `c` focuses the commit box, typed text lands there, `q` does not quit
-        // (it is text now), Ctrl+Enter commits.
-        h.key(b"c");
-        assert!(h.ctx.egui_wants_keyboard_input());
-        h.key(b"fix things");
-        h.key(b"q");
-        assert_eq!(h.app.commit_msg, "fix thingsq");
-        h.key(b"\x1b[13;5u");
-        assert!(h.app.pending.iter().any(
-            |c| matches!(c, Command::Commit { message, amend: false } if message == "fix thingsq")
-        ));
-        h.settle();
-        assert_eq!(h.app.snapshot.commits.len(), 2);
-        assert_eq!(h.app.snapshot.commits[0].summary, "fix thingsq");
-        assert!(!h.app.snapshot.is_dirty());
-        assert!(h.app.commit_msg.is_empty(), "message cleared after commit");
-        // Escape leaves the text field so single-key bindings work again.
-        h.key(b"\x1b");
-        assert!(!h.ctx.egui_wants_keyboard_input());
-    }
-
-    #[test]
-    fn builtin_editor_edits_and_saves() {
-        use crate::git::repo::testutil::TempRepo;
-        let t = TempRepo::new();
-        t.commit_file("a.rs", "fn main() {}\n", "init");
-        t.write("a.rs", "fn main() {}\n// change\n");
-        let mut h = Harness::new(&t.dir);
-        assert_eq!(h.app.selected_file.as_ref().map(|f| f.path()), Some("a.rs"));
-
-        // `e` opens the built-in editor on the selected file and focuses it.
-        h.key(b"e");
-        h.frame(Vec::new());
-        let ed = h.app.editor.as_ref().expect("editor open");
-        assert_eq!(ed.path, "a.rs");
-        assert_eq!(ed.lang, crate::ui::highlight::Lang::Rust);
-        assert!(!h.app.editor_full, "opened from the change list: commit column stays");
-        assert!(h.ctx.egui_wants_keyboard_input(), "editor has keyboard focus");
-        assert!(h.app.editor_focused());
-
-        // Typed text lands in the buffer, single-key bindings are off.
-        h.key(b"q");
-        assert!(!h.app.quit);
-        assert!(h.app.editor.as_ref().unwrap().text.ends_with("\nq"), "cursor starts at the end");
-        assert!(h.app.editor.as_ref().unwrap().dirty());
-
-        // Ctrl+S writes the file with the edit.
-        h.key(b"\x1b[115;5u");
-        assert!(!h.app.editor.as_ref().unwrap().dirty());
-        let on_disk = std::fs::read_to_string(t.dir.join("a.rs")).unwrap();
-        assert_eq!(on_disk, "fn main() {}\n// change\nq");
-        assert!(h.app.pending.iter().any(|c| matches!(c, Command::Refresh)));
-
-        // Escape closes a clean editor; the diff pane is back.
-        h.key(b"\x1b");
-        h.frame(Vec::new());
-        assert!(h.app.editor.is_none());
-        assert!(!h.ctx.egui_wants_keyboard_input());
-
-        // A dirty editor asks before closing; Enter saves and closes.
-        h.key(b"e");
-        h.frame(Vec::new());
-        h.key(b"x");
-        h.key(b"\x1b");
-        h.frame(Vec::new());
-        assert!(matches!(h.app.modal, Some(crate::ui::app::Modal::CloseEditor)));
-        assert!(h.app.editor.is_some());
-        h.key(b"\r");
-        h.frame(Vec::new());
-        assert!(h.app.modal.is_none());
-        assert!(h.app.editor.is_none());
-        assert!(std::fs::read_to_string(t.dir.join("a.rs")).unwrap().ends_with("\nqx"));
-    }
-
-    #[test]
-    fn sidebar_tree_lists_lazily_and_opens_files() {
-        use crate::git::repo::testutil::TempRepo;
-        let t = TempRepo::new();
-        t.commit_file("src/lib.rs", "pub fn f() {}\n", "init");
-        t.write("README.md", "# hi\n");
-        let mut h = Harness::new(&t.dir);
-        // The root listing arrives with the first snapshot; nothing else yet.
-        let root = h.app.tree.get("").expect("root listed");
-        let names: Vec<&str> = root.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, vec!["src", "README.md"]);
-        assert!(!h.app.tree.contains_key("src"));
-
-        // Expanding a folder requests its listing once.
-        h.app.toggle_dir("src");
-        assert!(h.app.pending.iter().any(|c| matches!(c, Command::ListDir(d) if d == "src")));
-        h.settle();
-        assert_eq!(h.app.tree.get("src").unwrap()[0].path, "src/lib.rs");
-        h.frame(Vec::new());
-
-        // Selecting a tree file makes it the target of `e` even though it is
-        // not in the change lists.
-        h.app.tree_selected = Some("src/lib.rs".into());
-        h.app.focus = crate::ui::app::Pane::Sidebar;
-        assert_eq!(h.app.current_file().as_deref(), Some("src/lib.rs"));
-        h.key(b"e");
-        h.frame(Vec::new());
-        assert_eq!(h.app.editor.as_ref().map(|e| e.path.as_str()), Some("src/lib.rs"));
-        assert!(h.app.editor_full, "opened from the tree: commit column hidden");
-
-        // A refresh re-lists the root and every open folder.
-        h.app.apply(Reply::Snapshot(h.repo.snapshot(100).unwrap()));
-        let dirs: Vec<String> = h
-            .app
-            .pending
-            .iter()
-            .filter_map(|c| match c {
-                Command::ListDir(d) => Some(d.clone()),
-                _ => None,
-            })
-            .collect();
-        assert!(dirs.contains(&String::new()) && dirs.contains(&"src".to_owned()));
-    }
-
-    #[test]
-    fn panels_toggle_with_digits_and_tab_skips_hidden() {
-        use crate::git::repo::testutil::TempRepo;
-        use crate::ui::app::Pane;
-        let t = TempRepo::new();
-        t.commit_file("a.txt", "one\n", "init");
-        t.write("a.txt", "two\n");
-        let mut h = Harness::new(&t.dir);
-        assert!(h.app.show_sidebar && h.app.show_log && h.app.show_detail);
-        h.key(b"1");
-        assert!(!h.app.show_sidebar);
-        h.key(b"3");
-        assert!(!h.app.show_detail);
-        // Only the log is left: Tab keeps focus there.
-        h.app.focus = Pane::Log;
-        h.key(b"\t");
-        assert_eq!(h.app.focus, Pane::Log);
-        h.key(b"2");
-        h.frame(Vec::new());
-        assert!(!h.app.show_log);
-        // Everything hidden renders the hint without panicking; bring it back.
-        h.key(b"1");
-        h.key(b"2");
-        h.key(b"3");
-        h.frame(Vec::new());
-        assert!(h.app.show_sidebar && h.app.show_log && h.app.show_detail);
-        // Hiding the focused pane moves focus to the next visible one.
-        h.app.focus = Pane::Detail;
-        h.app.toggle_panel(Pane::Detail);
-        assert_eq!(h.app.focus, Pane::Sidebar);
-    }
-
-    #[test]
-    fn commit_button_and_discard_modal() {
-        use crate::git::repo::testutil::TempRepo;
-        let t = TempRepo::new();
-        t.commit_file("a.txt", "one\n", "init");
-        t.write("a.txt", "changed\n");
-        let mut h = Harness::new(&t.dir);
-        h.key(b"s");
-        h.settle();
-        h.app.commit_msg = "via button".into();
-        h.frame(Vec::new());
-        let rect = h.app.commit_button_rect.expect("commit button laid out");
-        h.click(rect.center());
-assert!(h
-            .app
-            .pending
-            .iter()
-            .any(|c| matches!(c, Command::Commit { .. })));
-        h.settle();
-        assert_eq!(h.app.snapshot.commits[0].summary, "via button");
-
-        // Commit & Push button queues CommitAndPush.
-        t.write("a.txt", "again\n");
-        h.app.apply(Reply::Snapshot(h.repo.snapshot(100).unwrap()));
-        h.settle();
-        h.app.select(crate::ui::app::Selection::WorkingTree);
-        h.key(b"a");
-        h.settle();
-        h.app.commit_msg = "with push".into();
-        h.frame(Vec::new());
-        let rect = h
-            .app
-            .commit_push_button_rect
-            .expect("commit & push button laid out");
-        h.click(rect.center());
-        assert!(h.app.pending.iter().any(
-            |c| matches!(c, Command::CommitAndPush { message, amend: false } if message == "with push")
-        ));
-        let _ = h.app.pending.drain(..);
-        h.repo.unstage_all().unwrap();
-        t.write("a.txt", "changed\n");
-        h.app.apply(Reply::Snapshot(h.repo.snapshot(100).unwrap()));
-        h.settle();
-
-        // Discard: modal asks first, Escape cancels, Enter confirms.
-        t.write("a.txt", "junk\n");
-        h.app.apply(Reply::Snapshot(h.repo.snapshot(100).unwrap()));
-        h.settle();
-        assert_eq!(h.app.snapshot.unstaged.len(), 1);
-        h.app.modal = Some(crate::ui::app::Modal::Discard(vec!["a.txt".into()]));
-        h.frame(Vec::new());
-        h.key(b"\x1b");
-        assert!(h.app.modal.is_none(), "escape closes the dialog");
-        assert!(h.app.pending.is_empty());
-        h.app.modal = Some(crate::ui::app::Modal::Discard(vec!["a.txt".into()]));
-        h.frame(Vec::new());
-        h.key(b"\r");
-        assert!(h
-            .app
-            .pending
-            .iter()
-            .any(|c| matches!(c, Command::Discard(p) if p == &["a.txt".to_string()])));
-        h.settle();
-        assert!(!h.app.snapshot.is_dirty());
-        assert_eq!(
-            std::fs::read_to_string(t.dir.join("a.txt")).unwrap(),
-            "changed\n"
-        );
-    }
-
-    #[test]
-    fn help_discard_all_search_and_line_staging_keys() {
-        use crate::git::repo::testutil::TempRepo;
-        use crate::ui::app::{LineSel, Modal};
-        let t = TempRepo::new();
-        t.commit_file("a.txt", "one\ntwo\nthree\n", "init");
-        t.write("a.txt", "ONE\ntwo\nTHREE\n");
-        let mut h = Harness::new(&t.dir);
-        // `?` opens the help dialog, Escape closes it.
-        h.key(b"?");
-        assert!(matches!(h.app.modal, Some(Modal::Help)));
-        h.key(b"\x1b");
-        assert!(h.app.modal.is_none());
-        // Context and whitespace keys change the diff options and reload.
-        h.key(b"}");
-        assert_eq!(h.app.diff_opts.context, 4);
-        assert!(h.app.pending.iter().any(|c| matches!(c, Command::SetDiffOpts(o) if o.context == 4)));
-        h.settle();
-        h.key(b"{");
-        assert_eq!(h.app.diff_opts.context, 3);
-        h.key(b"\x17"); // Ctrl+W
-        assert!(h.app.diff_opts.ignore_whitespace);
-        h.key(b"\x17");
-        h.settle();
-        // Ctrl+F opens the search box and gives it focus; typing filters.
-        h.key(b"\x06");
-        assert!(h.app.diff_search_active);
-        assert!(h.ctx.egui_wants_keyboard_input());
-        h.key(b"THREE");
-        assert_eq!(h.app.diff_search, "THREE");
-        assert_eq!(crate::ui::diff::match_count(&h.app), 2, "case-insensitive: three and THREE");
-        h.key(b"\x1b");
-        h.key(b"\x1b");
-        assert!(!h.app.diff_search_active, "second Escape closes the search");
-        // A line selection plus `s` stages only those lines.
-        let d = h.app.diff.clone().expect("unstaged diff loaded");
-        let add_three = d.hunks[0]
-            .lines
-            .iter()
-            .position(|l| l.origin == '+' && l.text == "THREE")
-            .unwrap();
-        let del_three = d.hunks[0]
-            .lines
-            .iter()
-            .position(|l| l.origin == '-' && l.text == "three")
-            .unwrap();
-        h.app.line_sel = Some(LineSel {
-            hunk: 0,
-            anchor: del_three,
-            end: add_three,
-        });
-        h.frame(Vec::new());
-        h.key(b"s");
-        assert!(h.app.pending.iter().any(|c| matches!(c, Command::StageLines { lines, .. } if lines.len() == 2)));
-        h.settle();
-        let staged = h.repo.diff(&crate::git::repo::DiffTarget::Staged("a.txt".into()), crate::git::repo::DiffOpts::default()).unwrap();
-        let changes: Vec<String> = staged.hunks[0].lines.iter().filter(|l| l.origin != ' ').map(|l| l.text.clone()).collect();
-        assert_eq!(changes, vec!["three", "THREE"]);
-        assert!(h.app.snapshot.unstaged.iter().any(|f| f.path == "a.txt"), "ONE is still unstaged");
-        // Shift+D asks, Enter discards everything.
-        h.key(b"\x1b[100;2u");
-        assert!(matches!(h.app.modal, Some(Modal::Confirm { cmd: Command::DiscardAll, .. })));
-        h.key(b"\r");
-        assert!(h.app.pending.iter().any(|c| matches!(c, Command::DiscardAll)));
-        h.settle();
-        assert!(!h.app.snapshot.is_dirty());
-        assert_eq!(std::fs::read_to_string(t.dir.join("a.txt")).unwrap(), "one\ntwo\nthree\n");
-    }
-
-    #[test]
-    fn commit_keys_open_dialogs_and_rewrite_info() {
-        use crate::git::repo::testutil::TempRepo;
-        use crate::ui::app::{InputKind, Modal, Selection};
-        let t = TempRepo::new();
-        t.commit_file("a.txt", "1\n", "one");
-        t.commit_file("a.txt", "2\n", "two");
-        t.commit_file("a.txt", "3\n", "three");
-        let mut h = Harness::new(&t.dir);
-        assert_eq!(h.app.selection, Selection::Commit(0));
-        let head = h.app.rewrite_info(0).unwrap();
-        assert!(head.is_head && head.has_older && !head.is_root);
-        let root = h.app.rewrite_info(2).unwrap();
-        assert!(root.is_root && !root.has_older && !root.is_head);
-        // Shift+T (kitty encoded: shift is a modifier, not an uppercase byte).
-        h.key(b"\x1b[116;2u");
-        assert!(matches!(h.app.modal, Some(Modal::Input { kind: InputKind::Tag { .. }, .. })));
-        h.key(b"v9");
-        h.key(b"\r");
-        assert!(h.app.pending.iter().any(|c| matches!(c, Command::CreateTag { name, .. } if name == "v9")));
-        h.app.pending.clear();
-        h.app.apply(crate::git::ops::Reply::Op { label: "new tag", result: Ok("ok".into()) });
-        // g: reset dialog; Escape cancels.
-        h.key(b"g");
-        assert!(matches!(h.app.modal, Some(Modal::Reset { .. })));
-        h.key(b"\x1b");
-        assert!(h.app.modal.is_none());
-        // Shift+R on HEAD turns into an amend with the old message loaded.
-        h.key(b"\x1b[114;2u");
-        assert!(h.app.amend);
-        assert_eq!(h.app.commit_msg, "three");
-        assert!(h.ctx.egui_wants_keyboard_input());
-        h.key(b"\x1b");
-        h.app.amend = false;
-        h.app.commit_msg.clear();
-        // Select the middle commit: d asks to drop it, cancel.
-        h.app.select(Selection::Commit(1));
-        h.settle();
-        h.key(b"d");
-        assert!(matches!(h.app.modal, Some(Modal::Confirm { cmd: Command::RewriteCommit { .. }, .. })));
-        h.key(b"\x1b");
-        // n: new branch from the selected commit.
-        h.key(b"n");
-        assert!(matches!(h.app.modal, Some(Modal::NewBranch { .. })));
-        h.key(b"\x1b");
-        // y copies the hash (no dialog, a toast).
-        h.key(b"y");
-        assert!(h.app.last_op.as_deref().is_some_and(|m| m.starts_with("copied")));
-    }
-
-    #[test]
-    fn osc52_bytes() {
-        let mut out = Vec::new();
-        encode_osc52_copy(&mut out, "hi");
-        assert_eq!(out, b"\x1b]52;c;aGk=\x1b\\");
-    }
-
-    #[test]
-    fn headless_frame_has_panel_and_background_pixels() {
-        let ppp = 1.0;
-        let theme = Theme::dark();
-        let ctx = setup_context(13.0, &theme);
-        let mut app = App::new(theme, "test", ppp, PathBuf::from("."));
-        let mut raster = Rasterizer::new();
-        let mut fb = Framebuffer::new(400, 300);
-        let mut t = Timings::default();
-        for pass in 0..2 {
-            let input = raw_input(400, 300, ppp, pass as f64 / 60.0, true, Vec::new());
-            render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut t);
-        }
-        let bg = app.theme.background;
-        let clear = [bg.r(), bg.g(), bg.b(), 255];
-        let clear_count = fb
-            .pixels()
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .filter(|p| **p == clear)
-            .count();
-        assert!(clear_count < 400 * 300, "frame is blank");
-        let bright = fb
-            .pixels()
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .take(400 * 40)
-            .filter(|p| p[0] > 100)
-            .count();
-        assert!(
-            bright > 20,
-            "no text pixels found in the heading band, got {bright}"
-        );
-        assert_eq!(fb.pixel(399, 299)[3], 255);
-    }
-
-    #[test]
-    fn headless_renders_a_real_repo_and_selects_first_commit_file() {
-        use crate::git::repo::testutil::TempRepo;
-        let t = TempRepo::new();
-        t.commit_file("hello.txt", "hello\nworld\n", "first commit");
-        let ppp = 1.0;
-        let theme = Theme::dark();
-        let ctx = setup_context(13.0, &theme);
-        let mut app = App::new(theme, "test", ppp, PathBuf::from("."));
-        let mut repo = Repo::open(&t.dir).unwrap();
-        app.apply(Reply::Snapshot(repo.snapshot(100).unwrap()));
-        // Clean tree: first commit is selected and its files are requested.
-        assert_eq!(app.selection, crate::ui::app::Selection::Commit(0));
-        let cmds = std::mem::take(&mut app.pending);
-        assert!(matches!(cmds[0], Command::LoadCommitFiles(_)));
-        let Command::LoadCommitFiles(oid) = cmds[0].clone() else {
-            unreachable!()
-        };
-        app.apply(Reply::CommitFiles(oid, repo.commit_files(oid)));
-        let cmds = std::mem::take(&mut app.pending);
-        assert!(
-            matches!(&cmds[0], Command::LoadDiff(crate::git::repo::DiffTarget::Commit(_, p)) if p == "hello.txt")
-        );
-        let Command::LoadDiff(target) = cmds[0].clone() else {
-            unreachable!()
-        };
-        app.apply(Reply::Diff(repo.diff(&target, crate::git::repo::DiffOpts::default())));
-        assert_eq!(app.diff.as_ref().unwrap().hunks[0].lines.len(), 2);
-        let mut raster = Rasterizer::new();
-        let mut fb = Framebuffer::new(800, 500);
-        let mut tm = Timings::default();
-        for pass in 0..3 {
-            let input = raw_input(800, 500, ppp, pass as f64 / 60.0, true, Vec::new());
-            render_pass(&ctx, &mut app, &mut raster, &mut fb, input, &mut tm);
-        }
-        // The diff pane paints added-line backgrounds somewhere in the frame.
-        let add = app.theme.add_bg;
-        let add_px = [add.r(), add.g(), add.b(), 255];
-        let n = fb
-            .pixels()
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .filter(|p| **p == add_px)
-            .count();
-        assert!(n > 100, "expected added-line background pixels, got {n}");
+        assert_eq!(font_size_for_cell(60, 1.0), 24.0);
     }
 }

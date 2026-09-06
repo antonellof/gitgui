@@ -1,556 +1,202 @@
-//! Detail pane: commit files or working tree lists, plus the diff viewer.
+//! Working tree: unstaged and staged lists with the commit box, or the file
+//! list of the selected commit with its message body.
 
-use crate::git::actions::ConflictSide;
+use iced_core::keyboard;
+use iced_core::{Alignment, Font, Length};
+use iced_widget::text_editor::Binding;
+use iced_widget::{checkbox, column, container, mouse_area, row, scrollable, text, Space};
+
 use crate::git::ops::Command;
-use crate::git::repo::{DiffTarget, FileKind, FileStatus, RepoState};
-use crate::ui::app::{App, InputKind, Modal, Pane, Selection};
-use crate::ui::diff;
+use crate::git::repo::{DiffTarget, FileKind, FileStatus};
+use crate::ui::app::{App, Element, Message, MenuKind, Pane, Selection};
+use crate::ui::widgets::{self, primary_button, row_button, small_button};
 
-pub fn show_detail(app: &mut App, ui: &mut egui::Ui) {
-    let avail = ui.available_width();
-    egui::Panel::left("detail_files")
-        .default_size((avail * 0.35).clamp(200.0, 480.0))
-        .resizable(true)
-        .show(ui, |ui| show_files(app, ui));
-    egui::CentralPanel::default().show(ui, |ui| {
-        if app.editor.is_some() {
-            crate::ui::editor::show(app, ui);
-        } else {
-            diff::show(app, ui);
-        }
-    });
-}
-
-/// The file column alone: unstaged / staged lists and the commit box for the
-/// working tree, the file list for a commit.
-pub fn show_files(app: &mut App, ui: &mut egui::Ui) {
-    let focused = app.focus == Pane::Detail;
+pub fn view(app: &App) -> Element<'_> {
     match app.selection {
-        Selection::WorkingTree => show_worktree(app, ui, focused),
-        Selection::Commit(i) => show_commit(app, ui, i, focused),
+        Selection::WorkingTree => worktree(app),
+        Selection::Commit(i) => commit(app, i),
     }
 }
 
-fn file_row(ui: &mut egui::Ui, f: &FileStatus, selected: bool, theme: &crate::ui::theme::Theme) -> egui::Response {
-    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-    let color = match f.kind {
-        FileKind::Added | FileKind::Untracked => theme.add_fg,
-        FileKind::Deleted => theme.del_fg,
-        FileKind::Conflicted => theme.error,
-        _ => ui.visuals().text_color(),
-    };
-    let label = match &f.old_path {
-        Some(old) => format!("{} {} -> {}", f.kind.letter(), old, f.path),
-        None => format!("{} {}", f.kind.letter(), f.path),
-    };
-    ui.selectable_label(selected, egui::RichText::new(label).color(color).monospace())
-}
-
-fn show_commit(app: &mut App, ui: &mut egui::Ui, idx: usize, _focused: bool) {
-    let Some(c) = app.snapshot.commits.get(idx).cloned() else { return };
-    ui.add_space(4.0);
-    ui.horizontal_wrapped(|ui| {
-        ui.monospace(&c.short);
-        ui.strong(&c.author);
-        ui.weak(&c.email);
-        ui.weak(format_time(c.time));
-    });
-    ui.add(egui::Label::new(egui::RichText::new(&c.summary).strong()).wrap());
-    ui.separator();
-    let files = app.commit_files.get(&c.oid).cloned();
-    let mut clicked: Option<DiffTarget> = None;
-    // The message body and the file list scroll together: a long body must
-    // not push the files out of a short pane, and a long file list must not
-    // hide the body.
-    egui::ScrollArea::vertical()
-        .id_salt("commit_files")
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            if !c.body.is_empty() {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(&c.body).monospace())
-                        .wrap(),
-                );
-                ui.add_space(4.0);
-                ui.separator();
-            }
-            match files {
-                None => {
-                    ui.weak("loading files");
-                }
-                Some(files) => {
-                    if files.is_empty() {
-                        ui.weak("no changes");
-                    }
-                    for f in &files {
-                        let target = DiffTarget::Commit(c.oid, f.path.clone());
-                        let selected = app.selected_file.as_ref() == Some(&target);
-                        if file_row(ui, f, selected, &app.theme).clicked() {
-                            clicked = Some(target);
-                        }
-                    }
-                }
-            }
-        });
-    if let Some(t) = clicked {
-        app.focus = Pane::Detail;
-        app.select_file(Some(t));
+fn status_color(app: &App, kind: FileKind) -> iced_core::Color {
+    let t = &app.theme;
+    match kind {
+        FileKind::Added | FileKind::Untracked => t.add_fg,
+        FileKind::Deleted => t.del_fg,
+        FileKind::Conflicted => t.error,
+        FileKind::Renamed | FileKind::TypeChange => t.graph[7],
+        FileKind::Modified => t.graph[2],
     }
 }
 
-struct WorktreeListAction {
-    clicked: Option<DiffTarget>,
-    cmd: Option<Command>,
-    modal: Option<Modal>,
-    ignore: Option<String>,
-    copy: Option<String>,
-    edit: bool,
-    edit_external: bool,
-    preview: bool,
-    discard_all: bool,
-}
-
-fn show_worktree(app: &mut App, ui: &mut egui::Ui, _focused: bool) {
-    let s = app.snapshot.clone();
+fn file_row<'a>(app: &'a App, f: &'a FileStatus, target: DiffTarget, staged: bool) -> Element<'a> {
+    let t = &app.theme;
+    let selected = app.selected_file.as_ref() == Some(&target);
+    let focused = app.focus == Pane::Changes;
     let busy = app.busy > 0;
-    let mut action = WorktreeListAction {
-        clicked: None,
-        cmd: None,
-        modal: None,
-        ignore: None,
-        copy: None,
-        edit: false,
-        edit_external: false,
-        preview: false,
-        discard_all: false,
-    };
-
-    // Hard split: the commit box owns the bottom `commit_h` points no matter
-    // how tall the lists want to be, so it never gets pushed off screen in a
-    // short pane. Each half is clipped to its own rect.
-    let mut full = ui.available_rect_before_wrap();
-    if ui.is_sizing_pass() || !full.height().is_finite() {
-        // The panel measures its content before it has a stored size; report
-        // a modest height instead of filling whatever it offers.
-        full.max.y = full.min.y + 260.0;
-    }
-    let total_h = full.height();
-    let commit_h = commit_box_height(total_h).min(total_h);
-    let lists_h = (total_h - commit_h).max(0.0);
-    let lists_rect =
-        egui::Rect::from_min_size(full.min, egui::vec2(full.width(), lists_h));
-    let commit_rect = egui::Rect::from_min_max(
-        egui::pos2(full.min.x, full.max.y - commit_h),
-        full.max,
-    );
-
-    ui.scope_builder(
-        egui::UiBuilder::new()
-            .max_rect(lists_rect)
-            .layout(egui::Layout::top_down(egui::Align::LEFT)),
-        |ui| {
-            ui.set_clip_rect(lists_rect.intersect(ui.clip_rect()));
-            show_worktree_lists(app, ui, &s, lists_h, busy, &mut action);
-        },
-    );
-
-    ui.scope_builder(
-        egui::UiBuilder::new()
-            .max_rect(commit_rect)
-            .layout(egui::Layout::top_down(egui::Align::LEFT)),
-        |ui| {
-            ui.set_clip_rect(commit_rect.intersect(ui.clip_rect()));
-            show_commit_box(app, ui, &s, commit_h, busy);
-        },
-    );
-
-    if let Some(t) = action.clicked {
-        app.focus = Pane::Detail;
-        app.select_file(Some(t));
-    }
-    if let Some(c) = action.cmd {
-        app.run(c);
-    }
-    if action.modal.is_some() && app.busy == 0 {
-        app.modal = action.modal;
-    }
-    if let Some(p) = action.ignore {
-        app.input(InputKind::Ignore, format!("/{p}"), String::new());
-    }
-    if let Some(p) = action.copy {
-        ui.ctx().copy_text(p);
-        app.toast("copied path", false);
-    }
-    if action.edit {
-        app.edit_selected();
-    }
-    if action.edit_external {
-        app.edit_selected_external();
-    }
-    if action.preview {
-        app.preview_selected_in_cmux();
-    }
-    if action.discard_all {
-        app.discard_all();
-    }
-}
-
-/// Right-click menu of a working tree file row.
-fn file_menu(ui: &mut egui::Ui, f: &FileStatus, staged: bool, busy: bool, action: &mut WorktreeListAction) {
     let path = f.path.clone();
-    let item = |ui: &mut egui::Ui, enabled: bool, label: &str, tip: &str| -> bool {
-        let r = ui.add_enabled(enabled && !busy, egui::Button::new(label));
-        let r = if tip.is_empty() { r } else { r.on_hover_text(tip) };
-        let clicked = r.clicked();
-        if clicked {
-            ui.close();
-        }
-        clicked
-    };
-    if f.kind == FileKind::Conflicted {
-        if item(ui, true, "Use ours", "keep the version of the branch you are on (for a rebase: the upstream side)") {
-            action.cmd = Some(Command::Resolve {
-                path: path.clone(),
-                side: ConflictSide::Ours,
-            });
-        }
-        if item(ui, true, "Use theirs", "keep the incoming version (for a rebase: the commit being replayed)") {
-            action.cmd = Some(Command::Resolve {
-                path: path.clone(),
-                side: ConflictSide::Theirs,
-            });
-        }
-        if item(ui, true, "Mark resolved", "stage the file as it is in the working tree") {
-            action.cmd = Some(Command::Stage(vec![path.clone()]));
-        }
-        ui.separator();
+    let action: Element<'a> = if f.kind == FileKind::Conflicted {
+        text("!").size(12).color(t.error).into()
     } else if staged {
-        if item(ui, true, "Unstage", "u") {
-            action.cmd = Some(Command::Unstage(vec![path.clone()]));
-        }
+        small_button("-", (!busy).then_some(Message::Run(Command::Unstage(vec![path.clone()]))))
     } else {
-        if item(ui, true, "Stage", "s") {
-            action.cmd = Some(Command::Stage(vec![path.clone()]));
-        }
-        if item(ui, true, "Discard changes", "d, asks for confirmation") {
-            action.modal = Some(Modal::Discard(vec![path.clone()]));
-        }
-        if f.kind == FileKind::Untracked && item(ui, true, "Add to .gitignore", "i") {
-            action.ignore = Some(path.clone());
-        }
-    }
-    let target = if staged {
-        DiffTarget::Staged(path.clone())
-    } else {
-        DiffTarget::WorkdirUnstaged(path.clone())
+        small_button("+", (!busy).then_some(Message::Run(Command::Stage(vec![path.clone()]))))
     };
-    if item(ui, true, "Edit", "e, built-in editor with syntax colors") {
-        action.clicked = Some(target.clone());
-        action.edit = true;
-    }
-    if item(ui, true, "Open in $EDITOR", "Shift+E, new terminal split; set with --editor or git config gitgui.editor") {
-        action.clicked = Some(target.clone());
-        action.edit_external = true;
-    }
-    if crate::split::is_cmux() && item(ui, true, "Preview in cmux", "Shift+O, cmux file preview tab") {
-        action.clicked = Some(target);
-        action.preview = true;
-    }
-    if item(ui, true, "Copy path", "") {
-        action.copy = Some(path);
-    }
+    let label = row![
+        action,
+        text(f.kind.letter()).size(12).font(Font::MONOSPACE).color(status_color(app, f.kind)),
+        text(&f.path).size(13).font(Font::MONOSPACE).wrapping(iced_core::text::Wrapping::None),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+    let btn = row_button(label, selected, focused, Message::SelectFile(target));
+    mouse_area(btn)
+        .on_right_press(Message::MenuOpen(MenuKind::File {
+            path,
+            staged,
+            conflicted: f.kind == FileKind::Conflicted,
+            untracked: f.kind == FileKind::Untracked,
+        }))
+        .into()
 }
 
-/// Space for the commit box at the bottom of the file list column.
-pub fn commit_box_height(total_h: f32) -> f32 {
-    if total_h <= 180.0 {
-        72.0
-    } else if total_h <= 260.0 {
-        88.0
-    } else {
-        104.0
-    }
-}
+fn worktree(app: &App) -> Element<'_> {
+    let t = &app.theme;
+    let s = &app.snapshot;
+    let busy = app.busy > 0;
+    let mut col = column![].spacing(2).width(Length::Fill).height(Length::Fill);
 
-/// Rows in the commit message field for the given box height.
-/// Reserves space for the amend row and commit buttons below the message.
-pub fn commit_message_rows(box_h: f32) -> usize {
-    if box_h <= 96.0 {
-        1
-    } else {
-        2
-    }
-}
-
-/// Height of one file row in the unstaged / staged lists.
-pub const FILE_ROW_H: f32 = 22.0;
-
-/// Split the list column between the unstaged and staged scroll areas.
-/// A list only takes what its rows need; the other list gets the rest, so
-/// an empty "nothing staged" section does not waste half of a short pane.
-pub fn list_scroll_heights(lists_h: f32, unstaged_rows: usize, staged_rows: usize) -> (f32, f32) {
-    const UNSTAGED_CHROME: f32 = 52.0;
-    const STAGED_CHROME: f32 = 28.0;
-    const SEPARATOR: f32 = 8.0;
-    let total = (lists_h - UNSTAGED_CHROME - STAGED_CHROME - SEPARATOR).max(0.0);
-    let need = |rows: usize| rows.max(1) as f32 * FILE_ROW_H + 4.0;
-    let (need_u, need_s) = (need(unstaged_rows), need(staged_rows));
-    let half = total / 2.0;
-    let u = need_u.min(total - need_s.min(half)).max(0.0);
-    let s = (total - u).max(0.0);
-    (u, s)
-}
-
-fn show_commit_box(app: &mut App, ui: &mut egui::Ui, s: &crate::git::repo::RepoSnapshot, box_h: f32, busy: bool) {
-    ui.separator();
-    let rows = commit_message_rows(box_h);
-    let edit = egui::TextEdit::multiline(&mut app.commit_msg)
-        .hint_text("Commit message")
-        .desired_rows(rows)
-        .desired_width(f32::INFINITY);
-    let resp = ui.add(edit);
-    if app.focus_commit_msg {
-        resp.request_focus();
-        app.focus_commit_msg = false;
-    }
-    let can_commit =
-        !busy && (!s.staged.is_empty() || app.amend) && !app.commit_msg.trim().is_empty();
-    let commit_tip = if can_commit {
-        "Ctrl+Enter"
-    } else if busy {
-        "wait for the current operation"
-    } else if app.commit_msg.trim().is_empty() {
-        "enter a commit message"
-    } else if s.staged.is_empty() && !app.amend {
-        "stage files first"
-    } else {
-        "Ctrl+Enter"
-    };
-    let push_tip = if can_commit {
-        "Ctrl+Shift+Enter"
-    } else {
-        commit_tip
-    };
-    // Buttons first, from the right; the amend checkbox takes what is left and
-    // is clipped instead of overlapping in a narrow column. Both closures
-    // need the app, so clicks are collected and applied afterwards.
-    let amend = app.amend;
-    let mut new_amend = amend;
-    let clicked_commit = std::cell::Cell::new(false);
-    let clicked_push = std::cell::Cell::new(false);
-    let commit_rect = std::cell::Cell::new(None);
-    let push_rect = std::cell::Cell::new(None);
-    let author = format!("{} <{}>", s.user_name, s.user_email);
-    crate::ui::row::split(
-        ui,
-        |ui| {
-            let commit = ui
-                .add_enabled(
-                    can_commit,
-                    egui::Button::new(if amend { "Amend" } else { "Commit" }).small(),
-                )
-                .on_hover_text(commit_tip);
-            commit_rect.set(Some(commit.rect));
-            clicked_commit.set(commit.clicked());
-            let commit_push = ui
-                .add_enabled(
-                    can_commit,
-                    egui::Button::new(if amend { "Amend & Push" } else { "Commit & Push" })
-                        .small(),
-                )
-                .on_hover_text(push_tip);
-            push_rect.set(Some(commit_push.rect));
-            clicked_push.set(commit_push.clicked());
-        },
-        |ui| {
-            // In a narrow column the label would truncate to a stray dot.
-            let label = if ui.available_width() < 72.0 { "" } else { "Amend" };
-            ui.checkbox(&mut new_amend, label)
-                .on_hover_text(format!("Amend the last commit\n{author}"));
-        },
+    // Unstaged.
+    let unstaged_n = s.unstaged.len() + s.conflicted.len();
+    col = col.push(
+        row![
+            text(format!("Unstaged ({unstaged_n})")).size(13).color(t.strong),
+            Space::new().width(Length::Fill),
+            small_button("stage all", (!busy && !s.unstaged.is_empty()).then_some(Message::Run(Command::StageAll))),
+            small_button("discard all", (!busy && s.is_dirty()).then_some(Message::DiscardAll)),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .padding([4, 6]),
     );
-    app.commit_button_rect = commit_rect.get();
-    app.commit_push_button_rect = push_rect.get();
-    app.amend = new_amend;
-    if new_amend && !amend && app.commit_msg.trim().is_empty() {
-        app.amend_loaded = true;
-        if let Some(m) = &s.head_message {
-            app.commit_msg = m.trim_end().to_owned();
-        }
+    let mut list = column![].spacing(1);
+    for f in s.conflicted.iter().chain(s.unstaged.iter()) {
+        list = list.push(file_row(app, f, DiffTarget::WorkdirUnstaged(f.path.clone()), false));
     }
-    if clicked_commit.get() {
-        app.commit_now();
-    } else if clicked_push.get() {
-        app.commit_and_push_now();
+    if unstaged_n == 0 {
+        list = list.push(container(text("nothing to stage").size(12).color(t.weak)).padding([2, 12]));
     }
-}
+    col = col.push(scrollable(list.padding([0, 4])).height(Length::FillPortion(1)));
 
-fn show_worktree_lists(
-    app: &mut App,
-    ui: &mut egui::Ui,
-    s: &crate::git::repo::RepoSnapshot,
-    lists_h: f32,
-    busy: bool,
-    action: &mut WorktreeListAction,
-) {
-    let (unstaged_h, staged_h) = list_scroll_heights(
-        lists_h,
-        s.unstaged.len() + s.conflicted.len(),
-        s.staged.len(),
+    // Staged.
+    col = col.push(
+        row![
+            text(format!("Staged ({})", s.staged.len())).size(13).color(t.strong),
+            Space::new().width(Length::Fill),
+            small_button("unstage all", (!busy && !s.staged.is_empty()).then_some(Message::Run(Command::UnstageAll))),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .padding([4, 6]),
     );
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.strong(format!("Unstaged ({})", s.unstaged.len() + s.conflicted.len()));
-        if s.state != RepoState::Clean {
-            ui.colored_label(app.theme.error, format!("{} in progress", s.state.label()));
-        }
-    });
-    ui.horizontal(|ui| {
-        if ui.add_enabled(!busy && !s.unstaged.is_empty(), egui::Button::new("Stage all").small()).on_hover_text("a").clicked() {
-            action.cmd = Some(Command::StageAll);
-        }
-        if ui.add_enabled(!busy && s.is_dirty(), egui::Button::new("Stash").small()).on_hover_text("Shift+S").clicked() {
-            action.modal = Some(Modal::StashOpts {
-                message: String::new(),
-                keep_index: false,
-                include_untracked: true,
-            });
-        }
-        if let Some((p, false)) = app.selected_worktree_file() {
-            if ui.add_enabled(!busy, egui::Button::new("Discard").small()).on_hover_text("d, asks for confirmation").clicked() {
-                action.modal = Some(Modal::Discard(vec![p]));
-            }
-        }
-        if ui
-            .add_enabled(!busy && s.is_dirty(), egui::Button::new("Discard all").small())
-            .on_hover_text("Shift+D, asks for confirmation")
-            .clicked()
-        {
-            action.discard_all = true;
-        }
-    });
-    egui::ScrollArea::vertical()
-        .id_salt("unstaged")
-        .max_height(unstaged_h)
-        .min_scrolled_height(0.0)
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            for f in s.conflicted.iter().chain(s.unstaged.iter()) {
-                let target = DiffTarget::WorkdirUnstaged(f.path.clone());
-                let selected = app.selected_file.as_ref() == Some(&target);
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(!busy, egui::Button::new("+").small()).on_hover_text("stage (s)").clicked() {
-                        action.cmd = Some(Command::Stage(vec![f.path.clone()]));
-                    }
-                    let resp = file_row(ui, f, selected, &app.theme);
-                    if resp.clicked() || resp.secondary_clicked() {
-                        action.clicked = Some(target);
-                    }
-                    resp.context_menu(|ui| file_menu(ui, f, false, busy, action));
-                });
-            }
-            if s.unstaged.is_empty() && s.conflicted.is_empty() {
-                ui.weak("nothing unstaged");
-            }
-        });
-    ui.separator();
-    ui.horizontal(|ui| {
-        ui.strong(format!("Staged ({})", s.staged.len()));
-        if ui.add_enabled(!busy && !s.staged.is_empty(), egui::Button::new("Unstage all").small()).on_hover_text("Shift+A").clicked() {
-            action.cmd = Some(Command::UnstageAll);
-        }
-    });
-    egui::ScrollArea::vertical()
-        .id_salt("staged")
-        .max_height(staged_h)
-        .min_scrolled_height(0.0)
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            for f in &s.staged {
-                let target = DiffTarget::Staged(f.path.clone());
-                let selected = app.selected_file.as_ref() == Some(&target);
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(!busy, egui::Button::new("-").small()).on_hover_text("unstage (u)").clicked() {
-                        action.cmd = Some(Command::Unstage(vec![f.path.clone()]));
-                    }
-                    let resp = file_row(ui, f, selected, &app.theme);
-                    if resp.clicked() || resp.secondary_clicked() {
-                        action.clicked = Some(target);
-                    }
-                    resp.context_menu(|ui| file_menu(ui, f, true, busy, action));
-                });
-            }
-            if s.staged.is_empty() {
-                ui.weak("nothing staged");
-            }
-        });
-}
-
-pub fn format_time(t: i64) -> String {
-    // Civil date from a unix timestamp, UTC, no chrono dependency.
-    let days = t.div_euclid(86400);
-    let secs = t.rem_euclid(86400);
-    let (y, m, d) = civil_from_days(days);
-    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", secs / 3600, (secs % 3600) / 60)
-}
-
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719468;
-    let era = z.div_euclid(146097);
-    let doe = z.rem_euclid(146097);
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn time_formatting() {
-        assert_eq!(format_time(0), "1970-01-01 00:00");
-        assert_eq!(format_time(1_700_000_000), "2023-11-14 22:13");
-        assert_eq!(format_time(951_782_400), "2000-02-29 00:00");
+    let mut list = column![].spacing(1);
+    for f in &s.staged {
+        list = list.push(file_row(app, f, DiffTarget::Staged(f.path.clone()), true));
     }
+    if s.staged.is_empty() {
+        list = list.push(container(text("nothing staged").size(12).color(t.weak)).padding([2, 12]));
+    }
+    col = col.push(scrollable(list.padding([0, 4])).height(Length::FillPortion(1)));
 
-    #[test]
-    fn short_pane_heights_do_not_overlap_commit_box() {
-        let total = 225.0;
-        let commit = commit_box_height(total);
-        let lists = total - commit;
-        let (u, s) = list_scroll_heights(lists, 3, 3);
-        const UNSTAGED_CHROME: f32 = 52.0;
-        const STAGED_CHROME: f32 = 28.0;
-        const SEPARATOR: f32 = 8.0;
-        let used = UNSTAGED_CHROME + STAGED_CHROME + SEPARATOR + u + s + commit;
-        assert!(
-            used <= total + 0.5,
-            "layout used {used} pt in a {total} pt pane"
+    // Commit box.
+    let editor = iced_widget::TextEditor::new(&app.commit_msg)
+        .id(widgets::COMMIT_BOX_ID.clone())
+        .placeholder("Commit message")
+        .on_action(Message::CommitMsg)
+        .size(13)
+        .padding(6)
+        .height(Length::Fixed(56.0))
+        .key_binding(|press| {
+            let mods = press.modifiers;
+            match &press.key {
+                keyboard::Key::Named(keyboard::key::Named::Enter) if mods.control() && mods.shift() => {
+                    Some(Binding::Custom(Message::CommitAndPush))
+                }
+                keyboard::Key::Named(keyboard::key::Named::Enter) if mods.control() => {
+                    Some(Binding::Custom(Message::Commit))
+                }
+                keyboard::Key::Named(keyboard::key::Named::Escape) => Some(Binding::Unfocus),
+                _ => Binding::from_key_press(press),
+            }
+        })
+        .style(widgets::text_editor_style);
+    let can_commit = !busy && (!s.staged.is_empty() || app.amend);
+    let author = if s.user_name.is_empty() {
+        "no user.name configured".to_owned()
+    } else {
+        format!("{} <{}>", s.user_name, s.user_email)
+    };
+    let buttons = row![
+        checkbox(app.amend).label("amend").size(14).text_size(12).on_toggle(Message::ToggleAmend),
+        container(text(author).size(11).color(t.weak).wrapping(iced_core::text::Wrapping::None))
+            .width(Length::Fill)
+            .clip(true),
+        small_button("Commit & Push", can_commit.then_some(Message::CommitAndPush)),
+        primary_button("Commit", can_commit.then_some(Message::Commit)),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    col = col.push(column![editor, buttons].spacing(6).padding(6));
+    col.into()
+}
+
+fn commit(app: &App, idx: usize) -> Element<'_> {
+    let t = &app.theme;
+    let Some(c) = app.snapshot.commits.get(idx) else {
+        return container(text("").size(12)).into();
+    };
+    let mut col = column![].spacing(4).width(Length::Fill).height(Length::Fill).padding(6);
+    col = col.push(
+        row![
+            text(&c.short).size(12).font(Font::MONOSPACE).color(t.weak),
+            text(&c.author).size(12).color(t.weak),
+            Space::new().width(Length::Fill),
+            small_button("copy hash", Some(Message::CommitAction(idx, crate::ui::app::CommitAction::CopyHash))),
+            small_button("menu", Some(Message::MenuOpen(MenuKind::Commit(idx)))),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    );
+    col = col.push(text(&c.summary).size(14).color(t.strong));
+    if !c.body.is_empty() {
+        col = col.push(
+            container(text(&c.body).size(12).font(Font::MONOSPACE))
+                .padding([4, 0])
+                .width(Length::Fill),
         );
-        assert_eq!(commit, 88.0);
-        assert!(u >= 0.0 && s >= 0.0);
     }
-
-    #[test]
-    fn empty_list_yields_space_to_the_other() {
-        let (u, s) = list_scroll_heights(200.0, 6, 0);
-        assert!(s < u, "empty staged list took {s} pt, unstaged got {u}");
-        assert!(u + s <= 200.0 - 88.0 + 0.5);
-        let (u, s) = list_scroll_heights(200.0, 0, 6);
-        assert!(u < s);
-        let (u, s) = list_scroll_heights(200.0, 20, 20);
-        assert!((u - s).abs() < 0.5, "both full lists split evenly: {u} {s}");
+    let files = app.commit_files.get(&c.oid);
+    let n = files.map(|f| f.len()).unwrap_or(0);
+    col = col.push(text(format!("Files ({n})")).size(12).color(t.weak));
+    let mut list = column![].spacing(1);
+    match files {
+        Some(files) => {
+            for f in files {
+                let target = DiffTarget::Commit(c.oid, f.path.clone());
+                let selected = app.selected_file.as_ref() == Some(&target);
+                let label = row![
+                    text(f.kind.letter()).size(12).font(Font::MONOSPACE).color(status_color(app, f.kind)),
+                    text(&f.path).size(13).font(Font::MONOSPACE),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center);
+                list = list.push(row_button(label, selected, app.focus == Pane::Changes, Message::SelectFile(target)));
+            }
+        }
+        None => {
+            list = list.push(text("loading").size(12).color(t.weak));
+        }
     }
-
-    #[test]
-    fn commit_box_shrinks_in_tiny_panes() {
-        assert_eq!(commit_box_height(150.0), 72.0);
-        assert_eq!(commit_message_rows(72.0), 1);
-        assert_eq!(commit_message_rows(104.0), 2);
-    }
+    col = col.push(scrollable(list).height(Length::Fill));
+    col.into()
 }
