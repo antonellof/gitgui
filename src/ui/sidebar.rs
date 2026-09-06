@@ -14,15 +14,17 @@ pub fn view(app: &App) -> Element<'_> {
     let s = &app.snapshot;
     let busy = app.busy > 0;
     let focused = app.focus == Pane::Sidebar;
+    let open = |title: &str| !app.sidebar_collapsed.contains(title);
     let mut col = column![].spacing(1).width(Length::Fill);
 
     // Local branches.
     col = col.push(section(
         "Local",
+        !open("Local"),
         Some(small_button("new", (!busy && s.head.is_some()).then_some(Message::OpenNewBranch))),
         t,
     ));
-    for b in s.branches.iter().filter(|b| !b.is_remote) {
+    for b in s.branches.iter().filter(|b| !b.is_remote && open("Local")) {
         let selected = app.sidebar_selected.as_deref() == Some(b.name.as_str());
         let mut label = row![].spacing(6).align_y(Alignment::Center);
         if b.is_head {
@@ -58,6 +60,7 @@ pub fn view(app: &App) -> Element<'_> {
     let remote_title: &'static str = "Remote";
     col = col.push(section(
         remote_title,
+        !open("Remote"),
         Some(small_button(
             "add",
             (!busy).then_some(Message::Input(
@@ -68,7 +71,7 @@ pub fn view(app: &App) -> Element<'_> {
         )),
         t,
     ));
-    for r in &s.remotes {
+    for r in s.remotes.iter().filter(|_| open("Remote")) {
         let url = s
             .remote_urls
             .iter()
@@ -81,7 +84,9 @@ pub fn view(app: &App) -> Element<'_> {
         let btn = row_button(label, false, focused, Message::Nothing);
         col = col.push(mouse_area(btn).on_right_press(Message::MenuOpen(MenuKind::Remote(r.clone()))));
     }
-    if remote_count > 0 {
+    if !open("Remote") {
+        // collapsed
+    } else if remote_count > 0 {
         for b in s.branches.iter().filter(|b| b.is_remote) {
             let selected = app.sidebar_selected.as_deref() == Some(b.name.as_str());
             let label = row![Space::new().width(10), text(&b.name).size(13)]
@@ -114,6 +119,7 @@ pub fn view(app: &App) -> Element<'_> {
     let head_oid = s.head.as_ref().and_then(|h| h.oid);
     col = col.push(section(
         "Tags",
+        !open("Tags"),
         head_oid.map(|oid| {
             small_button(
                 "new",
@@ -129,7 +135,7 @@ pub fn view(app: &App) -> Element<'_> {
         }),
         t,
     ));
-    for tag in &s.tags {
+    for tag in s.tags.iter().filter(|_| open("Tags")) {
         let selected = app.sidebar_selected.as_deref() == Some(tag.name.as_str());
         let label = row![Space::new().width(10), text(&tag.name).size(13)]
             .spacing(6)
@@ -137,20 +143,21 @@ pub fn view(app: &App) -> Element<'_> {
         let btn = row_button(label, selected, focused, Message::SidebarSelect(tag.name.clone(), tag.oid));
         col = col.push(mouse_area(btn).on_right_press(Message::MenuOpen(MenuKind::Tag(tag.name.clone()))));
     }
-    if s.tags.is_empty() {
+    if s.tags.is_empty() && open("Tags") {
         col = col.push(row![Space::new().width(10), widgets::weak("none", t)].padding([2, 6]));
     }
 
     // Stashes.
     col = col.push(section(
         "Stashes",
+        !open("Stashes"),
         Some(small_button(
             "stash",
             (!busy && s.is_dirty()).then_some(Message::OpenStashDialog),
         )),
         t,
     ));
-    for st in &s.stashes {
+    for st in s.stashes.iter().filter(|_| open("Stashes")) {
         let selected = app.sidebar_selected.as_deref() == Some(st.message.as_str());
         let label = row![
             Space::new().width(10),
@@ -161,17 +168,20 @@ pub fn view(app: &App) -> Element<'_> {
         let btn = row_button(label, selected, focused, Message::SidebarSelect(st.message.clone(), st.oid));
         col = col.push(mouse_area(btn).on_right_press(Message::MenuOpen(MenuKind::Stash(st.index))));
     }
-    if s.stashes.is_empty() {
+    if s.stashes.is_empty() && open("Stashes") {
         col = col.push(row![Space::new().width(10), widgets::weak("none", t)].padding([2, 6]));
     }
 
     // Files.
     col = col.push(section(
         "Files",
+        !open("Files"),
         Some(small_button("refresh", Some(Message::TreeRequest(String::new())))),
         t,
     ));
-    col = col.push(tree::view(app));
+    if open("Files") {
+        col = col.push(tree::view(app));
+    }
 
     scrollable(col.padding([0, 4]))
         .width(Length::Fill)

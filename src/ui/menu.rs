@@ -298,6 +298,7 @@ fn items(app: &App, kind: &MenuKind) -> Vec<Item> {
             let p = path.clone();
             let mut v = Vec::new();
             if *conflicted {
+                v.push(entry("Resolve…", "three-way merge tool", on(Message::MergeOpen(p.clone()))));
                 v.push(entry("Use ours", "keep the version of the branch you are on", on(Message::Resolve(p.clone(), ConflictSide::Ours))));
                 v.push(entry("Use theirs", "keep the incoming version", on(Message::Resolve(p.clone(), ConflictSide::Theirs))));
                 v.push(entry("Mark resolved", "stage the file as it is", on(Message::Run(Command::Stage(vec![p.clone()])))));

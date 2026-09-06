@@ -16,6 +16,9 @@ use crate::ui::widgets::{self, small_button};
 
 pub const ROW_H: f32 = 20.0;
 const BUTTON_W: f32 = 96.0;
+/// Conflict side tints: ours blue, theirs purple.
+const OURS: Color = Color::from_rgb(0.29, 0.47, 0.78);
+const THEIRS: Color = Color::from_rgb(0.62, 0.42, 0.78);
 
 enum Row<'a> {
     Hunk(usize, &'a str),
@@ -25,7 +28,11 @@ enum Row<'a> {
 fn flatten(d: &DiffText) -> Vec<Row<'_>> {
     let mut rows = Vec::new();
     for (i, h) in d.hunks.iter().enumerate() {
-        rows.push(Row::Hunk(i, h.header.as_str()));
+        // A conflicted file is one hunk with the whole file; the banner
+        // above the view says what the sides are, no header row needed.
+        if d.status != FileKind::Conflicted {
+            rows.push(Row::Hunk(i, h.header.as_str()));
+        }
         for (j, l) in h.lines.iter().enumerate() {
             rows.push(Row::Line(i, j, l));
         }
@@ -102,22 +109,6 @@ pub fn view(app: &App) -> Element<'_> {
     let conflicted = selected
         .as_ref()
         .is_some_and(|t| app.snapshot.conflicted.iter().any(|f| f.path == t.path()));
-    if conflicted {
-        if let Some(p) = selected.as_ref().map(|t| t.path().to_owned()) {
-            header = header.push(small_button(
-                "ours",
-                (!busy).then_some(Message::Resolve(p.clone(), crate::git::actions::ConflictSide::Ours)),
-            ));
-            header = header.push(small_button(
-                "theirs",
-                (!busy).then_some(Message::Resolve(p.clone(), crate::git::actions::ConflictSide::Theirs)),
-            ));
-            header = header.push(small_button(
-                "resolved",
-                (!busy).then_some(Message::Run(crate::git::ops::Command::Stage(vec![p]))),
-            ));
-        }
-    }
     header = header.push(small_button("find", Some(Message::DiffSearchOpen)));
     header = header.push(small_button("-", (app.diff_opts.context > 0).then_some(Message::DiffContext(-1))));
     header = header.push(text_widget(app.diff_opts.context.to_string()).size(12).color(t.weak));
@@ -128,6 +119,61 @@ pub fn view(app: &App) -> Element<'_> {
     ));
 
     let mut col = column![header].spacing(0);
+    if conflicted {
+        if let (Some(p), Some(d)) = (selected.as_ref().map(|t| t.path().to_owned()), app.diff.as_ref()) {
+            let (n, ours, theirs) = conflict_info(d);
+            let head = app
+                .snapshot
+                .head
+                .as_ref()
+                .and_then(|h| h.branch_name.clone())
+                .unwrap_or_else(|| "HEAD".into());
+            let ours_label = if ours.is_empty() || ours == "HEAD" { head.clone() } else { ours };
+            let theirs_label = if theirs.is_empty() { "incoming".to_owned() } else { theirs };
+            let summary = format!(
+                "{n} conflict{} in this file",
+                if n == 1 { "" } else { "s" }
+            );
+            let sides = row![
+                text_widget(summary).size(12).color(t.strong),
+                text_widget("·").size(12).color(t.weak),
+                container(text_widget(format!("ours: {ours_label}")).size(11).color(t.strong))
+                    .padding([1, 6])
+                    .style(|_| container::Style {
+                        background: Some(iced_core::Background::Color(alpha(OURS, 0.6))),
+                        border: iced_core::Border { radius: 4.0.into(), ..Default::default() },
+                        ..Default::default()
+                    }),
+                container(text_widget(format!("theirs: {theirs_label}")).size(11).color(t.strong))
+                    .padding([1, 6])
+                    .style(|_| container::Style {
+                        background: Some(iced_core::Background::Color(alpha(THEIRS, 0.6))),
+                        border: iced_core::Border { radius: 4.0.into(), ..Default::default() },
+                        ..Default::default()
+                    }),
+                Space::new().width(Length::Fill),
+                small_button("Use ours", (!busy).then_some(Message::Resolve(p.clone(), crate::git::actions::ConflictSide::Ours))),
+                small_button("Use theirs", (!busy).then_some(Message::Resolve(p.clone(), crate::git::actions::ConflictSide::Theirs))),
+                small_button("Mark resolved", (!busy).then_some(Message::Run(crate::git::ops::Command::Stage(vec![p.clone()])))),
+                widgets::primary_button("Resolve…", (!busy).then_some(Message::MergeOpen(p.clone()))),
+            ]
+            .spacing(6)
+            .align_y(iced_core::Alignment::Center);
+            let hint = text_widget("Resolve… opens the three-way tool (ours | result | theirs). Or pick a side for the whole file, or edit it by hand and mark it resolved. Continue the merge from the footer once every file is resolved.")
+                .size(11)
+                .color(t.weak);
+            let bg = alpha(t.error, 0.12);
+            col = col.push(
+                container(column![sides, hint].spacing(4))
+                    .padding([6, 8])
+                    .width(Length::Fill)
+                    .style(move |_| container::Style {
+                        background: Some(iced_core::Background::Color(bg)),
+                        ..Default::default()
+                    }),
+            );
+        }
+    }
     if app.diff_search_active {
         let total = match_count(app);
         let mut bar = row![
@@ -192,8 +238,35 @@ struct State {
     dragging: bool,
 }
 
+/// Conflict summary from the markers: (count, ours label, theirs label).
+fn conflict_info(d: &DiffText) -> (usize, String, String) {
+    let mut n = 0;
+    let mut ours = String::new();
+    let mut theirs = String::new();
+    for l in d.hunks.iter().flat_map(|h| h.lines.iter()) {
+        if let Some(rest) = l.text.strip_prefix("<<<<<<< ") {
+            n += 1;
+            if ours.is_empty() {
+                ours = rest.trim().to_owned();
+            }
+        } else if let Some(rest) = l.text.strip_prefix(">>>>>>> ") {
+            if theirs.is_empty() {
+                theirs = rest.trim().to_owned();
+            }
+        }
+    }
+    (n, ours, theirs)
+}
+
+fn is_marker(text: &str) -> bool {
+    text.starts_with("<<<<<<< ") || text.starts_with("=======") || text.starts_with(">>>>>>> ") || text.starts_with("||||||| ")
+}
+
 /// Which hunk buttons apply: (unstaged?, path) for working tree diffs.
 fn hunk_actions(d: &DiffText) -> Option<bool> {
+    if d.status == FileKind::Conflicted {
+        return None;
+    }
     match &d.target {
         DiffTarget::WorkdirUnstaged(_) => Some(true),
         DiffTarget::Staged(_) => Some(false),
@@ -464,10 +537,23 @@ impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
                         let _ = hunk;
                     }
                     Row::Line(hunk, line, l) => {
-                        let (bg, fg) = match l.origin {
-                            '+' => (Some(t.add_bg), t.add_fg),
-                            '-' => (Some(t.del_bg), t.del_fg),
-                            _ => (None, t.text),
+                        let conflict = self.diff.status == FileKind::Conflicted;
+                        let (bg, fg) = if conflict {
+                            if is_marker(&l.text) {
+                                (Some(t.hunk_bg), t.hunk_fg)
+                            } else {
+                                match l.origin {
+                                    '-' => (Some(alpha(OURS, 0.22)), t.text),
+                                    '+' => (Some(alpha(THEIRS, 0.22)), t.text),
+                                    _ => (None, t.text),
+                                }
+                            }
+                        } else {
+                            match l.origin {
+                                '+' => (Some(t.add_bg), t.add_fg),
+                                '-' => (Some(t.del_bg), t.del_fg),
+                                _ => (None, t.text),
+                            }
                         };
                         if let Some(bg) = bg {
                             fill(renderer, rect, bg, 0.0);
@@ -491,7 +577,16 @@ impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
                         let gutter_rect = Rectangle::new(Point::new(bounds.x, rect.y), Size::new(geo.gutter, rect.height));
                         let old = l.old_no.map(|n| n.to_string()).unwrap_or_default();
                         let new = l.new_no.map(|n| n.to_string()).unwrap_or_default();
-                        let numbers = format!("{old:>digits$} {new:>digits$} {}", l.origin);
+                        let origin = if conflict {
+                            match l.origin {
+                                '-' => '<',
+                                '+' => '>',
+                                _ => ' ',
+                            }
+                        } else {
+                            l.origin
+                        };
+                        let numbers = format!("{old:>digits$} {new:>digits$} {origin}");
                         draw_text(renderer, numbers, Point::new(bounds.x + 6.0, cy), mono, size, t.line_no, gutter_rect, partial);
                         let text_clip = Rectangle::new(
                             Point::new(bounds.x + geo.gutter, rect.y),

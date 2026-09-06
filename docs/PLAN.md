@@ -265,6 +265,13 @@ Workarounds that matter when touching the widgets:
 Frame cost after the direct draw and single build per idle frame: 6.9 ms at
 1600x1000 @2x, about 14 ms at 2400x1500 @2x (egui: 6.4 and 8 ms).
 
+Conflicts: `ui/merge.rs` is a three-way resolver (ours | result | theirs)
+opened from the conflict banner, the Conflicts section or the file menu.
+It parses the markers itself (diff3 base blocks kept aside), builds the
+result from per-conflict choices (ours, theirs, both, neither) and Apply
+writes the file and stages it. `scripts/conflict-demo.sh` recreates a repo
+with three conflicted files for manual checks.
+
 Still owed on the branch: editor line-number gutter, diff word wrap, agent
 screenshot tests, README and SPEC for the pane layout, real-pane checks of
 drag / resize / menus.

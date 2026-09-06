@@ -13,6 +13,8 @@ pub fn view(app: &App) -> Element<'_> {
     let t = &app.theme;
     let s = &app.snapshot;
     let busy = app.busy > 0;
+    let compact = app.window.width < 1000.0;
+    let label = |full: &'static str, short: &'static str| if compact { short } else { full };
     let mut r = row![].spacing(8).align_y(Alignment::Center).padding([4, 8]);
 
     r = r.push(
@@ -51,7 +53,9 @@ pub fn view(app: &App) -> Element<'_> {
             if let Some((done, total)) = s.rebase_progress {
                 label.push_str(&format!(" {done}/{total}"));
             }
-            label.push_str(" in progress");
+            if !compact {
+                label.push_str(" in progress");
+            }
             let banner = row![
                 text(label).size(12).color(t.strong),
                 small_button("Continue", (!busy).then_some(Message::StateAction(StateAction::Continue))),
@@ -70,8 +74,8 @@ pub fn view(app: &App) -> Element<'_> {
             }));
         }
         if let Some(op) = &app.last_op {
-            let short: String = op.chars().take(60).collect();
-            r = r.push(text(short).size(12).color(t.weak));
+            let short: String = op.chars().take(if compact { 24 } else { 60 }).collect();
+            r = r.push(container(text(short).size(12).color(t.weak).wrapping(iced_core::text::Wrapping::None)).clip(true));
         }
     } else {
         r = r.push(text(app.repo_path.display().to_string()).size(12).font(Font::MONOSPACE).color(t.weak));
@@ -81,10 +85,10 @@ pub fn view(app: &App) -> Element<'_> {
         r = r.push(text(format!("{:.1} ms {} x{}", app.frame_ms, app.transport, app.scale)).size(11).color(t.weak));
     }
     if !app.no_repo {
-        let fetch = small_button("Fetch  f", (!busy).then_some(Message::Run(Command::Fetch)));
-        let pull = mouse_area(small_button("Pull  p", (!busy).then_some(Message::Run(Command::Pull))))
+        let fetch = small_button(label("Fetch  f", "Fetch"), (!busy).then_some(Message::Run(Command::Fetch)));
+        let pull = mouse_area(small_button(label("Pull  p", "Pull"), (!busy).then_some(Message::Run(Command::Pull))))
             .on_right_press(Message::Run(Command::PullRebase));
-        let push = mouse_area(small_button("Push  P", (!busy).then_some(Message::Run(Command::Push)))).on_right_press(
+        let push = mouse_area(small_button(label("Push  P", "Push"), (!busy).then_some(Message::Run(Command::Push)))).on_right_press(
             Message::Confirm(
                 "Force push",
                 "Push with --force-with-lease? Remote commits not in your branch are overwritten.".into(),
@@ -93,10 +97,10 @@ pub fn view(app: &App) -> Element<'_> {
             ),
         );
         r = r.push(fetch).push(pull).push(push);
-        r = r.push(small_button("Refresh  r", Some(Message::Refresh)));
+        r = r.push(small_button(label("Refresh  r", "Refresh"), Some(Message::Refresh)));
     }
-    r = r.push(small_button("Help  ?", Some(Message::OpenHelp)));
-    r = r.push(small_button("Quit  q", Some(Message::Quit)));
+    r = r.push(small_button(label("Help  ?", "?"), Some(Message::OpenHelp)));
+    r = r.push(small_button(label("Quit  q", "Quit"), Some(Message::Quit)));
     let bg = t.panel;
     container(r)
         .width(Length::Fill)

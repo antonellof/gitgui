@@ -60,14 +60,62 @@ fn file_row<'a>(app: &'a App, f: &'a FileStatus, target: DiffTarget, staged: boo
         .into()
 }
 
+/// A conflicted file with its side buttons.
+fn conflict_row<'a>(app: &'a App, f: &'a FileStatus) -> Element<'a> {
+    let t = &app.theme;
+    let target = DiffTarget::WorkdirUnstaged(f.path.clone());
+    let selected = app.selected_file.as_ref() == Some(&target);
+    let focused = app.focus == Pane::Changes;
+    let busy = app.busy > 0;
+    let p = f.path.clone();
+    let label = row![
+        text("!").size(12).font(Font::MONOSPACE).color(t.error),
+        text(&f.path).size(13).font(Font::MONOSPACE).wrapping(iced_core::text::Wrapping::None),
+        Space::new().width(Length::Fill),
+        small_button("resolve", (!busy).then_some(Message::MergeOpen(p.clone()))),
+        small_button("ours", (!busy).then_some(Message::Resolve(p.clone(), crate::git::actions::ConflictSide::Ours))),
+        small_button("theirs", (!busy).then_some(Message::Resolve(p.clone(), crate::git::actions::ConflictSide::Theirs))),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+    let btn = row_button(label, selected, focused, Message::SelectFile(target));
+    mouse_area(btn)
+        .on_right_press(Message::MenuOpen(MenuKind::File {
+            path: p,
+            staged: false,
+            conflicted: true,
+            untracked: false,
+        }))
+        .into()
+}
+
 fn worktree(app: &App) -> Element<'_> {
     let t = &app.theme;
     let s = &app.snapshot;
     let busy = app.busy > 0;
     let mut col = column![].spacing(2).width(Length::Fill).height(Length::Fill);
 
+    // Conflicts first: they block the merge.
+    if !s.conflicted.is_empty() {
+        col = col.push(
+            row![
+                text(format!("Conflicts ({})", s.conflicted.len())).size(13).color(t.error),
+                Space::new().width(Length::Fill),
+                small_button("continue", (!busy).then_some(Message::OpenStateMenu)),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .padding([4, 6]),
+        );
+        let mut list = column![].spacing(1);
+        for f in &s.conflicted {
+            list = list.push(conflict_row(app, f));
+        }
+        col = col.push(scrollable(list.padding([0, 4])).height(Length::Shrink));
+    }
+
     // Unstaged.
-    let unstaged_n = s.unstaged.len() + s.conflicted.len();
+    let unstaged_n = s.unstaged.len();
     col = col.push(
         row![
             text(format!("Unstaged ({unstaged_n})")).size(13).color(t.strong),
@@ -80,7 +128,7 @@ fn worktree(app: &App) -> Element<'_> {
         .padding([4, 6]),
     );
     let mut list = column![].spacing(1);
-    for f in s.conflicted.iter().chain(s.unstaged.iter()) {
+    for f in s.unstaged.iter() {
         list = list.push(file_row(app, f, DiffTarget::WorkdirUnstaged(f.path.clone()), false));
     }
     if unstaged_n == 0 {

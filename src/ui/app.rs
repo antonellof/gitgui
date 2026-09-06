@@ -21,7 +21,8 @@ use crate::git::rebase::TodoAction;
 use crate::git::repo::{DiffOpts, DiffTarget, DirEntry, FileStatus, RepoSnapshot, RepoState};
 use crate::ui::editor::Editor;
 use crate::ui::theme::Theme;
-use crate::ui::{changes, diff, editor, footer, log, menu, modal, sidebar, widgets};
+use crate::ui::merge::{MergeState, Resolution};
+use crate::ui::{changes, diff, editor, footer, log, menu, merge, modal, sidebar, widgets};
 
 pub type Renderer = crate::shell::Renderer;
 pub type Element<'a> = iced_core::Element<'a, Message, iced_core::Theme, Renderer>;
@@ -372,6 +373,13 @@ pub enum Message {
     TreeOpen(String),
     TreeRequest(String),
     ShowChanges(String),
+    // Merge tool
+    MergeOpen(String),
+    MergeSet(usize, Option<Resolution>),
+    MergeAll(Resolution),
+    MergeApply,
+    MergeEdit,
+    MergeClose,
     // Editor
     Edit,
     EditorAction(text_editor::Action),
@@ -380,6 +388,7 @@ pub enum Message {
     EditorExternal,
     EditorPreview,
     // Misc
+    SectionToggle(&'static str),
     NetClose,
     Quit,
     InitRepo,
@@ -411,6 +420,8 @@ pub struct App {
     pub scale: f32,
     pub show_debug: bool,
     pub sidebar_selected: Option<String>,
+    /// Collapsed sidebar sections by title.
+    pub sidebar_collapsed: HashSet<&'static str>,
     pub modal: Option<Modal>,
     pub modal_multiline: text_editor::Content<Renderer>,
     pub menu: Option<Menu>,
@@ -433,6 +444,8 @@ pub struct App {
     pub diff_match: usize,
     pub diff_jump: Cell<bool>,
     pub editor: Option<Editor>,
+    /// Three-way conflict resolver, shown in the diff pane while open.
+    pub merge: Option<MergeState>,
     pub editor_cmd: Option<String>,
     pub open_on_start: Option<String>,
     pub tree: HashMap<String, Vec<DirEntry>>,
@@ -496,6 +509,7 @@ impl App {
             scale,
             show_debug: false,
             sidebar_selected: None,
+            sidebar_collapsed: HashSet::new(),
             modal: None,
             modal_multiline: text_editor::Content::new(),
             menu: None,
@@ -520,6 +534,7 @@ impl App {
             diff_match: 0,
             diff_jump: Cell::new(false),
             editor: None,
+            merge: None,
             editor_cmd: None,
             open_on_start: None,
             tree: HashMap::new(),
@@ -534,7 +549,7 @@ impl App {
     }
 
     fn in_editor_layout(&self) -> bool {
-        self.editor.is_some() && self.editor_full
+        (self.editor.is_some() && self.editor_full) || self.merge.is_some()
     }
 
     fn active_panes(&self) -> &pane_grid::State<Pane> {
@@ -603,6 +618,11 @@ impl App {
                 self.commit_files.clear();
                 self.rebuild_filter();
                 self.refresh_tree();
+                if let Some(m) = &self.merge {
+                    if !self.snapshot.conflicted.iter().any(|f| f.path == m.path) {
+                        self.merge = None;
+                    }
+                }
                 if first {
                     self.selection = if self.has_worktree_row() || self.snapshot.commits.is_empty() {
                         Selection::WorkingTree
@@ -1487,6 +1507,27 @@ impl App {
         }
     }
 
+    /// Open the three-way resolver on a conflicted file.
+    pub fn open_merge(&mut self, path: String) {
+        let head = self
+            .snapshot
+            .head
+            .as_ref()
+            .and_then(|h| h.branch_name.clone())
+            .unwrap_or_else(|| "HEAD".into());
+        let workdir = self.snapshot.path.clone();
+        match MergeState::open(&workdir, &path, &head) {
+            Ok(m) => {
+                self.merge = Some(m);
+                self.editor = None;
+                self.selection = Selection::WorkingTree;
+                self.select_file(Some(DiffTarget::WorkdirUnstaged(path)));
+                self.focus = Pane::Detail;
+            }
+            Err(e) => self.toast(e, true),
+        }
+    }
+
     pub fn save_editor(&mut self) {
         let Some(ed) = self.editor.as_mut() else { return };
         match ed.save() {
@@ -1900,6 +1941,45 @@ impl App {
                 self.select_file(Some(target));
                 self.focus = Pane::Detail;
             }
+            Message::MergeOpen(path) => self.open_merge(path),
+            Message::MergeSet(i, r) => {
+                if let Some(m) = self.merge.as_mut() {
+                    m.set(i, r);
+                }
+            }
+            Message::MergeAll(r) => {
+                if let Some(m) = self.merge.as_mut() {
+                    m.set_all(r);
+                }
+            }
+            Message::MergeApply => {
+                let Some(m) = self.merge.as_ref() else { return };
+                if m.resolved() < m.conflicts() {
+                    self.toast("resolve every conflict first", true);
+                    return;
+                }
+                match m.write() {
+                    Ok(()) => {
+                        let path = m.path.clone();
+                        self.merge = None;
+                        self.run(Command::Stage(vec![path.clone()]));
+                        self.toast(format!("{path} resolved"), false);
+                    }
+                    Err(e) => self.toast(format!("cannot write: {e}"), true),
+                }
+            }
+            Message::MergeEdit => {
+                let Some(m) = self.merge.as_ref() else { return };
+                let path = m.path.clone();
+                match m.write() {
+                    Ok(()) => {
+                        self.merge = None;
+                        self.open_editor(path, false);
+                    }
+                    Err(e) => self.toast(format!("cannot write: {e}"), true),
+                }
+            }
+            Message::MergeClose => self.merge = None,
             Message::Edit => {
                 let Some(path) = self.current_file() else {
                     self.toast("select a file first", true);
@@ -1917,6 +1997,11 @@ impl App {
             Message::EditorClose => self.close_editor(),
             Message::EditorExternal => self.edit_selected_external(),
             Message::EditorPreview => self.preview_selected_in_cmux(),
+            Message::SectionToggle(title) => {
+                if !self.sidebar_collapsed.remove(title) {
+                    self.sidebar_collapsed.insert(title);
+                }
+            }
             Message::NetClose => self.net.open = false,
             Message::Quit => self.quit = true,
             Message::InitRepo => self.run(Command::InitRepo),
@@ -2057,7 +2142,9 @@ impl App {
             return;
         }
         if named == Some(Named::Escape) {
-            if self.editor.is_some() {
+            if self.merge.is_some() {
+                self.merge = None;
+            } else if self.editor.is_some() {
                 self.close_editor();
             } else if self.line_sel.is_some() {
                 self.line_sel = None;
@@ -2272,7 +2359,9 @@ impl App {
                 Pane::Log => log::view(self),
                 Pane::Changes => changes::view(self),
                 Pane::Detail => {
-                    if self.editor.is_some() {
+                    if self.merge.is_some() {
+                        merge::view(self)
+                    } else if self.editor.is_some() {
                         editor::view(self)
                     } else {
                         diff::view(self)
@@ -2280,6 +2369,7 @@ impl App {
                 }
             };
             let title = match kind {
+                Pane::Detail if self.merge.is_some() => "Resolve conflicts",
                 Pane::Detail if self.editor.is_some() => "Editor",
                 k => k.title(),
             };

@@ -172,13 +172,38 @@ pub fn weak<'a>(s: impl text::IntoFragment<'a>, theme: &Theme) -> iced_widget::T
     text(s).size(12).color(theme.weak)
 }
 
-/// Section header inside the sidebar.
-pub fn section<'a>(title: &'a str, trailing: Option<Element<'a>>, theme: &Theme) -> Element<'a> {
-    let mut r = row![text(title).size(12).color(theme.weak)].spacing(6).align_y(Alignment::Center);
+/// Section header inside the sidebar: a disclosure arrow, the title, and
+/// an optional trailing button. Clicking the title toggles the section.
+pub fn section<'a>(title: &'static str, collapsed: bool, trailing: Option<Element<'a>>, theme: &Theme) -> Element<'a> {
+    let arrow = if collapsed { "▸" } else { "▾" };
+    let head = button_widget::Button::new(
+        row![
+            text(arrow).size(11).color(theme.weak),
+            text(title).size(12).color(theme.weak),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .padding([2, 4])
+    .on_press(Message::SectionToggle(title))
+    .style(|theme: &iced_core::Theme, status| {
+        let p = theme.extended_palette();
+        button_widget::Style {
+            background: (status == button_widget::Status::Hovered)
+                .then_some(Background::Color(p.background.weak.color)),
+            text_color: p.background.base.text,
+            border: Border {
+                radius: 4.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    });
+    let mut r = row![head].spacing(6).align_y(Alignment::Center);
     if let Some(t) = trailing {
         r = r.push(Space::new().width(Length::Fill)).push(t);
     }
-    container(r).padding(Padding::from([6, 6]).top(10)).width(Length::Fill).into()
+    container(r).padding(Padding::from([4, 2]).top(8)).width(Length::Fill).into()
 }
 
 /// The pane frame: title bar with maximize / restore controls, body inside.

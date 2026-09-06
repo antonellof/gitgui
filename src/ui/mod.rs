@@ -9,6 +9,7 @@ pub mod help;
 pub mod highlight;
 pub mod log;
 pub mod menu;
+pub mod merge;
 pub mod modal;
 pub mod sidebar;
 pub mod theme;
