@@ -2,7 +2,6 @@
 
 A git GUI that runs inside your terminal, next to your coding agent. One Rust binary paints an [iced](https://iced.rs) interface as pixels into a cmux, Ghostty, kitty or WezTerm pane over the kitty graphics protocol. No Electron, no browser engine, no TUI. Works over SSH.
 
-Commit graph with branch lanes, staging by file, hunk or line, a three-way conflict resolver, history rewriting without an editor popping up, a built-in code editor with syntax colors, and a file tree, on panes you drag and resize. Git writes go through libgit2; fetch, pull and push go through your own `git` so credential helpers and SSH agents keep working. Version 0.4.0, MIT.
 
 Install:
 
@@ -24,6 +23,21 @@ Conflicts open a three-way resolver: ours, result, theirs, with per-conflict but
 
 <p align="center">
   <a href="screenshot/gitgui-merge.png"><img src="screenshot/gitgui-merge.png" width="100%" alt="Three-way conflict resolver: ours, result, theirs"></a>
+</p>
+
+<p align="center">
+  <a href="screenshot/gitgui-editor.png"><img src="screenshot/gitgui-editor.png" width="24%" alt="Built-in editor with syntax colors next to the sidebar"></a>
+  <a href="screenshot/gitgui-branches.png"><img src="screenshot/gitgui-branches.png" width="24%" alt="Branch switcher"></a>
+  <a href="screenshot/gitgui-menu.png"><img src="screenshot/gitgui-menu.png" width="24%" alt="Commit menu: cherry-pick, revert, reset, reword, squash, fixup, drop, move"></a>
+  <a href="screenshot/gitgui-help.png"><img src="screenshot/gitgui-help.png" width="24%" alt="Keyboard reference"></a>
+</p>
+<p align="center">
+  <sub>
+    <a href="screenshot/gitgui-editor.png">editor</a> ·
+    <a href="screenshot/gitgui-branches.png">branch switcher</a> ·
+    <a href="screenshot/gitgui-menu.png">commit menu</a> ·
+    <a href="screenshot/gitgui-help.png">shortcuts</a>
+  </sub>
 </p>
 
 ## Install options
