@@ -721,11 +721,16 @@ mod tests {
         assert_eq!(h.app.panes.maximized(), Some(log));
         h.key(b"2");
         assert!(h.app.panes.maximized().is_none());
-        // A tree file opens the editor in the detail pane; the layout stays.
+        // A tree file opens the editor over the whole main area: only the
+        // sidebar and the editor remain; closing it restores the four panes.
         h.app.update(crate::ui::app::Message::TreeOpen("src/lib.rs".into()));
         h.frame();
         assert_eq!(h.app.editor.as_ref().map(|e| e.path.as_str()), Some("src/lib.rs"));
-        assert!(h.app.panes.maximized().is_none());
+        assert!(h.app.editor_full);
+        assert_eq!(h.app.editor_panes.len(), 2);
+        h.key(b"\x1b");
+        assert!(h.app.editor.is_none());
+        assert!(!h.app.editor_full);
     }
 
     #[test]

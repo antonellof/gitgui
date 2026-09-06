@@ -441,6 +441,10 @@ pub struct App {
     pub tree_requested: HashSet<String>,
     pub line_sel: Option<LineSel>,
     pub panes: pane_grid::State<Pane>,
+    /// Layout while a file opened from the tree is shown: sidebar + editor.
+    pub editor_panes: pane_grid::State<Pane>,
+    /// The editor takes the whole main area (opened from the tree or --open).
+    pub editor_full: bool,
 }
 
 impl App {
@@ -460,6 +464,12 @@ impl App {
                     b: Box::new(Configuration::Pane(Pane::Detail)),
                 }),
             }),
+        });
+        let editor_panes = pane_grid::State::with_configuration(Configuration::Split {
+            axis: Axis::Vertical,
+            ratio: 0.2,
+            a: Box::new(Configuration::Pane(Pane::Sidebar)),
+            b: Box::new(Configuration::Pane(Pane::Detail)),
         });
         Self {
             theme,
@@ -518,6 +528,28 @@ impl App {
             tree_requested: HashSet::new(),
             line_sel: None,
             panes,
+            editor_panes,
+            editor_full: false,
+        }
+    }
+
+    fn in_editor_layout(&self) -> bool {
+        self.editor.is_some() && self.editor_full
+    }
+
+    fn active_panes(&self) -> &pane_grid::State<Pane> {
+        if self.in_editor_layout() {
+            &self.editor_panes
+        } else {
+            &self.panes
+        }
+    }
+
+    fn active_panes_mut(&mut self) -> &mut pane_grid::State<Pane> {
+        if self.in_editor_layout() {
+            &mut self.editor_panes
+        } else {
+            &mut self.panes
         }
     }
 
@@ -551,7 +583,7 @@ impl App {
     }
 
     pub fn pane_of(&self, kind: Pane) -> Option<pane_grid::Pane> {
-        self.panes.iter().find(|(_, k)| **k == kind).map(|(p, _)| *p)
+        self.active_panes().iter().find(|(_, k)| **k == kind).map(|(p, _)| *p)
     }
 
     // ---- replies from the worker ----
@@ -580,7 +612,7 @@ impl App {
                     self.on_selection_changed();
                     if let Some(path) = self.open_on_start.take() {
                         self.tree_selected = Some(path.clone());
-                        self.open_editor(path);
+                        self.open_editor(path, true);
                     }
                 } else {
                     match self.selection {
@@ -1431,7 +1463,7 @@ impl App {
 
     // ---- editor ----
 
-    pub fn open_editor(&mut self, path: String) {
+    pub fn open_editor(&mut self, path: String, full: bool) {
         if let Some(ed) = &self.editor {
             if ed.path == path {
                 return;
@@ -1445,6 +1477,7 @@ impl App {
         match Editor::open(&workdir, &path) {
             Ok(ed) => {
                 self.editor = Some(ed);
+                self.editor_full = full;
                 self.focus = Pane::Detail;
                 self.ops.push(Box::new(iced_core::widget::operation::focusable::focus(
                     widgets::EDITOR_ID.clone(),
@@ -1472,6 +1505,7 @@ impl App {
             self.modal = Some(Modal::CloseEditor);
         } else {
             self.editor = None;
+            self.editor_full = false;
         }
     }
 
@@ -1530,19 +1564,19 @@ impl App {
             Message::Nothing => {}
             Message::Key(key, mods) => self.key(key, mods),
             Message::PaneClicked(p) => {
-                if let Some(kind) = self.panes.get(p) {
+                if let Some(kind) = self.active_panes().get(p) {
                     self.focus = *kind;
                 }
             }
             Message::PaneDragged(pane_grid::DragEvent::Dropped { pane, target }) => {
-                self.panes.drop(pane, target);
+                self.active_panes_mut().drop(pane, target);
             }
             Message::PaneDragged(_) => {}
             Message::PaneResized(pane_grid::ResizeEvent { split, ratio }) => {
-                self.panes.resize(split, ratio);
+                self.active_panes_mut().resize(split, ratio);
             }
-            Message::PaneMaximize(p) => self.panes.maximize(p),
-            Message::PaneRestore => self.panes.restore(),
+            Message::PaneMaximize(p) => self.active_panes_mut().maximize(p),
+            Message::PaneRestore => self.active_panes_mut().restore(),
             Message::SelectRow(sel) => {
                 self.focus = Pane::Log;
                 self.select(sel);
@@ -1846,7 +1880,7 @@ impl App {
             Message::TreeOpen(p) => {
                 self.tree_selected = Some(p.clone());
                 self.focus = Pane::Sidebar;
-                self.open_editor(p);
+                self.open_editor(p, true);
             }
             Message::TreeRequest(d) => {
                 self.tree_requested.remove(&d);
@@ -1871,7 +1905,8 @@ impl App {
                     self.toast("select a file first", true);
                     return;
                 };
-                self.open_editor(path);
+                let from_tree = self.focus == Pane::Sidebar && self.tree_selected.as_deref() == Some(path.as_str());
+                self.open_editor(path, from_tree);
             }
             Message::EditorAction(action) => {
                 if let Some(ed) = self.editor.as_mut() {
@@ -2207,10 +2242,11 @@ impl App {
                     _ => Pane::Detail,
                 };
                 if let Some(p) = self.pane_of(kind) {
-                    if self.panes.maximized() == Some(p) {
-                        self.panes.restore();
+                    let panes = self.active_panes_mut();
+                    if panes.maximized() == Some(p) {
+                        panes.restore();
                     } else {
-                        self.panes.maximize(p);
+                        panes.maximize(p);
                     }
                 }
             }
@@ -2230,7 +2266,7 @@ impl App {
         if self.no_repo {
             return self.view_no_repo();
         }
-        let grid = pane_grid_widget(&self.panes, |pane, kind, maximized| {
+        let grid = pane_grid_widget(self.active_panes(), |pane, kind, maximized| {
             let body: Element<'_> = match kind {
                 Pane::Sidebar => sidebar::view(self),
                 Pane::Log => log::view(self),
