@@ -15,6 +15,8 @@ Run:
 cd /path/to/repo && gitgui
 ```
 
+![gitgui in a cmux split next to Claude Code: repository, commit graph, changes and diff](screenshot/gitgui-cmux-claude.png)
+
 <p align="center">
   <a href="screenshot/gitgui-commits.png"><img src="screenshot/gitgui-commits.png" width="100%" alt="Repository, commit graph, changes and diff on draggable panes"></a>
 </p>
