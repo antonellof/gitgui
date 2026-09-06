@@ -12,7 +12,6 @@ fn rgb(r: u8, g: u8, b: u8) -> Color {
 
 #[derive(Debug, Clone)]
 pub struct Theme {
-    pub dark: bool,
     pub background: Color,
     /// Slightly raised surface: pane title bars, footer, dialogs.
     pub panel: Color,
@@ -33,7 +32,6 @@ pub struct Theme {
     pub line_no: Color,
     pub selection: Color,
     pub selection_inactive: Color,
-    pub hover: Color,
     pub head_pill: Color,
     pub branch_pill: Color,
     pub remote_pill: Color,
@@ -46,7 +44,6 @@ pub struct Theme {
 impl Theme {
     pub fn dark() -> Self {
         Theme {
-            dark: true,
             background: rgb(0x1b, 0x1b, 0x1b),
             panel: rgb(0x24, 0x24, 0x26),
             well: rgb(0x15, 0x15, 0x16),
@@ -74,7 +71,6 @@ impl Theme {
             line_no: rgb(0x6c, 0x70, 0x86),
             selection: rgb(0x2f, 0x4a, 0x6e),
             selection_inactive: rgb(0x2a, 0x2f, 0x3a),
-            hover: rgb(0x2a, 0x2c, 0x32),
             head_pill: rgb(0x40, 0xa0, 0x2b),
             branch_pill: rgb(0x2b, 0x6c, 0xb0),
             remote_pill: rgb(0x8a, 0x5a, 0xb5),
@@ -87,7 +83,6 @@ impl Theme {
 
     pub fn light() -> Self {
         Theme {
-            dark: false,
             background: rgb(0xf6, 0xf6, 0xf6),
             panel: rgb(0xec, 0xec, 0xee),
             well: rgb(0xff, 0xff, 0xff),
@@ -115,7 +110,6 @@ impl Theme {
             line_no: rgb(0x8c, 0x8f, 0xa1),
             selection: rgb(0xc7, 0xdc, 0xf8),
             selection_inactive: rgb(0xe4, 0xe4, 0xe8),
-            hover: rgb(0xe8, 0xe8, 0xec),
             head_pill: rgb(0x40, 0xa0, 0x2b),
             branch_pill: rgb(0x2b, 0x6c, 0xb0),
             remote_pill: rgb(0x8a, 0x5a, 0xb5),

@@ -36,6 +36,7 @@ impl Framebuffer {
         }
     }
 
+    #[cfg(test)]
     pub fn clear(&mut self, rgba: [u8; 4]) {
         for px in self.pixels.as_chunks_mut::<4>().0 {
             *px = rgba;

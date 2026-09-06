@@ -67,10 +67,6 @@ impl Editor {
         self.dirty
     }
 
-    pub fn text(&self) -> String {
-        self.content.text()
-    }
-
     /// Write the buffer back with the file's original line endings.
     pub fn save(&mut self) -> Result<(), String> {
         let mut text = self.content.text();
@@ -134,6 +130,10 @@ pub fn view(app: &App) -> Element<'_> {
         .height(Length::Fill)
         .wrapping(iced_core::text::Wrapping::None)
         .key_binding(|press| {
+            // iced consults the binding even when the editor is not focused.
+            if !matches!(press.status, text_editor::Status::Focused { .. }) {
+                return None;
+            }
             let mods = press.modifiers;
             match &press.key {
                 keyboard::Key::Character(c) if mods.control() && c.as_str() == "s" => {

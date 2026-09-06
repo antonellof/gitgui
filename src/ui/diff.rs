@@ -416,12 +416,12 @@ impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
 
         renderer.with_layer(bounds, |renderer| {
             fill(renderer, bounds, t.well, 0.0);
-            for i in first..last.min(rows.len()) {
+            for (i, row) in rows.iter().enumerate().take(last.min(rows.len())).skip(first) {
                 let y = bounds.y + i as f32 * ROW_H - state.scroll;
                 let full = Rectangle::new(Point::new(bounds.x, y), Size::new(bounds.width, ROW_H));
                 let Some(rect) = full.intersection(&bounds) else { continue };
                 let cy = full.center_y();
-                match &rows[i] {
+                match row {
                     Row::Hunk(hunk, header) => {
                         fill(renderer, rect, t.hunk_bg, 0.0);
                         let buttons = self.hunk_buttons(bounds, y);

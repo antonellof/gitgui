@@ -5,7 +5,6 @@
 use std::time::Instant;
 
 use iced_core::keyboard::{self, key};
-use iced_core::renderer::Headless as _;
 use iced_core::{clipboard, mouse, theme, window, Event, Font, Pixels, Point, Size};
 use iced_runtime::user_interface::{self, UserInterface};
 
@@ -44,6 +43,8 @@ pub struct Shell {
     modifiers: keyboard::Modifiers,
     pub clipboard: Clipboard,
     pub theme: iced_core::Theme,
+    /// Clip mask reused across frames (one allocation per size).
+    mask: Option<tiny_skia::Mask>,
 }
 
 /// What a frame asked the runtime for.
@@ -66,6 +67,7 @@ impl Shell {
             modifiers: keyboard::Modifiers::empty(),
             clipboard: Clipboard::default(),
             theme,
+            mask: None,
         };
         s.resize(width_px, height_px, ppp);
         s
@@ -74,10 +76,6 @@ impl Shell {
     pub fn resize(&mut self, width_px: u32, height_px: u32, ppp: f32) {
         self.ppp = ppp;
         self.size = Size::new(width_px as f32 / ppp, height_px as f32 / ppp);
-    }
-
-    pub fn ppp(&self) -> f32 {
-        self.ppp
     }
 
     pub fn modifiers(&self) -> keyboard::Modifiers {
@@ -218,13 +216,21 @@ impl Shell {
         }
         let mut events = std::mem::take(&mut self.events);
         events.push(Event::Window(window::Event::RedrawRequested(Instant::now())));
-
-        // Pass 1: deliver events, collect messages.
-        let mut messages: Vec<Message> = Vec::new();
         let mut redraw = window::RedrawRequest::Wait;
-        {
+        let mut messages: Vec<Message> = Vec::new();
+        let mut ops: Vec<Box<dyn iced_core::widget::Operation>> = std::mem::take(&mut app.ops);
+
+        // Build, deliver events, apply messages, rebuild; the UI that saw no
+        // new messages is the one drawn. Idle frames build exactly once.
+        let mut rounds = 0;
+        loop {
+            rounds += 1;
             let cache = self.cache.take().unwrap_or_default();
             let mut ui = UserInterface::build(app.view(), self.size, cache, &mut self.renderer);
+            for op in ops.drain(..) {
+                let mut op = op;
+                ui.operate(&self.renderer, op.as_mut());
+            }
             let (state, statuses) = ui.update(
                 &events,
                 self.cursor,
@@ -233,7 +239,7 @@ impl Shell {
                 &mut messages,
             );
             if let user_interface::State::Updated { redraw_request, .. } = state {
-                redraw = redraw_request;
+                redraw = merge_redraw(redraw, redraw_request);
             }
             for (ev, status) in events.iter().zip(statuses) {
                 if status == iced_core::event::Status::Ignored {
@@ -242,88 +248,72 @@ impl Shell {
                     }
                 }
             }
+            self.clipboard.paste = None;
+            if messages.is_empty() || rounds >= 4 {
+                let base = theme::Base::base(&self.theme);
+                ui.draw(
+                    &mut self.renderer,
+                    &self.theme,
+                    &iced_core::renderer::Style {
+                        text_color: base.text_color,
+                    },
+                    self.cursor,
+                );
+                self.cache = Some(ui.into_cache());
+                self.present(fb, base.background_color);
+                break;
+            }
             self.cache = Some(ui.into_cache());
-        }
-        self.clipboard.paste = None;
-
-        // Apply messages, then rebuild so the frame shows the new state.
-        let mut ops = Vec::new();
-        let mut rounds = 0;
-        while !messages.is_empty() && rounds < 4 {
-            rounds += 1;
             for m in messages.drain(..) {
                 app.update(m);
             }
             ops.append(&mut app.ops);
-            let cache = self.cache.take().unwrap_or_default();
-            let mut ui = UserInterface::build(app.view(), self.size, cache, &mut self.renderer);
-            for op in ops.drain(..) {
-                let mut op = op;
-                ui.operate(&self.renderer, op.as_mut());
-            }
-            let redraw_ev = [Event::Window(window::Event::RedrawRequested(Instant::now()))];
-            let (state, _) = ui.update(
-                &redraw_ev,
-                self.cursor,
-                &mut self.renderer,
-                &mut self.clipboard,
-                &mut messages,
-            );
-            if let user_interface::State::Updated { redraw_request, .. } = state {
-                redraw = match (redraw, redraw_request) {
-                    (window::RedrawRequest::NextFrame, _) | (_, window::RedrawRequest::NextFrame) => {
-                        window::RedrawRequest::NextFrame
-                    }
-                    (window::RedrawRequest::At(a), window::RedrawRequest::At(b)) => {
-                        window::RedrawRequest::At(a.min(b))
-                    }
-                    (window::RedrawRequest::At(a), _) | (_, window::RedrawRequest::At(a)) => {
-                        window::RedrawRequest::At(a)
-                    }
-                    _ => window::RedrawRequest::Wait,
-                };
-            }
-            self.cache = Some(ui.into_cache());
-        }
-        if !app.ops.is_empty() {
-            ops.append(&mut app.ops);
-        }
-
-        // Draw.
-        {
-            let cache = self.cache.take().unwrap_or_default();
-            let mut ui = UserInterface::build(app.view(), self.size, cache, &mut self.renderer);
-            for op in ops.drain(..) {
-                let mut op = op;
-                ui.operate(&self.renderer, op.as_mut());
-            }
-            let base = theme::Base::base(&self.theme);
-            ui.draw(
-                &mut self.renderer,
-                &self.theme,
-                &iced_core::renderer::Style {
-                    text_color: base.text_color,
-                },
-                self.cursor,
-            );
-            self.cache = Some(ui.into_cache());
-            let rgba = self.renderer.screenshot(phys, self.ppp, base.background_color);
-            let dst = fb.pixels_mut();
-            let n = dst.len().min(rgba.len());
-            dst[..n].copy_from_slice(&rgba[..n]);
+            events.clear();
+            events.push(Event::Window(window::Event::RedrawRequested(Instant::now())));
         }
         if app.toasts_active() {
-            redraw = match redraw {
-                window::RedrawRequest::Wait => {
-                    window::RedrawRequest::At(Instant::now() + std::time::Duration::from_millis(500))
-                }
-                r => r,
-            };
+            redraw = merge_redraw(
+                redraw,
+                window::RedrawRequest::At(Instant::now() + std::time::Duration::from_millis(500)),
+            );
         }
         FrameOut {
             redraw,
             copy: std::mem::take(&mut self.clipboard.copied),
         }
+    }
+
+    /// Rasterize the drawn layers straight into the framebuffer.
+    fn present(&mut self, fb: &mut Framebuffer, background: iced_core::Color) {
+        let (w, h) = (fb.width(), fb.height());
+        if self.mask.as_ref().map(|m| (m.width(), m.height())) != Some((w, h)) {
+            self.mask = tiny_skia::Mask::new(w, h);
+        }
+        let Some(mask) = self.mask.as_mut() else { return };
+        let viewport = iced_widget::graphics::Viewport::with_physical_size(Size::new(w, h), self.ppp);
+        let Some(mut pixmap) = tiny_skia::PixmapMut::from_bytes(fb.pixels_mut(), w, h) else { return };
+        self.renderer.draw(
+            &mut pixmap,
+            mask,
+            &viewport,
+            &[iced_core::Rectangle::with_size(Size::new(w as f32, h as f32))],
+            background,
+        );
+        // tiny-skia keeps BGRA in memory; the kitty encoder wants RGBA. The
+        // frame is opaque so premultiplication does not matter.
+        for px in fb.pixels_mut().as_chunks_mut::<4>().0 {
+            px.swap(0, 2);
+        }
+    }
+}
+
+fn merge_redraw(a: window::RedrawRequest, b: window::RedrawRequest) -> window::RedrawRequest {
+    use window::RedrawRequest::{At, NextFrame, Wait};
+    match (a, b) {
+        (NextFrame, _) | (_, NextFrame) => NextFrame,
+        (At(x), At(y)) => At(x.min(y)),
+        (At(x), Wait) | (Wait, At(x)) => At(x),
+        (Wait, Wait) => Wait,
     }
 }
 

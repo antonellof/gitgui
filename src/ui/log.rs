@@ -6,7 +6,7 @@ use iced_core::text::{self, Paragraph as _};
 use iced_core::widget::{tree, Tree};
 use iced_core::{
     alignment, event, layout, renderer, Color, Element as CoreElement, Event, Font, Length, Pixels, Point, Rectangle,
-    Shell, Size, Vector, Widget,
+    Shell, Size, Widget,
 };
 use iced_widget::canvas::{Frame, Path, Stroke};
 use iced_widget::{column, container, row, text as text_widget, text_input, Space};
@@ -63,6 +63,24 @@ struct LogView<'a> {
 #[derive(Default)]
 struct State {
     scroll: f32,
+    /// Truncated strings by (text, width): measuring is the costly part of a row.
+    fit: std::cell::RefCell<std::collections::HashMap<(String, u32), String>>,
+}
+
+impl State {
+    fn fit(&self, s: &str, width: f32, font: Font, size: Pixels) -> String {
+        let key = (s.to_owned(), width.to_bits());
+        if let Some(v) = self.fit.borrow().get(&key) {
+            return v.clone();
+        }
+        let v = fit(s, width, font, size);
+        let mut cache = self.fit.borrow_mut();
+        if cache.len() > 4096 {
+            cache.clear();
+        }
+        cache.insert(key, v.clone());
+        v
+    }
 }
 
 impl LogView<'_> {
@@ -193,7 +211,9 @@ impl Widget<Message, iced_core::Theme, Renderer> for LogView<'_> {
         let right_w = if show_author { 150.0 } else { 44.0 };
 
         renderer.with_layer(bounds, |renderer| {
-            let mut frame = Frame::new(renderer, bounds.size());
+            // Absolute coordinates: tiny-skia applies a layer translation to
+            // a geometry group's clip rect twice, which pushes it off-pane.
+            let mut frame = Frame::with_bounds(renderer, bounds);
             for i in first..last.min(self.rows.len()) {
                 let y = bounds.y + i as f32 * ROW_H - state.scroll;
                 let full = Rectangle::new(Point::new(bounds.x, y), Size::new(bounds.width, ROW_H));
@@ -214,7 +234,7 @@ impl Widget<Message, iced_core::Theme, Renderer> for LogView<'_> {
                     Selection::WorkingTree => {
                         let cx = bounds.x + 3.0 + LANE_W / 2.0;
                         frame.stroke(
-                            &Path::circle(Point::new(cx - bounds.x, y - bounds.y + ROW_H / 2.0), NODE_R),
+                            &Path::circle(Point::new(cx, full.center_y()), NODE_R),
                             Stroke::default().with_color(t.accent).with_width(1.5),
                         );
                         let label = format!(
@@ -238,11 +258,8 @@ impl Widget<Message, iced_core::Theme, Renderer> for LogView<'_> {
                         let Some(c) = s.commits.get(ci) else { continue };
                         if let Some(layout) = s.graph.rows.get(ci) {
                             let next = s.graph.rows.get(ci + 1);
-                            let local = Rectangle::new(
-                                Point::new(0.0, y - bounds.y),
-                                Size::new(graph_w, ROW_H),
-                            );
-                            draw_graph_row(&mut frame, local, layout, next, t, lanes);
+                            let graph_rect = Rectangle::new(Point::new(bounds.x, y), Size::new(graph_w, ROW_H));
+                            draw_graph_row(&mut frame, graph_rect, layout, next, t, lanes);
                         }
                         let mut x = text_x;
                         for r in &c.refs {
@@ -256,12 +273,12 @@ impl Widget<Message, iced_core::Theme, Renderer> for LogView<'_> {
                         }
                         let summary_w = (rect.x + rect.width - right_w - x - 8.0).max(40.0);
                         let clip = Rectangle::new(Point::new(x, rect.y), Size::new(summary_w, rect.height));
-                        let summary = fit(&c.summary, summary_w, default_font, font_size);
+                        let summary = state.fit(&c.summary, summary_w, default_font, font_size);
                         draw_text(renderer, summary, Point::new(x, full.center_y()), default_font, font_size, t.text, clip);
                         if show_author {
                             let ax = rect.x + rect.width - right_w + 4.0;
                             let aclip = Rectangle::new(Point::new(ax, rect.y), Size::new(right_w - 48.0, rect.height));
-                            let author = fit(&c.author, right_w - 52.0, default_font, small);
+                            let author = state.fit(&c.author, right_w - 52.0, default_font, small);
                             draw_text(renderer, author, Point::new(ax, full.center_y()), default_font, small, t.weak, aclip);
                         }
                         let age_s = age(now, c.time);
@@ -278,10 +295,7 @@ impl Widget<Message, iced_core::Theme, Renderer> for LogView<'_> {
                     }
                 }
             }
-            let geometry = frame.into_geometry();
-            iced_core::Renderer::with_translation(renderer, Vector::new(bounds.x, bounds.y), |r| {
-                iced_widget::graphics::geometry::Renderer::draw_geometry(r, geometry);
-            });
+            iced_widget::graphics::geometry::Renderer::draw_geometry(renderer, frame.into_geometry());
         });
     }
 }

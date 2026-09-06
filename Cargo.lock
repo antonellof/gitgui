@@ -441,6 +441,7 @@ dependencies = [
  "png",
  "serde",
  "serde_json",
+ "tiny-skia",
 ]
 
 [[package]]

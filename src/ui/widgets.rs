@@ -17,8 +17,6 @@ pub static EDITOR_ID: LazyLock<Id> = LazyLock::new(|| Id::new("editor"));
 pub static FILTER_ID: LazyLock<Id> = LazyLock::new(|| Id::new("filter"));
 pub static DIFF_SEARCH_ID: LazyLock<Id> = LazyLock::new(|| Id::new("diff_search"));
 
-pub const ROW_H: f32 = 24.0;
-
 fn border(color: Color) -> Border {
     Border {
         color,
@@ -172,21 +170,6 @@ pub fn row_button<'a>(content: impl Into<Element<'a>>, selected: bool, focused: 
 /// A plain text line in the weak color.
 pub fn weak<'a>(s: impl text::IntoFragment<'a>, theme: &Theme) -> iced_widget::Text<'a, iced_core::Theme, crate::ui::app::Renderer> {
     text(s).size(12).color(theme.weak)
-}
-
-/// A colored label pill (refs in the log, status letters).
-pub fn pill<'a>(label: impl text::IntoFragment<'a>, color: Color) -> Element<'a> {
-    container(text(label).size(11).color(Color::WHITE))
-        .padding([1, 6])
-        .style(move |_| container::Style {
-            background: Some(Background::Color(color)),
-            border: Border {
-                radius: 4.0.into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .into()
 }
 
 /// Section header inside the sidebar.

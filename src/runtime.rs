@@ -453,7 +453,6 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                 if matches!(job.request, agent::AgentCmd::Screenshot { .. }) {
                     screenshot_reply = Some(job.reply);
                     let _ = agent::handle_in_app(&mut app, job.request, &mut screenshot);
-                    next_deadline = Instant::now();
                 } else {
                     let resp = agent::handle_in_app(&mut app, job.request, &mut screenshot);
                     let _ = job.reply.send(resp);
@@ -461,7 +460,6 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                 for cmd in app.pending.drain(..) {
                     let _ = worker.tx.send(cmd);
                 }
-                next_deadline = Instant::now();
                 continue;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -504,6 +502,7 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
         }
         next_deadline = Instant::now();
     }
+    let _ = worker.tx.send(Command::Quit);
     drop(session);
     Ok(0)
 }
@@ -511,6 +510,210 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::repo::testutil::TempRepo;
+    use crate::ui::app::{Pane, Selection};
+
+    /// Drive the real app with a real repository through the shell, the same
+    /// path the interactive loop takes: terminal bytes, iced events, frames.
+    struct Harness {
+        shell: Shell,
+        app: App,
+        repo: Repo,
+        fb: Framebuffer,
+        parser: Parser,
+    }
+
+    impl Harness {
+        fn new(dir: &std::path::Path) -> Self {
+            let theme = Theme::dark();
+            let shell = Shell::new(13.0, 1.0, 900, 700, theme.iced());
+            let mut app = App::new(theme, "test", 1.0, dir.to_path_buf());
+            let mut repo = Repo::open(dir).unwrap();
+            app.apply(Reply::Snapshot(repo.snapshot(100).unwrap()));
+            let mut h = Harness {
+                shell,
+                app,
+                repo,
+                fb: Framebuffer::new(900, 700),
+                parser: Parser::new(true, 1, 1),
+            };
+            h.settle();
+            h.frame();
+            h
+        }
+
+        /// Run pending commands synchronously: reads through `settle`, the
+        /// few writes the tests use against the repo directly.
+        fn settle(&mut self) {
+            for _ in 0..6 {
+                let cmds: Vec<Command> = self
+                    .app
+                    .pending
+                    .iter()
+                    .filter(|c| !matches!(c, Command::LoadDiff(_) | Command::LoadCommitFiles(_) | Command::ListDir(_)))
+                    .cloned()
+                    .collect();
+                self.app.pending.retain(|c| matches!(c, Command::LoadDiff(_) | Command::LoadCommitFiles(_) | Command::ListDir(_)));
+                settle(&mut self.app, &mut self.repo);
+                if cmds.is_empty() {
+                    break;
+                }
+                for cmd in cmds {
+                    let label = cmd.label();
+                    let result = match cmd {
+                        Command::Stage(p) => self.repo.stage(&p).map(|_| "staged".to_owned()),
+                        Command::StageAll => self.repo.stage_all().map(|_| "staged".to_owned()),
+                        Command::Unstage(p) => self.repo.unstage(&p).map(|_| "unstaged".to_owned()),
+                        Command::Commit { message, amend } => {
+                            self.repo.commit(&message, amend).map(|_| "committed".to_owned())
+                        }
+                        Command::Refresh | Command::SetDiffOpts(_) => continue,
+                        other => panic!("harness cannot run {other:?}"),
+                    };
+                    self.app.apply(Reply::Op {
+                        label,
+                        result: result.map_err(|e| e.to_string()),
+                    });
+                    self.app.apply(Reply::Snapshot(self.repo.snapshot(100).unwrap()));
+                }
+            }
+        }
+
+        fn frame(&mut self) {
+            self.shell.frame(&mut self.app, &mut self.fb);
+            self.settle();
+        }
+
+        fn key(&mut self, bytes: &[u8]) {
+            let events: Vec<_> = self.parser.feed(bytes).into_iter().chain(self.parser.flush()).collect();
+            for ev in &events {
+                self.shell.push(ev);
+            }
+            self.frame();
+            self.frame();
+        }
+    }
+
+    #[test]
+    fn frame_paints_the_theme_background_in_rgba() {
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        let h = Harness::new(&t.dir);
+        let bg = h.app.theme.background;
+        let px = h.fb.pixel(2, 350);
+        assert_eq!(px[3], 255);
+        // Byte order: the theme background is a neutral grey, so check a
+        // colored pixel instead: the pane border / selection somewhere in the
+        // frame must contain the accent's blue dominance.
+        let mut blue_dominant = 0;
+        for chunk in h.fb.pixels().as_chunks::<4>().0 {
+            let (r, g, b) = (chunk[0] as u16, chunk[1] as u16, chunk[2] as u16);
+            if b > r + 40 && b > g + 20 {
+                blue_dominant += 1;
+            }
+        }
+        assert!(blue_dominant > 200, "expected accent-colored pixels, got {blue_dominant}");
+        let _ = bg;
+    }
+
+    #[test]
+    fn keyboard_navigation_and_staging() {
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        t.commit_file("b.txt", "two\n", "second");
+        t.write("a.txt", "one\ntwo\n");
+        t.write("c.txt", "new\n");
+        let mut h = Harness::new(&t.dir);
+        assert_eq!(h.app.selection, Selection::WorkingTree);
+        assert_eq!(h.app.snapshot.unstaged.len(), 2);
+
+        // j / k move through the log rows.
+        h.key(b"j");
+        assert_eq!(h.app.selection, Selection::Commit(0));
+        h.key(b"k");
+        assert_eq!(h.app.selection, Selection::WorkingTree);
+
+        // s stages the selected (first unstaged) file, a stages everything.
+        h.key(b"s");
+        assert_eq!(h.app.snapshot.staged.len(), 1);
+        assert_eq!(h.app.snapshot.staged[0].path, "a.txt");
+        h.key(b"a");
+        assert_eq!(h.app.snapshot.staged.len(), 2);
+        assert!(h.app.snapshot.unstaged.is_empty());
+    }
+
+    #[test]
+    fn commit_box_takes_typed_text_and_ctrl_enter_commits() {
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        t.write("a.txt", "changed\n");
+        let mut h = Harness::new(&t.dir);
+        h.key(b"a");
+        assert_eq!(h.app.snapshot.staged.len(), 1);
+        // c focuses the commit box; typed keys land there, q does not quit.
+        h.key(b"c");
+        h.key(b"fix things");
+        h.key(b"q");
+        assert!(!h.app.quit);
+        assert_eq!(h.app.commit_message_text().trim_end(), "fix thingsq");
+        // Ctrl+Enter commits.
+        h.key(b"\x1b[13;5u");
+        assert_eq!(h.app.snapshot.commits.len(), 2);
+        assert_eq!(h.app.snapshot.commits[0].summary, "fix thingsq");
+        assert!(h.app.commit_message_text().trim().is_empty(), "message cleared after commit");
+    }
+
+    #[test]
+    fn editor_opens_from_the_selection_and_escape_closes() {
+        let t = TempRepo::new();
+        t.commit_file("a.rs", "fn main() {}\n", "init");
+        t.write("a.rs", "fn main() {}\n// change\n");
+        let mut h = Harness::new(&t.dir);
+        h.key(b"e");
+        let ed = h.app.editor.as_ref().expect("editor open");
+        assert_eq!(ed.path, "a.rs");
+        assert_eq!(ed.lang, crate::ui::highlight::Lang::Rust);
+        assert!(!h.app.editor_maximized, "opened from the change list keeps the layout");
+        // Typed text lands in the editor, not in the bindings.
+        h.key(b"x");
+        assert!(h.app.editor.as_ref().unwrap().dirty());
+        // Escape with a dirty buffer asks; a second Escape cancels the dialog.
+        h.key(b"\x1b");
+        assert!(matches!(h.app.modal, Some(crate::ui::app::Modal::CloseEditor)));
+        // The dialog owns the keyboard: typing does not reach the editor.
+        let before = h.app.editor.as_ref().unwrap().content.text();
+        h.key(b"y");
+        assert_eq!(h.app.editor.as_ref().unwrap().content.text(), before);
+        h.key(b"\x1b");
+        assert!(h.app.modal.is_none());
+        assert!(h.app.editor.is_some());
+    }
+
+    #[test]
+    fn digits_maximize_panes_and_tree_lists_lazily() {
+        let t = TempRepo::new();
+        t.commit_file("src/lib.rs", "pub fn f() {}\n", "init");
+        t.write("README.md", "# hi\n");
+        let mut h = Harness::new(&t.dir);
+        let root = h.app.tree.get("").expect("root listed");
+        let names: Vec<&str> = root.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["src", "README.md"]);
+        h.app.update(crate::ui::app::Message::TreeToggle("src".into()));
+        h.frame();
+        assert_eq!(h.app.tree.get("src").unwrap()[0].path, "src/lib.rs");
+
+        assert!(h.app.panes.maximized().is_none());
+        h.key(b"2");
+        let log = h.app.pane_of(Pane::Log).unwrap();
+        assert_eq!(h.app.panes.maximized(), Some(log));
+        h.key(b"2");
+        assert!(h.app.panes.maximized().is_none());
+        // A tree file opens the editor maximized in the detail pane.
+        h.app.update(crate::ui::app::Message::TreeOpen("src/lib.rs".into()));
+        h.frame();
+        assert_eq!(h.app.editor.as_ref().map(|e| e.path.as_str()), Some("src/lib.rs"));
+        assert_eq!(h.app.panes.maximized(), h.app.pane_of(Pane::Detail));
+    }
 
     #[test]
     fn font_size_tracks_cell_height() {

@@ -7,6 +7,7 @@ edition = "2021"
 iced_core = "=0.14.0"
 iced_runtime = "=0.14.0"
 iced_widget = { version = "=0.14.2", default-features = false, features = ["canvas"] }
+tiny-skia = { version = "=0.11.4", default-features = false, features = ["std", "simd"] }
 iced_renderer = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "fira-sans", "geometry"] }
 libc = "0.2"
 base64 = "0.22"

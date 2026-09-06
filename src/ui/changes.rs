@@ -117,6 +117,9 @@ fn worktree(app: &App) -> Element<'_> {
         .padding(6)
         .height(Length::Fixed(56.0))
         .key_binding(|press| {
+            if !matches!(press.status, iced_widget::text_editor::Status::Focused { .. }) {
+                return None;
+            }
             let mods = press.modifiers;
             match &press.key {
                 keyboard::Key::Named(keyboard::key::Named::Enter) if mods.control() && mods.shift() => {
@@ -136,17 +139,22 @@ fn worktree(app: &App) -> Element<'_> {
     } else {
         format!("{} <{}>", s.user_name, s.user_email)
     };
-    let buttons = row![
+    let meta = row![
         checkbox(app.amend).label("amend").size(14).text_size(12).on_toggle(Message::ToggleAmend),
         container(text(author).size(11).color(t.weak).wrapping(iced_core::text::Wrapping::None))
             .width(Length::Fill)
             .clip(true),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    let buttons = row![
+        Space::new().width(Length::Fill),
         small_button("Commit & Push", can_commit.then_some(Message::CommitAndPush)),
         primary_button("Commit", can_commit.then_some(Message::Commit)),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
-    col = col.push(column![editor, buttons].spacing(6).padding(6));
+    col = col.push(column![editor, meta, buttons].spacing(6).padding(6));
     col.into()
 }
 
@@ -170,9 +178,10 @@ fn commit(app: &App, idx: usize) -> Element<'_> {
     col = col.push(text(&c.summary).size(14).color(t.strong));
     if !c.body.is_empty() {
         col = col.push(
-            container(text(&c.body).size(12).font(Font::MONOSPACE))
-                .padding([4, 0])
-                .width(Length::Fill),
+            scrollable(container(text(&c.body).size(12).font(Font::MONOSPACE)).padding([4, 0]))
+                .width(Length::Fill)
+                .height(Length::Shrink)
+                .spacing(2),
         );
     }
     let files = app.commit_files.get(&c.oid);

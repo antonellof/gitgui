@@ -331,7 +331,6 @@ pub enum Message {
     DiffNext(i32),
     DiffContext(i32),
     DiffWhitespace,
-    DiffWrap(bool),
     DiffLineClick { hunk: usize, line: usize, shift: bool },
     DiffDragTo { hunk: usize, line: usize },
     DiffHunk(HunkAction, usize),
@@ -367,11 +366,9 @@ pub enum Message {
     Confirm(&'static str, String, &'static str, Command),
     Modal(Modal),
     Copy(String),
-    OpenUrl(String),
     PullRequest(String),
     // Tree
     TreeToggle(String),
-    TreeSelect(String),
     TreeOpen(String),
     TreeRequest(String),
     ShowChanges(String),
@@ -384,7 +381,6 @@ pub enum Message {
     EditorPreview,
     // Misc
     NetClose,
-    ToggleDebug,
     Quit,
     InitRepo,
 }
@@ -404,7 +400,6 @@ pub struct App {
     pub filtered: Vec<usize>,
     pub commit_msg: text_editor::Content<Renderer>,
     pub amend: bool,
-    pub wrap: bool,
     pub toasts: Vec<Toast>,
     pub last_op: Option<String>,
     pub pending: Vec<Command>,
@@ -481,7 +476,6 @@ impl App {
             filtered: Vec::new(),
             commit_msg: text_editor::Content::new(),
             amend: false,
-            wrap: false,
             toasts: Vec::new(),
             last_op: None,
             pending: Vec::new(),
@@ -525,10 +519,6 @@ impl App {
             panes,
             editor_maximized: false,
         }
-    }
-
-    pub fn request_quit(&mut self) {
-        self.quit = true;
     }
 
     pub fn toast(&mut self, text: impl Into<String>, error: bool) {
@@ -1540,6 +1530,16 @@ impl App {
     // ---- update ----
 
     pub fn update(&mut self, msg: Message) {
+        let had_modal = self.modal.is_some();
+        self.update_inner(msg);
+        if !had_modal && self.modal.is_some() {
+            // A dialog owns the keyboard: drop focus from the editors and
+            // inputs underneath before the dialog's own field takes it.
+            self.ops.insert(0, Box::new(iced_core::widget::operation::focusable::unfocus()));
+        }
+    }
+
+    fn update_inner(&mut self, msg: Message) {
         match msg {
             Message::Nothing => {}
             Message::Key(key, mods) => self.key(key, mods),
@@ -1660,7 +1660,6 @@ impl App {
             Message::DiffNext(dir) => self.diff_next_match(dir),
             Message::DiffContext(d) => self.change_diff_context(d),
             Message::DiffWhitespace => self.toggle_whitespace(),
-            Message::DiffWrap(w) => self.wrap = w,
             Message::DiffLineClick { hunk, line, shift } => {
                 self.focus = Pane::Detail;
                 match self.line_sel {
@@ -1849,7 +1848,6 @@ impl App {
                 self.copy(s);
                 self.toast("copied", false);
             }
-            Message::OpenUrl(u) => self.open_url(&u),
             Message::PullRequest(branch) => {
                 let url = self
                     .web_remote()
@@ -1863,10 +1861,6 @@ impl App {
                 self.tree_selected = Some(d.clone());
                 self.focus = Pane::Sidebar;
                 self.toggle_dir(&d);
-            }
-            Message::TreeSelect(p) => {
-                self.tree_selected = Some(p);
-                self.focus = Pane::Sidebar;
             }
             Message::TreeOpen(p) => {
                 self.tree_selected = Some(p.clone());
@@ -1910,7 +1904,6 @@ impl App {
             Message::EditorExternal => self.edit_selected_external(),
             Message::EditorPreview => self.preview_selected_in_cmux(),
             Message::NetClose => self.net.open = false,
-            Message::ToggleDebug => self.show_debug = !self.show_debug,
             Message::Quit => self.quit = true,
             Message::InitRepo => self.run(Command::InitRepo),
         }

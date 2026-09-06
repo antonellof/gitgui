@@ -239,6 +239,36 @@ Bugs found on the way:
 - Stash apply in libgit2 refuses a dirty index, unlike the CLI. The error
   is shown as is.
 
+## iced branch (2026-09-06)
+
+Branch `iced` replaces the egui layer with iced 0.14 driven headless:
+`shell.rs` builds `App::view` into an `iced_runtime::UserInterface`, feeds
+it the terminal events, and rasterizes with tiny-skia straight into the
+framebuffer (`Renderer::draw` on a `PixmapMut`, then an R/B swap because
+tiny-skia keeps BGRA). Layout is a `pane_grid`; the commit log and the diff
+are custom widgets that draw only the visible rows.
+
+Workarounds that matter when touching the widgets:
+
+- tiny-skia applies a text's `clip_bounds` only when the rect pokes outside
+  the current layer, and nested layers do not intersect. `log::draw_text`
+  wraps each text in a layer of exactly its clip rect and passes a rect one
+  pixel larger; rows intersect themselves with the widget bounds first.
+- A geometry group's clip rect gets the layer translation applied twice, so
+  the graph is drawn with `Frame::with_bounds` in absolute coordinates, not
+  through `with_translation`.
+- `text_editor` consults `key_binding` even when unfocused: custom bindings
+  must check `KeyPress::status` or an unfocused editor eats Escape.
+- Opening a dialog pushes an `unfocus` operation first so editors underneath
+  stop receiving keys.
+
+Frame cost after the direct draw and single build per idle frame: 6.9 ms at
+1600x1000 @2x, about 14 ms at 2400x1500 @2x (egui: 6.4 and 8 ms).
+
+Still owed on the branch: editor line-number gutter, diff word wrap, agent
+screenshot tests, README and SPEC for the pane layout, real-pane checks of
+drag / resize / menus.
+
 ## Next steps (resume here)
 
 ### Post v0.1 feature backlog
