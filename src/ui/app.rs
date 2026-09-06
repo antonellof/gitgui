@@ -332,6 +332,8 @@ pub enum Message {
     DiffNext(i32),
     DiffContext(i32),
     DiffWhitespace,
+    DiffWrap,
+    EditorWrap,
     DiffLineClick { hunk: usize, line: usize, shift: bool },
     DiffDragTo { hunk: usize, line: usize },
     DiffHunk(HunkAction, usize),
@@ -441,6 +443,9 @@ pub struct App {
     pub diff_opts: DiffOpts,
     pub diff_search: String,
     pub diff_search_active: bool,
+    /// Wrap long lines in the diff viewer / the editor.
+    pub wrap: bool,
+    pub editor_wrap: bool,
     pub diff_match: usize,
     pub diff_jump: Cell<bool>,
     pub editor: Option<Editor>,
@@ -531,6 +536,8 @@ impl App {
             diff_opts: DiffOpts::default(),
             diff_search: String::new(),
             diff_search_active: false,
+            wrap: false,
+            editor_wrap: false,
             diff_match: 0,
             diff_jump: Cell::new(false),
             editor: None,
@@ -1718,6 +1725,8 @@ impl App {
             Message::DiffNext(dir) => self.diff_next_match(dir),
             Message::DiffContext(d) => self.change_diff_context(d),
             Message::DiffWhitespace => self.toggle_whitespace(),
+            Message::DiffWrap => self.wrap = !self.wrap,
+            Message::EditorWrap => self.editor_wrap = !self.editor_wrap,
             Message::DiffLineClick { hunk, line, shift } => {
                 self.focus = Pane::Detail;
                 match self.line_sel {

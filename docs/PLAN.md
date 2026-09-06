@@ -17,7 +17,8 @@ this file tracks where we are, what was decided, and what is open.
 | post-v0.1 polish | done | ccdf818 | v0.1.1 to v0.1.4: keyboard shortcuts, agent network ops, auto refresh, footer toolbar, branch picker, GitHub publish |
 | review pass | done | f38d9a3 | 2026-09-04 audit: layout fixes for short and narrow panes, socket permissions, bounds checks; see "Review 2026-09-04" |
 | feature parity pass | done | a2c3498 | 2026-09-05: line staging, diff search / context / whitespace, commit menu, history rewriting, merge / rebase state and conflicts, branch / remote / tag / stash operations, help; see "Feature audit 2026-09-05" |
-| editor and file tree | done | (this commit) | 2026-09-05: built-in editor with syntax colors (`ui/editor.rs`, `ui/highlight.rs`), `Shift+E` external editor in a split with `--editor` / `gitgui.editor`, `Shift+O` cmux file preview, sidebar file tree (`ui/tree.rs`, lazy `Command::ListDir`), `--open` |
+| iced port | done | v0.4.0 | 2026-09-06: egui replaced by iced 0.14 on tiny-skia, pane grid, three-way conflict resolver, collapsible sidebar; see "iced branch" |
+| editor and file tree | done | e32e27d | 2026-09-05: built-in editor with syntax colors (`ui/editor.rs`, `ui/highlight.rs`), `Shift+E` external editor in a split with `--editor` / `gitgui.editor`, `Shift+O` cmux file preview, sidebar file tree (`ui/tree.rs`, lazy `Command::ListDir`), `--open` |
 
 ## Measurements
 
@@ -308,8 +309,9 @@ Not planned for v0.x: an interactive rebase editor, bisect, submodules,
 worktrees, sparse checkout, patch export. Use the git CLI in the
 neighbouring pane.
 
-### Recently shipped (v0.1.1 to v0.3.3)
+### Recently shipped (v0.1.1 to v0.4.0)
 
+- v0.4.0: iced port: draggable pane grid, custom log / diff / merge widgets, three-way conflict resolver, collapsible sidebar sections, footer with name and version, direct tiny-skia draw
 - v0.3.3: a file opened from the sidebar tree hides the commit column (editor only, right of the sidebar)
 - v0.3.2: README install / run blocks first, install options moved down, editor header button `open/preview`
 - v0.3.1: editor layout (commit list above the file column, editor at full height), narrow commit rows drop the author

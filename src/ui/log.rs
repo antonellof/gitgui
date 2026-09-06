@@ -360,6 +360,38 @@ fn fill_text(renderer: &mut Renderer, content: String, at: Point, font: Font, si
     );
 }
 
+/// Multi-line text anchored at its top-left, wrapped per glyph inside
+/// `width`, clipped to `clip`.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_text_wrapped(renderer: &mut Renderer, content: String, at: Point, width: f32, font: Font, size: Pixels, color: Color, clip: Rectangle) {
+    if clip.width <= 0.0 || clip.height <= 0.0 {
+        return;
+    }
+    let outer = Rectangle::new(
+        Point::new(clip.x - 1.0, clip.y - 1.0),
+        Size::new(clip.width + 2.0, clip.height + 2.0),
+    );
+    renderer.with_layer(clip, |renderer| {
+        text::Renderer::fill_text(
+            renderer,
+            text::Text {
+                content,
+                bounds: Size::new(width, clip.height),
+                size,
+                line_height: text::LineHeight::Absolute(Pixels(crate::ui::diff::ROW_H)),
+                font,
+                align_x: text::Alignment::Left,
+                align_y: alignment::Vertical::Top,
+                shaping: text::Shaping::Advanced,
+                wrapping: text::Wrapping::Glyph,
+            },
+            at,
+            color,
+            outer,
+        );
+    });
+}
+
 /// `s` cut to `width` points with an ellipsis when it does not fit.
 pub fn fit(s: &str, width: f32, font: Font, size: Pixels) -> String {
     if measure(s, font, size) <= width {

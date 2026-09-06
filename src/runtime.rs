@@ -97,6 +97,10 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
             "menu" => app.update(Message::MenuOpen(crate::ui::app::MenuKind::Commit(0))),
             "stash" => app.update(Message::OpenStashDialog),
             "reset" => app.update(Message::CommitAction(0, crate::ui::app::CommitAction::Reset)),
+            "wrap" => {
+                app.wrap = true;
+                app.editor_wrap = true;
+            }
             "merge" => {
                 if let Some(f) = app.snapshot.conflicted.first().cloned() {
                     app.update(Message::MergeOpen(f.path));

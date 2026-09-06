@@ -10,7 +10,7 @@ use iced_widget::{column, container, row, text as text_widget, text_input, Space
 
 use crate::git::repo::{DiffLine, DiffText, DiffTarget, FileKind};
 use crate::ui::app::{App, Element, HunkAction, Message, Pane, Renderer};
-use crate::ui::log::{draw_text, fill, measure};
+use crate::ui::log::{draw_text, draw_text_wrapped, fill, measure};
 use crate::ui::theme::alpha;
 use crate::ui::widgets::{self, small_button};
 
@@ -73,19 +73,32 @@ pub fn view(app: &App) -> Element<'_> {
     let mut header = row![].spacing(6).align_y(iced_core::Alignment::Center).padding([4, 6]);
     match &selected {
         Some(target) => {
-            header = header.push(text_widget(target.path().to_owned()).size(13).font(Font::MONOSPACE).color(t.strong));
             let what = match target {
                 DiffTarget::WorkdirUnstaged(_) => "unstaged",
                 DiffTarget::Staged(_) => "staged",
                 DiffTarget::Commit(..) => "commit",
             };
-            header = header.push(text_widget(what).size(12).color(t.weak));
+            header = header.push(
+                container(
+                    row![
+                        text_widget(target.path().to_owned())
+                            .size(13)
+                            .font(Font::MONOSPACE)
+                            .color(t.strong)
+                            .wrapping(iced_core::text::Wrapping::None),
+                        text_widget(what).size(12).color(t.weak),
+                    ]
+                    .spacing(6)
+                    .align_y(iced_core::Alignment::Center),
+                )
+                .width(Length::Fill)
+                .clip(true),
+            );
         }
         None => {
             header = header.push(text_widget("no file selected").size(12).color(t.weak));
         }
     }
-    header = header.push(Space::new().width(Length::Fill));
     if app.has_line_selection() {
         let n = app
             .line_sel
@@ -117,6 +130,7 @@ pub fn view(app: &App) -> Element<'_> {
         if app.diff_opts.ignore_whitespace { "ws off" } else { "ws" },
         Some(Message::DiffWhitespace),
     ));
+    header = header.push(small_button(if app.wrap { "wrap on" } else { "wrap" }, Some(Message::DiffWrap)));
 
     let mut col = column![header].spacing(0);
     if conflicted {
@@ -272,6 +286,18 @@ fn is_marker(text: &str) -> bool {
     text.starts_with("<<<<<<< ") || text.starts_with("=======") || text.starts_with(">>>>>>> ") || text.starts_with("||||||| ")
 }
 
+/// Height of a row: wrapped lines take several visual lines.
+fn row_height(r: &Row<'_>, geo: &Geometry) -> f32 {
+    match r {
+        Row::Hunk(..) => ROW_H,
+        Row::Line(_, _, l) if geo.cpl > 0 => {
+            let n = l.text.chars().count().max(1);
+            n.div_ceil(geo.cpl) as f32 * ROW_H
+        }
+        Row::Line(..) => ROW_H,
+    }
+}
+
 /// Which hunk buttons apply: (unstaged?, path) for working tree diffs.
 fn hunk_actions(d: &DiffText) -> Option<bool> {
     if d.status == FileKind::Conflicted {
@@ -285,13 +311,14 @@ fn hunk_actions(d: &DiffText) -> Option<bool> {
 }
 
 struct Geometry {
-    rows: usize,
     char_w: f32,
     gutter: f32,
+    /// Characters that fit on one visual line when wrapping (0 = no wrap).
+    cpl: usize,
 }
 
 impl DiffView<'_> {
-    fn geometry(&self, renderer: &Renderer) -> Geometry {
+    fn geometry(&self, renderer: &Renderer, bounds: Rectangle) -> Geometry {
         let size = Pixels(text::Renderer::default_size(renderer).0 - 0.5);
         let char_w = measure("0", Font::MONOSPACE, size).max(1.0);
         let max_no = self
@@ -303,22 +330,33 @@ impl DiffView<'_> {
             .max()
             .unwrap_or(1);
         let digits = max_no.max(1).to_string().len().max(2) as f32;
-        let rows = self.diff.hunks.iter().map(|h| h.lines.len() + 1).sum();
-        Geometry {
-            rows,
-            char_w,
-            gutter: (digits * 2.0 + 3.0) * char_w + 12.0,
-        }
+        let gutter = (digits * 2.0 + 3.0) * char_w + 12.0;
+        let cpl = if self.app.wrap {
+            (((bounds.width - gutter - 8.0) / char_w).floor() as usize).max(8)
+        } else {
+            0
+        };
+        Geometry { char_w, gutter, cpl }
     }
 
-    fn row_at(&self, state: &State, bounds: Rectangle, p: Point) -> Option<usize> {
-        let i = ((p.y + state.scroll) / ROW_H).floor();
-        if i < 0.0 {
+    /// Row top offsets (prefix sums), `rows.len() + 1` entries.
+    fn offsets(&self, rows: &[Row<'_>], geo: &Geometry) -> Vec<f32> {
+        let mut offs = Vec::with_capacity(rows.len() + 1);
+        let mut y = 0.0;
+        for r in rows {
+            offs.push(y);
+            y += row_height(r, geo);
+        }
+        offs.push(y);
+        offs
+    }
+
+    fn row_at_y(&self, offs: &[f32], y: f32) -> Option<usize> {
+        if y < 0.0 || offs.len() < 2 || y >= *offs.last().unwrap() {
             return None;
         }
-        let i = i as usize;
-        let _ = bounds;
-        Some(i)
+        let i = offs.partition_point(|o| *o <= y);
+        Some(i.saturating_sub(1))
     }
 
     /// Button rects on a hunk header row, right-aligned: (rect, action).
@@ -375,15 +413,20 @@ impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
     ) {
         let state = tree.state.downcast_mut::<State>();
         let bounds = layout.bounds();
-        let geo = self.geometry(renderer);
-        let max = (geo.rows as f32 * ROW_H - bounds.height).max(0.0);
+        let geo = self.geometry(renderer, bounds);
         let rows = flatten(self.diff);
+        let offs = self.offsets(&rows, &geo);
+        let total = *offs.last().unwrap_or(&0.0);
+        let max = (total - bounds.height).max(0.0);
+        if geo.cpl > 0 {
+            state.scroll_x = 0.0;
+        }
         match event {
             Event::Window(iced_core::window::Event::RedrawRequested(_)) => {
                 if self.app.diff_jump.get() {
                     let m = matches(&rows, &self.app.diff_search);
                     if let Some(i) = m.get(self.app.diff_match.min(m.len().saturating_sub(1))) {
-                        let top = *i as f32 * ROW_H;
+                        let top = offs[*i];
                         state.scroll = (top - bounds.height / 2.0).max(0.0);
                         shell.request_redraw();
                     }
@@ -409,12 +452,12 @@ impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let Some(p) = cursor.position_in(bounds) else { return };
-                let Some(i) = self.row_at(state, bounds, p) else { return };
+                let Some(i) = self.row_at_y(&offs, p.y + state.scroll) else { return };
                 let Some(r) = rows.get(i) else { return };
                 shell.capture_event();
                 match r {
                     Row::Hunk(hunk, _) => {
-                        let y = bounds.y + i as f32 * ROW_H - state.scroll;
+                        let y = bounds.y + offs[i] - state.scroll;
                         let abs = Point::new(p.x + bounds.x, p.y + bounds.y);
                         for (rect, action) in self.hunk_buttons(bounds, y) {
                             if rect.contains(abs) {
@@ -438,7 +481,7 @@ impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 if state.dragging {
                     if let Some(p) = cursor.position_in(bounds) {
-                        if let Some(i) = self.row_at(state, bounds, p) {
+                        if let Some(i) = self.row_at_y(&offs, p.y + state.scroll) {
                             if let Some(Row::Line(hunk, line, _)) = rows.get(i) {
                                 shell.publish(Message::DiffDragTo {
                                     hunk: *hunk,
@@ -485,14 +528,18 @@ impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
         let bounds = layout.bounds();
         let app = self.app;
         let t = &app.theme;
-        let geo = self.geometry(renderer);
+        let geo = self.geometry(renderer, bounds);
         let size = Pixels(text::Renderer::default_size(renderer).0 - 0.5);
         let mono = Font::MONOSPACE;
         let rows = flatten(self.diff);
+        let offs = self.offsets(&rows, &geo);
         let match_rows = matches(&rows, &app.diff_search);
         let current_match = match_rows.get(app.diff_match.min(match_rows.len().saturating_sub(1))).copied();
-        let first = (state.scroll / ROW_H).floor() as usize;
-        let last = ((state.scroll + bounds.height) / ROW_H).ceil() as usize;
+        let first = self.row_at_y(&offs, state.scroll).unwrap_or(0);
+        let last = self
+            .row_at_y(&offs, state.scroll + bounds.height)
+            .map(|i| i + 1)
+            .unwrap_or(rows.len());
         let focused = app.focus == Pane::Detail;
         let digits = ((geo.gutter - 12.0) / geo.char_w - 3.0) / 2.0;
         let digits = digits.round() as usize;
@@ -500,11 +547,13 @@ impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
         renderer.with_layer(bounds, |renderer| {
             fill(renderer, bounds, t.well, 0.0);
             for (i, row) in rows.iter().enumerate().take(last.min(rows.len())).skip(first) {
-                let y = bounds.y + i as f32 * ROW_H - state.scroll;
-                let full = Rectangle::new(Point::new(bounds.x, y), Size::new(bounds.width, ROW_H));
+                let y = bounds.y + offs[i] - state.scroll;
+                let rh = offs[i + 1] - offs[i];
+                let full = Rectangle::new(Point::new(bounds.x, y), Size::new(bounds.width, rh));
                 let Some(rect) = full.intersection(&bounds) else { continue };
-                let partial = rect.height < ROW_H - 0.5;
-                let cy = full.center_y();
+                let partial = rect.height < rh - 0.5;
+                // Text sits on the first visual line of the row.
+                let cy = y + ROW_H / 2.0;
                 match row {
                     Row::Hunk(hunk, header) => {
                         fill(renderer, rect, t.hunk_bg, 0.0);
@@ -607,14 +656,18 @@ impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
                         } else {
                             l.text.clone()
                         };
-                        let overflow = partial || state.scroll_x > 0.0 || content.chars().count() as f32 * geo.char_w > text_clip.width;
-                        draw_text(renderer, content, Point::new(bounds.x + geo.gutter - state.scroll_x, cy), mono, size, fg, text_clip, overflow);
+                        if geo.cpl > 0 && rh > ROW_H {
+                            draw_text_wrapped(renderer, content, Point::new(bounds.x + geo.gutter, y), text_clip.width, mono, size, fg, text_clip);
+                        } else {
+                            let overflow = partial || state.scroll_x > 0.0 || content.chars().count() as f32 * geo.char_w > text_clip.width;
+                            draw_text(renderer, content, Point::new(bounds.x + geo.gutter - state.scroll_x, cy), mono, size, fg, text_clip, overflow);
+                        }
                     }
                 }
             }
             // Scrollbar hint.
-            if geo.rows as f32 * ROW_H > bounds.height {
-                let total = geo.rows as f32 * ROW_H;
+            let total = *offs.last().unwrap_or(&0.0);
+            if total > bounds.height {
                 let frac = bounds.height / total;
                 let h = (bounds.height * frac).max(16.0);
                 let y = bounds.y + (state.scroll / total) * bounds.height;

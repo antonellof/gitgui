@@ -114,6 +114,7 @@ pub fn view(app: &App) -> Element<'_> {
     .spacing(8)
     .align_y(Alignment::Center)
     .padding([4, 6]);
+    header = header.push(small_button(if app.editor_wrap { "wrap on" } else { "wrap" }, Some(Message::EditorWrap)));
     header = header.push(small_button("Save", (dirty && !busy).then_some(Message::EditorSave)));
     if crate::split::is_cmux() {
         header = header.push(small_button("open/preview", Some(Message::EditorPreview)));
@@ -128,7 +129,11 @@ pub fn view(app: &App) -> Element<'_> {
         .size(13)
         .padding(8)
         .height(Length::Fill)
-        .wrapping(iced_core::text::Wrapping::None)
+        .wrapping(if app.editor_wrap {
+            iced_core::text::Wrapping::Word
+        } else {
+            iced_core::text::Wrapping::None
+        })
         .key_binding(|press| {
             // iced consults the binding even when the editor is not focused.
             if !matches!(press.status, text_editor::Status::Focused { .. }) {

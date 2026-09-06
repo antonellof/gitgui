@@ -1,6 +1,6 @@
 # gitgui
 
-A git GUI that runs inside your terminal. One Rust binary paints an [egui](https://github.com/emilk/egui) interface as pixels into a cmux, Ghostty, kitty or WezTerm pane over the kitty graphics protocol. No Electron, no browser engine, no TUI. Works over SSH.
+A git GUI that runs inside your terminal. One Rust binary paints an [iced](https://iced.rs) interface as pixels into a cmux, Ghostty, kitty or WezTerm pane over the kitty graphics protocol. No Electron, no browser engine, no TUI. Works over SSH.
 
 Install:
 
@@ -17,8 +17,8 @@ cd /path/to/repo && gitgui
 ![gitgui in a cmux split next to pi](screenshot/gitgui-cmux-pi.png)
 
 <p align="center">
-  <a href="screenshot/gitgui-commits.png"><img src="screenshot/gitgui-commits.png" width="49%" alt="Commit graph, commit detail with the full message body, and diff"></a>
-  <a href="screenshot/gitgui-branches.png"><img src="screenshot/gitgui-branches.png" width="49%" alt="Branch switcher over a repo with many branches"></a>
+  <a href="screenshot/gitgui-commits.png"><img src="screenshot/gitgui-commits.png" width="49%" alt="Draggable panes: repository, commit graph, changes and diff"></a>
+  <a href="screenshot/gitgui-merge.png"><img src="screenshot/gitgui-merge.png" width="49%" alt="Three-way conflict resolver: ours, result, theirs"></a>
 </p>
 
 <details>
@@ -68,10 +68,11 @@ Give the agent the control API by linking `skill/SKILL.md` into its skills direc
 - **History rewriting**: reword, squash, fixup, drop, move up / down, edit, autosquash. gitgui runs `git rebase` for you, no editor pops up.
 - **Branches and remotes**: checkout, create, rename, delete, merge, rebase onto, fast-forward, upstream, delete on remote, open pull request; add / rename / edit / remove remotes; annotated and light tags; fetch, pull, pull with rebase, push, force push with lease through your `git` CLI so credential helpers and SSH agents keep working.
 - **Merge and rebase state**: footer banner with continue / abort / skip; conflicted files show their markers and resolve with ours / theirs.
-- **Diff**: search, adjustable context, whitespace toggle, word wrap, hunk and line selection with the mouse.
-- **File tree**: the whole working tree in the sidebar, folders listed on demand, ignored entries dimmed, changed files colored.
-- **Editor**: built-in, with syntax colors for the common languages, line numbers, undo, `Ctrl+S`. `Shift+E` opens the file in your own editor in a new split (GUI editors such as `code` open detached), `Shift+O` opens cmux's file preview.
-- **Panels**: hide and show the sidebar, commit list and detail pane with `1` / `2` / `3` or the buttons in each header.
+- **Diff**: search, adjustable context, whitespace toggle, wrap toggle (diff and editor), hunk and line selection with the mouse.
+- **Conflict resolver**: a three-way merge tool (ours | result | theirs) with per-conflict take-left / take-right / keep-both / drop buttons, accept-all, edit the result, apply and mark resolved. Conflicted files also get a banner with whole-file ours / theirs.
+- **Panes**: repository, commits, changes and diff on a pane grid. Drag a title bar to move a pane, drag the gaps to resize, maximize with the title-bar button or `1` .. `4`.
+- **File tree**: the whole working tree in the sidebar, folders listed on demand, ignored entries dimmed, changed files colored; sections collapse from their arrow.
+- **Editor**: built-in, on iced's text editor with syntax colors for the common languages, undo, `Ctrl+S`. A file opened from the tree takes the whole area next to the sidebar. `Shift+E` opens the file in your own editor in a new split (GUI editors such as `code` open detached), `Shift+O` opens cmux's file preview.
 - **Refresh**: watches the repository and refreshes on its own when another pane changes it.
 - **Agent API**: Unix socket, JSON lines, `gitgui ls` and `gitgui action`.
 
@@ -97,7 +98,7 @@ Not planned: an interactive rebase editor, bisect, submodules, worktrees. Use th
 | Copy hash, open commit in browser | `y`, `o` |
 | Continue, abort or skip a merge / rebase | `m` |
 | Fetch, pull, push, refresh | `f`, `p`, `Shift+P`, `r` |
-| Cycle panes, hide / show sidebar, commits, detail | `Tab`, `1` / `2` / `3` |
+| Cycle panes, maximize / restore a pane | `Tab`, `1` / `2` / `3` / `4` |
 | Clear filter, search or selection; close dialog | `Escape` |
 | Help, quit | `?`, `q` or `Ctrl+C` |
 
@@ -105,13 +106,13 @@ Right-click commits, branches, remotes, tags, stashes and files for everything e
 
 ## How it works
 
-Three threads, no async runtime: a stdin reader, the main loop (egui, tessellation, a software rasterizer in `render/raster.rs`, kitty graphics frames) and a git worker (libgit2 for reads and index writes, the `git` CLI for network and rebase). The UI reads an immutable snapshot the worker replaces after each operation; rendering never touches git.
+Three threads, no async runtime: a stdin reader, the main loop (iced without a window, drawn by tiny-skia straight into the frame buffer, shipped as kitty graphics frames) and a git worker (libgit2 for reads and index writes, the `git` CLI for network and rebase). The UI reads an immutable snapshot the worker replaces after each operation; rendering never touches git.
 
 Frames go through POSIX shared memory locally and zlib + base64 over SSH (detected from `SSH_TTY`, throttled to 20 fps). Input is the kitty keyboard protocol, SGR pixel mouse, bracketed paste, focus events and SIGWINCH. Colors follow the terminal palette (OSC 10 / 11).
 
 | Layer | Technology |
 |---|---|
-| UI | egui 0.36 + epaint, no eframe, no GPU |
+| UI | iced 0.14 (`iced_core`, `iced_runtime`, `iced_widget`, `iced_renderer`), tiny-skia software renderer, no winit, no GPU |
 | Git | git2 0.21 (libgit2) for reads and writes, `git` subprocess for network |
 | Terminal | kitty graphics, kitty keyboard, SGR pixel mouse |
 | Splits | cmux CLI, kitty `@ launch`, Ghostty hint fallback |
@@ -137,6 +138,9 @@ cargo test                              byte-exact tests for every protocol enco
 cargo clippy -- -D warnings
 cargo run --release -- --headless-frame /tmp/frame.png --size 1600x1000 --scale 2 --open src/main.rs
                                         one PNG frame without a terminal, prints timings
+GITGUI_HEADLESS_OPEN=merge cargo run --release -- --headless-frame /tmp/merge.png --repo scratch/conflict-demo
+                                        same, with a dialog or the merge tool open (picker, help, menu, stash, reset, merge)
+scripts/conflict-demo.sh                a throwaway repository with three conflicted files
 bash scripts/smoke.sh                   headless smoke test
 ```
 

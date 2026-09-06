@@ -1,6 +1,6 @@
 # gitgui
 
-A pixel-rendered git GUI that runs inside kitty-graphics terminals (Ghostty, cmux, kitty). No Chromium, no Electron. A single Rust binary renders an egui UI into an RGBA framebuffer, ships frames to the terminal with the kitty graphics protocol, and reads pixel-precise mouse and keyboard input back from the terminal.
+A pixel-rendered git GUI that runs inside kitty-graphics terminals (Ghostty, cmux, kitty). No Chromium, no Electron. A single Rust binary renders an iced UI with the tiny-skia software renderer into an RGBA framebuffer, ships frames to the terminal with the kitty graphics protocol, and reads pixel-precise mouse and keyboard input back from the terminal.
 
 Reference projects for the idea (not the implementation): zenbu-labs/terminal-browser and zenbu-labs/terminal-code. We reuse their trick (pixels in the terminal via kitty graphics + synthetic input) but skip the browser engine entirely.
 
@@ -9,8 +9,8 @@ Read `docs/SPEC.md` (architecture, UI, git layer, milestones) and `docs/PROTOCOL
 ## Stack
 
 - Rust, latest stable, edition 2021
-- `egui` + `epaint` for the UI model and tessellation (we do NOT use eframe or any GPU backend)
-- Our own software rasterizer for egui meshes (`src/render/raster.rs`)
+- `iced_core` + `iced_runtime` + `iced_widget` + `iced_renderer` (tiny-skia backend only, no `iced` umbrella crate, no winit, no wgpu)
+- `tiny-skia` for the pixmap the renderer draws into
 - `git2` (libgit2) for all repository reads and index/commit writes; `git` CLI subprocess only for network ops (fetch, pull, push)
 - `libc` for termios, ioctl, POSIX shared memory
 - `flate2` + `base64` for the SSH fallback transport
@@ -24,14 +24,14 @@ No async runtime. One thread for the UI loop, one thread that reads stdin into a
 src/
   main.rs            wires modules, mode dispatch (interactive, headless-frame, dump-input, probe)
   cli.rs             argument parsing and --help
-  runtime.rs         interactive main loop: input channel, egui run, raster, frame send, resize
+  runtime.rs         interactive main loop: input channel, shell frame, frame send, resize
+  shell.rs           iced without a window: events -> iced events, UserInterface build/update/draw, tiny-skia into the framebuffer
   term/
     mod.rs           raw mode, alt screen, enable/disable sequences, restore on exit and panic
     probe.rs         capability probing: kitty graphics, kitty keyboard, cell size, pixel size
     input.rs         byte stream -> Event (keys, mouse in pixels, resize, focus, paste)
     kitty.rs         kitty graphics encoder: shm transport, direct transport, place, delete
   render/
-    raster.rs        triangle rasterizer for epaint meshes, texture atlas, clip rects
     frame.rs         double-buffered RGBA framebuffer, dirty detection, headless PNG export
   git/
     repo.rs          Repository wrapper: status, branches, log, diffs, stage/unstage, commit
@@ -40,22 +40,21 @@ src/
     graph.rs         commit graph lane assignment
     ops.rs           worker thread: Command enum, git2 writes, git CLI for network and rebase
   ui/
-    app.rs           top-level egui app state, panels, footer, modals, keybindings
-    sidebar.rs       branches, remotes, tags, stashes
-    log.rs           commit list with graph column
-    changes.rs       working tree: unstaged/staged file lists, commit box, layout math
-    diff.rs          diff viewer: hunk and line staging, discard, search, context, whitespace, wrap
-    editor.rs        built-in file editor in the diff pane: gutter, save, close dialog, $EDITOR / cmux hand-off
-    highlight.rs     dependency-free syntax highlighter for the editor (per-language rules by extension)
+    app.rs           App state, Message enum, update, key bindings, pane_grid view
+    sidebar.rs       collapsible sections: branches, remotes, tags, stashes, file tree
     tree.rs          sidebar file tree of the whole working tree, lazy listings via Command::ListDir
-    toolbar.rs       footer buttons (fetch, pull, push, refresh, quit), icon-only below 560 pt
-    branch_picker.rs branch switcher modal
-    menus.rs         commit right-click menu
+    log.rs           commit list: custom widget, graph via iced geometry, text helpers (draw_text, fit)
+    changes.rs       conflicts, unstaged, staged lists, commit box, commit detail
+    diff.rs          diff viewer: custom widget, hunk buttons, line selection, search, conflict banner
+    merge.rs         three-way conflict resolver: marker parser, result builder, custom widget
+    editor.rs        built-in file editor on iced text_editor, save, $EDITOR / cmux hand-off
+    highlight.rs     dependency-free syntax highlighter, iced Highlighter impl for the editor
+    footer.rs        footer (name, branch switcher, counts, merge banner, buttons) and the network log
+    modal.rs         dialogs as a stack overlay
+    menu.rs          right-click menus as a stack overlay, clamped into the window
     help.rs          keyboard reference table and the `?` dialog
-    row.rs           row helper: trailing widgets from the right, leading side clipped
-    input.rs         egui RawInput from terminal events
-    icons.rs, logo.rs small painted glyphs
-    theme.rs         colors derived from terminal palette (OSC 10/11 query, fallback dark)
+    widgets.rs       buttons, rows, sections, pane chrome, toasts, Layered, widget ids
+    theme.rs         colors derived from terminal palette (OSC 10/11 query, fallback dark), iced Theme
   split.rs           open in a terminal split (cmux, Ghostty) with in-place fallback
   agent.rs           unix socket JSON-lines control API (phase 5)
 ```
@@ -64,16 +63,16 @@ src/
 
 Toolchain at kickoff: rustc 1.98.0, cargo 1.98.0 (2026-08). Both crates below are pinned with `=` in Cargo.toml.
 
-- `egui = "=0.36.1"`, `epaint = "=0.36.1"` (rust-version 1.95). API notes:
-  - `egui::Context::run` no longer exists. Use `ctx.run_ui(raw_input, |ui| ...)` which returns `FullOutput`, or `begin_pass` / `end_pass`.
-  - `FullOutput` fields: `platform_output`, `textures_delta`, `shapes: Vec<ClippedShape>`, `pixels_per_point`, `viewport_output`.
-  - `ctx.tessellate(shapes, pixels_per_point) -> Vec<ClippedPrimitive>`.
-  - `epaint::ImageData` has a single variant `Color(Arc<ColorImage>)`. There is no `Font` variant; the font atlas arrives as premultiplied RGBA `ColorImage` (`pixels: Vec<Color32>`, `as_raw()` for bytes). `ImageDelta { image, options, pos: Option<[usize; 2]> }`.
-  - `TexturesDelta` lives at `epaint::textures::TexturesDelta`. `set` is `HashMap<TextureId, SmallVec<[ImageDelta; 1]>>` (apply each delta in order), `free` is `HashSet<TextureId>`.
-  - Dropping a `TexturesDelta` without applying it panics in debug builds, even after you applied it by reference: call `clear()` once done.
-  - Panels: `SidePanel` and `TopBottomPanel` are gone. Use `egui::Panel::left("id").default_size(220.0).show(ui, ...)`, `Panel::bottom(...)`, and `CentralPanel::default().show(ui, ...)`. All take the root `&mut Ui` that `run_ui` hands to the closure, not a `Context`.
+- `iced_core`, `iced_runtime`, `iced_renderer` `=0.14.0`, `iced_widget` `=0.14.2`, `tiny-skia` `=0.11.4`. API notes:
+  - No window, no `iced` crate: `iced_runtime::user_interface::UserInterface::build(element, size, cache, &mut renderer)`, `update(&events, cursor, &mut renderer, &mut clipboard, &mut messages)`, `draw(...)`, `into_cache()`. `iced_renderer::Renderer::new(font, size)` with only the tiny-skia feature; `Renderer::draw(&mut PixmapMut, &mut Mask, &Viewport, &[damage], bg)` rasterizes.
+  - Custom widgets implement `iced_core::Widget`: `size`, `layout`, `update(tree, event, layout, cursor, renderer, clipboard, shell, viewport)`, `draw`. Widget state lives in `tree.state` (`tree::Tag::of::<State>()`).
+  - Text in custom widgets goes through `log::draw_text` (handles tiny-skia's clip quirks) and `log::measure` / `log::fit` (a `Paragraph` per call: cache the results).
+  - Geometry (the graph) uses `iced_widget::canvas::{Frame, Path, Stroke}` with `Frame::with_bounds` in absolute coordinates, never `with_translation`.
+  - `text_editor` and `text_input` key bindings run even when unfocused: check `KeyPress::status`. Focus is moved with `iced_core::widget::operation::focusable::{focus, unfocus}` queued in `App::ops`.
+  - Overlays go through `widgets::layered` so they draw above the custom widgets' layers.
 - `git2 = "=0.21.0"` with `default-features = false` (builds libgit2 from source, no system dependency). Most string getters return `Result` in this version (`Reference::shorthand`, `Commit::summary` gives `Result<Option<&str>>`, `Signature::name`, `StatusEntry::path`, `StringArray::iter` yields `Result<Option<&str>>`).
 - `png = "0.17"`, used by `--headless-frame`.
+- `GITGUI_HEADLESS_OPEN=picker|help|menu|stash|reset|merge` makes `--headless-frame` open that dialog or tool first, for visual review.
 
 ## Commands
 
@@ -95,7 +94,7 @@ cargo run --release                                         # interactive, in cu
 5. Full-frame updates only. Do not attempt partial image updates via kitty animation frames (`a=f`); Ghostty support is not guaranteed. Skip the send when the frame is byte-identical to the last one sent.
 6. Locally use the shared memory transport. Fall back to direct base64+zlib when `SSH_TTY` or `SSH_CONNECTION` is set or when the shm probe fails.
 7. Git writes go through `git2`. Network goes through the `git` CLI so credential helpers and SSH agents work unchanged. Never implement credential handling yourself. The one other CLI exception is the sequencer: rebase, and continue / abort / skip of an in-progress merge, rebase, cherry-pick or revert, because libgit2 has no equivalent. History rewrites run `git rebase -i` with gitgui as the sequence editor (`git/rebase.rs`), never an interactive editor.
-8. Keep the UI loop under 16 ms for a 1600x1000 frame on an M-series or recent x86 laptop. Profile the rasterizer before optimizing anything else; it is the only hot path.
+8. Keep the UI loop under 16 ms for a 1600x1000 frame on an M-series or recent x86 laptop. Text layers and per-frame measuring are the hot paths; the custom widgets must draw only visible rows.
 9. Do not add dependencies beyond the stack above without stating why in the commit message. In particular no `crossterm`, no `ratatui`, no `tokio`.
 10. Do not use the em dash character anywhere in code, comments, docs, or commit messages. Use a comma, a colon, or a period.
 11. Refresh the cached index (`Repo::index()`) before any write. libgit2 caches the index per repository and another process (the git CLI, an editor, the agent next door) may have written it since.

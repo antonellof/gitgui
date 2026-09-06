@@ -14,10 +14,11 @@ Non-goals: an interactive rebase editor (single-commit rewrites are offered from
                   stdin bytes                 Event channel
   Terminal  ─────────────────►  term::input  ───────────────►  main loop
      ▲                                                             │
-     │  APC G frames (shm or base64)                               │ egui RawInput
+     │  APC G frames (shm or base64)                               │ iced events
      │                                                             ▼
-  term::kitty  ◄──────  render::frame  ◄──────  render::raster  ◄──── egui::Context::run(app::ui)
-                         (RGBA, dirty check)     (meshes -> pixels)        │
+  term::kitty  ◄──────  render::frame  ◄──────  shell::Shell (iced UserInterface + tiny-skia)
+                         (RGBA, dirty check)     builds App::view, updates, draws into the buffer
+                                                                           │
                                                                            │ reads RepoSnapshot, emits Command
                                                                            ▼
                                                               git worker thread (git2)
@@ -27,36 +28,36 @@ Non-goals: an interactive rebase editor (single-commit rewrites are offered from
 Threads:
 
 - **input thread**: blocking `read(2)` on stdin, pushes raw bytes to a channel. The main loop drains the channel, feeds `term::input::Parser`, gets `Vec<Event>`.
-- **main loop**: waits on input channel or a repaint deadline, builds `egui::RawInput`, runs the UI, tessellates, rasterizes, sends the frame if changed.
+- **main loop**: waits on input channel or a redraw deadline, hands the events to `shell::Shell`, which builds the iced `UserInterface` from `App::view`, delivers the events, applies the resulting `Message`s to `App`, rebuilds while messages keep coming, draws with the tiny-skia renderer straight into the framebuffer and sends the frame if it changed.
 - **git worker**: receives `Command`, executes with `git2` or the `git` CLI, sends back `RepoSnapshot` or `OpResult`. The UI never blocks on git.
 
-Frame pacing: render only when egui requests a repaint (`FullOutput::viewport_output` repaint delay) or an event arrived. Idle CPU must be zero.
+Frame pacing: render only when iced asks for a redraw (`RedrawRequest::NextFrame` or `At`, for cursor blink and animations) or an event arrived. Idle CPU must be zero.
 
-### 2.1 Software rasterizer (render/raster.rs)
+### 2.1 Rendering (shell.rs)
 
-Input: `Vec<egui::ClippedPrimitive>` from `ctx.tessellate(shapes, pixels_per_point)` plus `TexturesDelta`.
+iced 0.14 without a window: `iced_runtime::user_interface::UserInterface` plus `iced_renderer::Renderer` with only the `tiny-skia` backend. One frame:
 
-- Maintain a texture map `TextureId -> Texture { w, h, rgba: Vec<[u8;4]> }`. Apply `TexturesDelta::set` (full or partial via `ImageDelta::pos`) before drawing, `TexturesDelta::free` after. `ImageData::Font` becomes RGBA via `FontImage::srgba_pixels(None)`; `ImageData::Color` is already RGBA.
-- For each `Primitive::Mesh`, iterate triangles (`indices` in groups of 3). Compute the bounding box, intersect with `clip_rect` scaled by `pixels_per_point` and the framebuffer bounds. For each pixel center in the box, compute barycentric weights with edge functions; skip if outside. Interpolate `uv` and `color`, sample the texture with bilinear filtering (nearest is acceptable for phase 1, bilinear needed for readable text at scale 1.0), multiply, and blend onto the framebuffer.
-- egui vertex colors are premultiplied alpha in gamma space. Blend: `dst = src + dst * (255 - src_a) / 255` per channel, no gamma conversion. Text looks right with this.
-- Top-left fill rule to avoid double-blending shared edges.
-- `Primitive::Callback` is ignored.
-- Performance targets: 1600x1000 frame with a full commit list under 8 ms in release. Process triangles in scanline order, precompute edge function increments, and avoid per-pixel `f32 -> usize` casts in the inner loop where possible. Use `rayon` only if the target is missed; prefer not to.
+1. `UserInterface::build(app.view(), size, cache, renderer)`, then `operate` for queued focus operations.
+2. `update(events, cursor, renderer, clipboard, messages)`; key presses no widget captured become `Message::Key` for the app's single-key bindings.
+3. If messages came out, apply them to `App` and rebuild (at most four rounds); the UI that produced no new messages is drawn.
+4. `draw`, then `Renderer::draw` into a `tiny_skia::PixmapMut` over the framebuffer with a reused clip mask, and an R/B swap (tiny-skia keeps BGRA, the kitty encoder wants RGBA).
+
+Layout is an iced `pane_grid` (drag a title bar to move a pane, drag the gaps to resize, maximize / restore). The commit log, the diff and the merge tool are custom widgets that lay out and draw only their visible rows, so a 2000 commit log or a 10k line diff costs nothing off screen.
+
+tiny-skia facts that shape the custom widgets (see PLAN, "iced branch"): per-text clip rects are honored only when the rect pokes outside the current layer, nested layers do not intersect, a geometry group's clip rect gets the layer translation applied twice, and text widgets consult their key bindings even when unfocused.
+
+Performance targets: 1600x1000 frame at scale 2 under 8 ms in release, 2400x1500 under 16 ms.
 
 ### 2.2 Framebuffer (render/frame.rs)
 
-Two `Vec<u8>` RGBA buffers of `w*h*4`. Clear with the theme background each frame. After rasterizing, compare against the last sent buffer (memcmp, it is fast); send only if different. Export to PNG for `--headless-frame`.
+Two `Vec<u8>` RGBA buffers of `w*h*4`. After drawing, compare against the last sent buffer (memcmp, it is fast); send only if different. Export to PNG for `--headless-frame`.
 
-### 2.3 Input mapping to egui
+### 2.3 Input mapping to iced (shell.rs)
 
-- `KeyDown/KeyUp` -> `egui::Event::Key { key, physical_key: None, pressed, repeat, modifiers }`. Map codepoints to `egui::Key` where one exists; unmapped keys still produce `Event::Text` when they carry text.
-- Text -> `egui::Event::Text(String)`, but never for ctrl/alt combos and never for Enter, Tab, Escape, Backspace.
-- Mouse press/release -> `Event::PointerButton { pos, button, pressed, modifiers }`, motion -> `Event::PointerMoved(pos)`, wheel -> `Event::MouseWheel { unit: Point, delta, modifiers }` with coalescing (see PROTOCOLS 3.2). Positions are `pixel / pixels_per_point`.
-- Focus lost -> `Event::WindowFocused(false)`, and release all buttons.
-- Resize -> new `screen_rect` in `RawInput`, framebuffer reallocation.
-- `RawInput.time` from a monotonic clock, `max_texture_side` 8192, `predicted_dt` 1/60.
-
-Also provide `egui::Event::Copy/Cut/Paste`: copy writes to the terminal clipboard with `OSC 52 ; c ; <base64> ST` (Ghostty and kitty support it, subject to the terminal's clipboard permission setting). Paste comes from bracketed paste.
+- Key press / release -> `keyboard::Event::KeyPressed / KeyReleased { key, modified_key, physical_key, location, modifiers, text, repeat }`. Named keys map to `keyboard::key::Named`, characters carry the shifted text; `text` is dropped for ctrl / alt combos and control characters.
+- Mouse press / release -> `CursorMoved` then `ButtonPressed / ButtonReleased`, motion -> `CursorMoved`, wheel -> `WheelScrolled { delta: Lines }` (positive y scrolls up, like winit). Positions are `pixel / pixels_per_point`.
+- Focus -> `window::Event::Focused / Unfocused`. Resize -> new logical size on the next build.
+- Paste (bracketed) is stored in the shell clipboard and delivered as a synthetic Ctrl+V so the focused text widget takes it through its own paste path. Copy requests from widgets and the app go out as `OSC 52 ; c ; <base64> ST`.
 
 ## 3. Git layer (git/)
 
@@ -146,39 +147,27 @@ Unit test with a fixture DAG: linear history, one merge, one octopus, two indepe
 
 ## 4. UI (ui/)
 
-Layout, egui:
+Layout, an iced `pane_grid` with four panes (every one can be dragged by its title bar, resized at the gaps, maximized with the title-bar button or `1` .. `4`):
 
 ```
-┌ sidebar 220pt ┬ main ─────────────────────────────────────────────┐
-│ Local         │ commit list (graph | refs + summary | author | age)│
-│  * main       │  row 0 is the virtual "Working tree" row when dirty │
-│    feature/x  ├────────────────────────────────────────────────────┤
-│ Remote        │ detail pane (resizable, default 45%)               │
-│  origin/main  │  commit selected: files list | diff                │
-│ Tags          │  working tree selected: unstaged | staged | diff   │
-│ Stashes       │                          commit message + button   │
-│ Files (tree)  │  tree file clicked: built-in editor replaces diff  │
-└───────────────┴────────────────────────────────────────────────────┘
-footer: repo path, branch switcher, ahead/behind, counts, last op | fetch pull push | refresh | quit
+┌ Repository ───┬ Commits ──────────────────────────────────────────┐
+│ ▾ Local       │ commit list (graph | refs + summary | author | age)│
+│    * main     │  row 0 is the virtual "Working tree" row when dirty │
+│ ▾ Remote      ├ Changes ──────────────┬ Diff ─────────────────────┤
+│ ▾ Tags        │ conflicts, unstaged,  │ diff, editor, or the       │
+│ ▾ Stashes     │ staged, commit box    │ three-way merge tool       │
+│ ▾ Files (tree)│ or the commit's files │                            │
+└───────────────┴───────────────────────┴────────────────────────────┘
+footer: name + version | branch switcher, ahead/behind, counts, merge banner, last op | fetch pull push refresh help quit
 ```
 
-Layout rules learned the hard way (see PLAN, "Review 2026-09-04"):
+A file opened from the tree, and the merge tool, switch to a second layout: Repository | Editor, nothing else. Closing restores the four panes. Sidebar sections collapse from the arrow in their header.
 
-- A row with trailing widgets (buttons on the right, text on the left) goes
-  through `ui/row.rs`: trailing side first from the right edge, leading side
-  clipped to what is left. Never put a `right_to_left` layout after the
-  leading widgets in a `horizontal`; it overflows to the left when the pane
-  is narrow.
-- Anything that must stay visible at the bottom of a panel (the commit box)
-  gets a hard rect from the panel's bottom edge, and the content above it is
-  clipped. `allocate_ui_with_layout` is a minimum size, not a maximum.
-- `ScrollArea` defaults to a 64 pt minimum; short panes need
-  `min_scrolled_height(0.0)`.
-- Egui panels run a sizing pass before they have a stored size. Report a
-  fixed height in that pass (`ui.is_sizing_pass()`) instead of filling the
-  offered rect.
-- Below 560 pt of footer width the toolbar drops its labels. The sidebar
-  defaults to 25 % of the width, clamped to 140..220 pt.
+Layout rules learned the hard way:
+
+- Text that must not wrap gets `Wrapping::None`; a text that must give way gets a `container(...).width(Fill).clip(true)`. A `column` that hands `FillPortion` heights to children must itself be `height(Fill)`.
+- Overlays (menus, dialogs, toasts) draw inside their own render layer (`widgets::layered`) so they sit above the custom widgets' clip layers.
+- The footer drops its key hints below 1000 pt; the commit buttons sit on their own row so a narrow Changes pane keeps them.
 
 Behaviors:
 
@@ -234,7 +223,7 @@ one `Ctrl+Shift` binding we claim; terminals do not use it.
 
 ### Theme
 
-Dark default. Query the terminal background (PROTOCOLS section 5); if it is light, use the light theme. Fonts: egui's bundled fonts at 13 pt UI, 12.5 pt monospace for diffs. Allow `--font-size` override.
+Dark default. Query the terminal background (PROTOCOLS section 5); if it is light, use the light theme. Fonts: Fira Sans (bundled by iced) for the UI, the system monospace face through cosmic-text for code; the size follows the terminal cell height, `--font-size` overrides it.
 
 ## 5. CLI
 
@@ -315,12 +304,16 @@ Stage/unstage files and hunks, commit, amend, checkout, branch create/delete, st
 ```toml
 [package]
 name = "gitgui"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2021"
 
 [dependencies]
-egui = { version = "*", default-features = false, features = ["default_fonts"] }   # pin to latest stable at start
-git2 = { version = "*", default-features = false }                                  # add "vendored-libgit2" for release builds
+iced_core = "=0.14.0"
+iced_runtime = "=0.14.0"
+iced_widget = { version = "=0.14.2", default-features = false, features = ["canvas"] }
+iced_renderer = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "fira-sans", "geometry"] }
+tiny-skia = { version = "=0.11.4", default-features = false, features = ["std", "simd"] }
+git2 = { version = "=0.21.0", default-features = false }
 libc = "0.2"
 base64 = "0.22"
 flate2 = "1"
@@ -335,4 +328,4 @@ lto = "thin"
 codegen-units = 1
 ```
 
-Pin exact versions on day one and record the egui API version in CLAUDE.md, since `egui::Context::run`, `tessellate`, and `TexturesDelta` have shifted slightly between releases.
+Pin exact versions and record the iced API notes in CLAUDE.md; the `iced` umbrella crate is not used because it drags in winit.
