@@ -840,16 +840,13 @@ impl App {
 
     fn select_first_worktree_file(&mut self) {
         let s = &self.snapshot;
+        // Conflicts first: they block everything else.
         let first = s
-            .unstaged
+            .conflicted
             .first()
             .map(|f| DiffTarget::WorkdirUnstaged(f.path.clone()))
-            .or_else(|| s.staged.first().map(|f| DiffTarget::Staged(f.path.clone())))
-            .or_else(|| {
-                s.conflicted
-                    .first()
-                    .map(|f| DiffTarget::WorkdirUnstaged(f.path.clone()))
-            });
+            .or_else(|| s.unstaged.first().map(|f| DiffTarget::WorkdirUnstaged(f.path.clone())))
+            .or_else(|| s.staged.first().map(|f| DiffTarget::Staged(f.path.clone())));
         self.select_file(first);
     }
 

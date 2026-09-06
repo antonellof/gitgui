@@ -46,6 +46,7 @@ cargo run --release -- --headless-frame /tmp/frame.png --size 1600x1000 --scale 
 GITGUI_HEADLESS_OPEN=merge cargo run --release -- --headless-frame /tmp/merge.png --repo scratch/conflict-demo
                                         same, with a dialog or the merge tool open (picker, help, menu, stash, reset, merge)
 scripts/conflict-demo.sh                a throwaway repository with three conflicted files
+scripts/graph-demo.sh                   a throwaway repository with branches, merges, tags, a remote, a stash and a conflict (the README screenshots)
 bash scripts/smoke.sh                   headless smoke test
 ```
 
