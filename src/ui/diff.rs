@@ -6,7 +6,7 @@ use iced_core::text;
 use iced_core::Renderer as _;
 use iced_core::widget::{tree, Tree};
 use iced_core::{layout, renderer, Color, Element as CoreElement, Event, Font, Length, Pixels, Point, Rectangle, Shell, Size, Widget};
-use iced_widget::{column, container, row, text as text_widget, text_input, Space};
+use iced_widget::{column, container, row, text as text_widget, text_input};
 
 use crate::git::repo::{DiffLine, DiffText, DiffTarget, FileKind};
 use crate::ui::app::{App, Element, HunkAction, Message, Pane, Renderer};
