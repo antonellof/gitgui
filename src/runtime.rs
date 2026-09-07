@@ -127,6 +127,12 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
             "stash" => app.update(Message::OpenStashDialog),
             "reset" => app.update(Message::CommitAction(0, crate::ui::app::CommitAction::Reset)),
             "hover" => app.cursor = iced_core::Point::new(300.0, 14.0),
+            "maxhover" => {
+                app.cursor = iced_core::Point::new(300.0, 14.0);
+                if let Some(p) = app.pane_of(crate::ui::app::Pane::Log) {
+                    app.panes.maximize(p);
+                }
+            }
             "wrap" => {
                 app.wrap = true;
                 app.editor_wrap = true;

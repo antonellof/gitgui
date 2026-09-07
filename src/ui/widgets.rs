@@ -223,9 +223,9 @@ pub fn pane<'a>(
 ) -> pane_grid::Content<'a, Message, iced_core::Theme, crate::ui::app::Renderer> {
     let t = &app.theme;
     let controls: Element<'a> = if maximized {
-        small_button("restore", Some(Message::PaneRestore))
+        icon_button(Icon::Restore, t.text, Message::PaneRestore)
     } else {
-        small_button("max", Some(Message::PaneMaximize(pane)))
+        icon_button(Icon::Maximize, t.text, Message::PaneMaximize(pane))
     };
     let title_color = if focused || hovered { t.strong } else { t.weak };
     // The grip and the hint say "drag me"; the pointer turns into a hand.
@@ -243,6 +243,7 @@ pub fn pane<'a>(
     let accent = t.accent;
     let bar = TitleBar::new(head)
         .controls(controls)
+        .always_show_controls()
         .padding(2)
         .style(move |theme: &iced_core::Theme| {
             let p = theme.extended_palette();
@@ -632,4 +633,106 @@ impl<'a> iced_core::Widget<Message, iced_core::Theme, crate::ui::app::Renderer> 
     ) -> Option<iced_core::overlay::Element<'b, Message, iced_core::Theme, crate::ui::app::Renderer>> {
         self.child.as_widget_mut().overlay(tree, layout, renderer, viewport, translation)
     }
+}
+
+/// Window-style glyphs drawn with quads, so no font has to carry them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Icon {
+    /// A square outline: maximize.
+    Maximize,
+    /// Two overlapping squares: restore.
+    Restore,
+}
+
+struct IconWidget {
+    icon: Icon,
+    color: Color,
+}
+
+const ICON_SIZE: f32 = 12.0;
+
+impl iced_core::Widget<Message, iced_core::Theme, crate::ui::app::Renderer> for IconWidget {
+    fn size(&self) -> iced_core::Size<Length> {
+        iced_core::Size::new(Length::Fixed(ICON_SIZE), Length::Fixed(ICON_SIZE))
+    }
+
+    fn layout(
+        &mut self,
+        _tree: &mut iced_core::widget::Tree,
+        _renderer: &crate::ui::app::Renderer,
+        _limits: &iced_core::layout::Limits,
+    ) -> iced_core::layout::Node {
+        iced_core::layout::Node::new(iced_core::Size::new(ICON_SIZE, ICON_SIZE))
+    }
+
+    fn draw(
+        &self,
+        _tree: &iced_core::widget::Tree,
+        renderer: &mut crate::ui::app::Renderer,
+        _theme: &iced_core::Theme,
+        _style: &iced_core::renderer::Style,
+        layout: iced_core::Layout<'_>,
+        _cursor: iced_core::mouse::Cursor,
+        _viewport: &iced_core::Rectangle,
+    ) {
+        use iced_core::Renderer as _;
+        let b = layout.bounds();
+        let outline = |renderer: &mut crate::ui::app::Renderer, r: iced_core::Rectangle, fill: Color| {
+            renderer.fill_quad(
+                iced_core::renderer::Quad {
+                    bounds: r,
+                    border: Border {
+                        color: self.color,
+                        width: 1.5,
+                        radius: 1.5.into(),
+                    },
+                    ..Default::default()
+                },
+                fill,
+            );
+        };
+        match self.icon {
+            Icon::Maximize => {
+                let r = iced_core::Rectangle::new(
+                    iced_core::Point::new(b.x + 1.0, b.y + 1.0),
+                    iced_core::Size::new(ICON_SIZE - 2.0, ICON_SIZE - 2.0),
+                );
+                outline(renderer, r, Color::TRANSPARENT);
+            }
+            Icon::Restore => {
+                let s = ICON_SIZE - 4.0;
+                let back = iced_core::Rectangle::new(iced_core::Point::new(b.x + 4.0, b.y), iced_core::Size::new(s, s));
+                let front = iced_core::Rectangle::new(iced_core::Point::new(b.x, b.y + 4.0), iced_core::Size::new(s, s));
+                outline(renderer, back, Color::TRANSPARENT);
+                // The front square hides the back one's corner: fill it with
+                // the bar color, then outline.
+                outline(renderer, front, Color { a: 1.0, ..Color::from_rgb8(0x24, 0x24, 0x26) });
+            }
+        }
+    }
+}
+
+/// A small square button with a window glyph.
+pub fn icon_button<'a>(icon: Icon, color: Color, on_press: Message) -> Element<'a> {
+    let glyph: Element<'a> = iced_core::Element::new(IconWidget { icon, color });
+    button_widget::Button::new(glyph)
+        .padding(4)
+        .on_press(on_press)
+        .style(|theme: &iced_core::Theme, status| {
+            let p = theme.extended_palette();
+            button_widget::Style {
+                background: match status {
+                    button_widget::Status::Hovered => Some(Background::Color(p.background.strong.color)),
+                    button_widget::Status::Pressed => Some(Background::Color(p.background.strongest.color)),
+                    _ => None,
+                },
+                text_color: p.background.base.text,
+                border: Border {
+                    radius: 4.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        })
+        .into()
 }
