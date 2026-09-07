@@ -4,6 +4,8 @@
 mod agent;
 mod cli;
 mod git;
+#[cfg(target_os = "macos")]
+mod macos;
 mod render;
 mod runtime;
 mod shell;

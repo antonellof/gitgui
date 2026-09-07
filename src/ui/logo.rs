@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use iced_core::image::Handle;
 
-const BYTES: &[u8] = include_bytes!("../../assets/logo.png");
+pub const BYTES: &[u8] = include_bytes!("../../assets/logo.png");
 
 pub struct Pixels {
     pub width: u32,

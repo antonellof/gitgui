@@ -28,6 +28,9 @@ struct Desktop {
     worker: Worker,
     _agent: Option<Server>,
     inbox: Receiver,
+    /// The dock icon is set once the app has finished launching (the first
+    /// message), since AppKit overrides an icon set during boot.
+    icon_set: bool,
 }
 
 /// The receiving end of the thread channel, handed to the subscription
@@ -92,11 +95,17 @@ fn boot(opts: &Options) -> (Desktop, Task<Message>) {
         worker,
         _agent: agent,
         inbox: Receiver(Arc::new(Mutex::new(Some(rx)))),
+        icon_set: false,
     };
     (desktop, Task::none())
 }
 
 fn update(d: &mut Desktop, msg: Message) -> Task<Message> {
+    if !d.icon_set {
+        d.icon_set = true;
+        #[cfg(target_os = "macos")]
+        crate::macos::set_dock_icon(crate::ui::logo::BYTES);
+    }
     match msg {
         Message::External(inbox) => match inbox.take() {
             Some(External::Reply(r)) => d.app.apply(r),

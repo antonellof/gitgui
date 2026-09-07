@@ -58,6 +58,7 @@ src/
     logo.rs          assets/logo.png compiled in: image handle for the no-repository screen, RGBA for the window icon
     state.rs         per-repository UI state (layouts, hidden panes, sections, wrap, columns) in <gitdir>/gitgui.json
     theme.rs         colors derived from terminal palette (OSC 10/11 query, fallback dark), iced Theme
+  macos.rs           macOS dock icon for the bare binary (NSApplication setApplicationIconImage: over raw objc_msgSend)
   window.rs          desktop window mode: the same App through iced::application (winit + softbuffer), --window or no kitty graphics
   split.rs           open in a terminal split (cmux, Ghostty) with in-place fallback
   agent.rs           unix socket JSON-lines control API (phase 5)
