@@ -129,6 +129,7 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
             "reset" => app.update(Message::CommitAction(0, crate::ui::app::CommitAction::Reset)),
             "hover" => app.cursor = iced_core::Point::new(300.0, 14.0),
             "folder" => app.update(Message::OpenFolderDialog),
+            "zoom" => app.set_zoom(1.4),
             "hidden" => {
                 if let Some(p) = app.pane_of(crate::ui::app::Pane::Files) {
                     app.update(Message::PaneClose(p));
@@ -156,7 +157,10 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
     let mut ui_ms = 0.0;
     for _ in 0..3 {
         let t0 = Instant::now();
-        shell.frame(&mut app, &mut fb);
+        if app.zoom != 1.0 {
+            shell.resize(size.0, size.1, ppp * app.zoom);
+        }
+                shell.frame(&mut app, &mut fb);
         ui_ms = t0.elapsed().as_secs_f64() * 1e3;
         if let Some(repo) = repo.as_mut() {
             settle(&mut app, repo);
@@ -379,6 +383,7 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
     let mut screenshot: Option<std::path::PathBuf> = None;
     let mut screenshot_reply: Option<mpsc::Sender<String>> = None;
     let mut pointer = "";
+    let mut zoom_applied = app.zoom;
 
     loop {
         if term::quit_requested() {
@@ -404,7 +409,7 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                         let fs = font_size_for_cell(caps.cell_h, ppp);
                         if fs != font_size {
                             font_size = fs;
-                            shell = Shell::new(font_size, ppp, nw, nh, app.theme.iced());
+                            shell = Shell::new(font_size, ppp * app.zoom, nw, nh, app.theme.iced());
                         }
                     }
                 }
@@ -416,7 +421,8 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                 term::write_all(&out)?;
                 enc.reset();
             }
-            shell.resize(nw, nh, ppp);
+            shell.resize(nw, nh, ppp * app.zoom);
+            app.scale = ppp * app.zoom;
             parser.cell_w = caps.cell_w.max(1);
             parser.cell_h = caps.cell_h.max(1);
             next_deadline = Instant::now();
@@ -429,6 +435,11 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                 next_deadline = last_frame + min_interval;
             } else {
                 let t0 = Instant::now();
+                if app.zoom != zoom_applied {
+                    zoom_applied = app.zoom;
+                    shell.resize(fb.width(), fb.height(), ppp * app.zoom);
+                    app.scale = ppp * app.zoom;
+                }
                 if let Some(p) = shell.cursor() {
                     app.cursor = p;
                 }
@@ -984,6 +995,30 @@ mod tests {
         h.frame();
         h.app.pending.clear();
         let _ = std::fs::remove_dir(&plain);
+    }
+
+    #[test]
+    fn ctrl_minus_equal_and_zero_change_the_zoom() {
+        use crate::ui::app::Message;
+        use iced_core::keyboard::{Key, Modifiers};
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        let mut h = Harness::new(&t.dir);
+        let key = |c: &str| Message::Key(Key::Character(c.into()), Modifiers::CTRL);
+        assert_eq!(h.app.zoom, 1.0);
+        h.app.update(key("-"));
+        assert_eq!(h.app.zoom, 0.9);
+        h.app.update(key("="));
+        h.app.update(key("+"));
+        assert_eq!(h.app.zoom, 1.1);
+        h.app.update(key("0"));
+        assert_eq!(h.app.zoom, 1.0);
+        for _ in 0..40 {
+            h.app.update(key("="));
+        }
+        assert_eq!(h.app.zoom, 3.0);
+        assert!(h.app.state_dirty(), "zoom is part of the saved state");
+        h.frame();
     }
 
     #[test]

@@ -542,6 +542,8 @@ pub struct App {
     pub editor_full: bool,
     /// Commit list column widths (author, date), dragged from the header.
     pub log_columns: (f32, f32),
+    /// UI zoom, Ctrl+= / Ctrl+- / Ctrl+0. The runtime scales points by it.
+    pub zoom: f32,
     /// Where the per-repository UI state is saved, if there is a repository.
     pub state_path: Option<PathBuf>,
     /// The state as last captured; a change marks the file for writing.
@@ -645,6 +647,7 @@ impl App {
             editor_panes,
             editor_full: false,
             log_columns: (110.0, 44.0),
+            zoom: 1.0,
             state_path,
             persisted: state::Persisted::default(),
             state_dirty: false,
@@ -1232,6 +1235,12 @@ impl App {
         self.ops.push(Box::new(iced_core::widget::operation::focusable::focus(
             widgets::MODAL_INPUT_ID.clone(),
         )));
+    }
+
+    pub fn set_zoom(&mut self, zoom: f32) {
+        let zoom = (zoom * 10.0).round() / 10.0;
+        self.zoom = zoom.clamp(0.5, 3.0);
+        self.toast(format!("zoom {}%", (self.zoom * 100.0).round()), false);
     }
 
     /// The open-repository dialog, starting at the current folder's parent.
@@ -2482,6 +2491,9 @@ impl App {
                 "c" => self.quit = true,
                 "f" => self.update(Message::DiffSearchOpen),
                 "o" => self.open_folder_dialog(),
+                "-" | "_" => self.set_zoom(self.zoom - 0.1),
+                "=" | "+" => self.set_zoom(self.zoom + 0.1),
+                "0" => self.set_zoom(1.0),
                 "w" => self.toggle_whitespace(),
                 "d" => self.show_debug = !self.show_debug,
                 "s" => self.save_editor(),

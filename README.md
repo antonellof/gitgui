@@ -53,7 +53,7 @@ gitgui --open src/main.rs open a file in the built-in editor at startup
 gitgui --editor "code -w" editor for Shift+E (or: git config gitgui.editor nano)
 gitgui ls                 list running gitgui instances
 gitgui action '{"cmd":"status"}'   control a running instance (see skill/SKILL.md)
-gitgui --scale 2 --font-size 14    override pixels per point and font size
+gitgui --scale 2 --font-size 14    override pixels per point and font size (Ctrl+= / Ctrl+- zoom at runtime)
 gitgui --probe | --dump-input | --no-shm | --help
 ```
 
@@ -111,6 +111,7 @@ Not planned: an interactive rebase editor, bisect, submodules, worktrees. Use th
 | Continue, abort or skip a merge / rebase | `m` |
 | Fetch, pull, push, refresh | `f`, `p`, `Shift+P`, `r` |
 | Open another repository | `Ctrl+O` |
+| Zoom in, out, reset | `Ctrl+=`, `Ctrl+-`, `Ctrl+0` |
 | Cycle panes, maximize / restore a pane | `Tab`, `1` .. `5` |
 | Clear filter, search or selection; close dialog | `Escape` |
 | Help, quit | `?`, `q` or `Ctrl+C` |

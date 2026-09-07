@@ -50,6 +50,7 @@ pub fn run_window(opts: &Options) -> anyhow::Result<i32> {
         .title("gitgui")
         .theme(|d: &Desktop| d.app.theme.iced())
         .subscription(subscription)
+        .scale_factor(|d: &Desktop| d.app.zoom)
         .default_font(Font::with_name("Fira Sans"))
         .window(window::Settings {
             size: WINDOW,

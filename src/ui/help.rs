@@ -18,6 +18,7 @@ pub const KEYS: &[(&str, &str, &str)] = &[
     ("Navigation", "Escape", "clear filter, search, selection; close dialog"),
     ("Navigation", "?", "this help"),
     ("Navigation", "Ctrl+O", "open another repository"),
+    ("Navigation", "Ctrl+= / Ctrl+-, Ctrl+0", "zoom in / out, reset"),
     ("Navigation", "q, Ctrl+C", "quit"),
     ("Working tree", "s / u", "stage / unstage the selected file or lines"),
     ("Working tree", "Space", "toggle the selected file staged"),

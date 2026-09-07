@@ -44,6 +44,7 @@ pub struct Persisted {
     pub ignore_whitespace: bool,
     pub author_width: f32,
     pub age_width: f32,
+    pub zoom: f32,
 }
 
 impl Default for Persisted {
@@ -61,6 +62,7 @@ impl Default for Persisted {
             ignore_whitespace: false,
             author_width: 110.0,
             age_width: 44.0,
+            zoom: 1.0,
         }
     }
 }
@@ -153,6 +155,7 @@ impl Persisted {
             ignore_whitespace: app.diff_opts.ignore_whitespace,
             author_width: app.log_columns.0,
             age_width: app.log_columns.1,
+            zoom: app.zoom,
         }
     }
 
@@ -180,6 +183,7 @@ impl Persisted {
         app.diff_opts.context = self.diff_context.min(100);
         app.diff_opts.ignore_whitespace = self.ignore_whitespace;
         app.log_columns = (self.author_width.clamp(50.0, 400.0), self.age_width.clamp(36.0, 140.0));
+        app.zoom = if self.zoom.is_finite() { self.zoom.clamp(0.5, 3.0) } else { 1.0 };
     }
 }
 
