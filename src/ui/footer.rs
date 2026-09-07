@@ -102,6 +102,7 @@ pub fn view(app: &App) -> Element<'_> {
         r = r.push(fetch).push(pull).push(push);
         r = r.push(small_button(label("Refresh  r", "Refresh"), Some(Message::Refresh)));
     }
+    r = r.push(small_button(label("Change folder", "Folder"), (app.modal.is_none()).then_some(Message::OpenFolderDialog)));
     r = r.push(small_button(label("Help  ?", "?"), Some(Message::OpenHelp)));
     r = r.push(small_button(label("Quit  q", "Quit"), Some(Message::Quit)));
     let bg = t.panel;

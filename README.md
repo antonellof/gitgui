@@ -83,8 +83,8 @@ Give the agent the control API by linking `skill/SKILL.md` into its skills direc
 - **Panes**: repository, files, commits, changes and diff on a pane grid. Drag a title bar to move a pane, drag the gaps to resize, maximize with the arrows or `1` .. `5`, hide with the x and bring it back from the footer. The commit list's columns resize from its header. The layout, hidden panes, collapsed sections, wrap and diff settings are saved per repository in `.git/gitgui.json` and restored on the next start (`GITGUI_NO_STATE=1` skips this).
 - **File tree**: its own pane with the whole working tree, folders listed on demand, ignored entries dimmed, changed files colored. Repository sections collapse from their arrow.
 - **Editor**: built-in, on iced's text editor with syntax colors for the common languages, undo, `Ctrl+S`. A file opened from the tree takes the whole area next to the sidebar. `Shift+E` opens the file in your own editor in a new split (GUI editors such as `code` open detached), `Shift+O` opens cmux's file preview.
-- **Desktop window**: the same UI in a native window with `--window`, or on its own when the terminal has no kitty graphics (Terminal.app, iTerm2, VS Code's terminal, tmux). Keys, panes, the state file and the agent API work the same; the terminal split and cmux preview do not apply.
-- **Open another repository**: `Ctrl+O`, the `open` button in the Files pane, or the button on the not-a-repository screen. A folder dialog with the subfolders listed, git repositories marked, `..` to go up, or type a path.
+- **Desktop window**: the same UI in a native window with `--window`, or on its own when the terminal has no kitty graphics (Terminal.app, iTerm2, VS Code's terminal, tmux). Keys, panes, the state file and the agent API work the same; the terminal split and cmux preview do not apply. `scripts/bundle-macos.sh` wraps it as `gitgui.app` with the logo as its icon.
+- **Open another repository**: `Ctrl+O`, the `Change folder` button in the footer, or the one on the not-a-repository screen. A folder dialog with the subfolders listed, git repositories marked, `..` to go up, or type a path.
 - **Refresh**: watches the repository and refreshes on its own when another pane changes it.
 - **Agent API**: Unix socket, JSON lines, `gitgui ls` and `gitgui action`.
 
@@ -154,6 +154,7 @@ cargo run --release -- --headless-frame /tmp/frame.png --size 1600x1000 --scale 
 GITGUI_HEADLESS_OPEN=merge cargo run --release -- --headless-frame /tmp/merge.png --repo scratch/conflict-demo
                                         same, with a dialog or the merge tool open (picker, help, menu, stash, reset, merge)
 scripts/conflict-demo.sh                a throwaway repository with three conflicted files
+scripts/bundle-macos.sh                 dist/gitgui.app with the icon from assets/logo.png (Finder launch opens the desktop window)
 scripts/graph-demo.sh                   a throwaway repository with branches, merges, tags, a remote, a stash and a conflict (the README screenshots)
 bash scripts/smoke.sh                   headless smoke test
 ```

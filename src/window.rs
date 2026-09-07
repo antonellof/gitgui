@@ -48,7 +48,11 @@ pub fn run_window(opts: &Options) -> anyhow::Result<i32> {
         .theme(|d: &Desktop| d.app.theme.iced())
         .subscription(subscription)
         .default_font(Font::with_name("Fira Sans"))
-        .window_size(WINDOW)
+        .window(window::Settings {
+            size: WINDOW,
+            icon: crate::ui::logo::pixels().and_then(|p| window::icon::from_rgba(p.rgba.clone(), p.width, p.height).ok()),
+            ..window::Settings::default()
+        })
         .antialiasing(true)
         .run()
         .map_err(|e| anyhow::anyhow!("desktop window: {e}"))?;

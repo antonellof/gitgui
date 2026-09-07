@@ -69,7 +69,6 @@ pub fn pane(app: &App) -> Element<'_> {
             .color(t.weak)
             .wrapping(iced_core::text::Wrapping::None),
         Space::new().width(Length::Fill),
-        crate::ui::widgets::small_button("open", Some(Message::OpenFolderDialog)),
         crate::ui::widgets::small_button("refresh", Some(Message::TreeRequest(String::new()))),
     ]
     .spacing(6)

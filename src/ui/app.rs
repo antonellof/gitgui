@@ -2730,18 +2730,22 @@ impl App {
     }
 
     fn view_no_repo(&self) -> Element<'_> {
-        let body = column![
-            text("Not a git repository").size(20),
-            text(self.repo_path.display().to_string()).font(iced_core::Font::MONOSPACE),
-            text("Initialize a repository here, or open another folder."),
-            iced_widget::row![
-                widgets::button("Initialize git repository", (self.busy == 0).then_some(Message::InitRepo)),
-                widgets::button("Open another folder", Some(Message::OpenFolderDialog)),
-            ]
-            .spacing(8),
-        ]
-        .spacing(10)
-        .align_x(iced_core::Alignment::Center);
+        let mut body = column![].spacing(10).align_x(iced_core::Alignment::Center);
+        if let Some(logo) = crate::ui::logo::handle() {
+            body = body.push(iced_widget::image(logo).width(112).height(112));
+        }
+        body = body.push(text("gitgui").size(28).color(self.theme.strong));
+        let body = body
+            .push(text("Not a git repository").size(16))
+            .push(text(self.repo_path.display().to_string()).font(iced_core::Font::MONOSPACE))
+            .push(text("Initialize a repository here, or open another folder."))
+            .push(
+                iced_widget::row![
+                    widgets::button("Initialize git repository", (self.busy == 0).then_some(Message::InitRepo)),
+                    widgets::button("Change folder", Some(Message::OpenFolderDialog)),
+                ]
+                .spacing(8),
+            );
         let content = column![
             iced_widget::center(body).width(Length::Fill).height(Length::Fill),
             footer::view(self)

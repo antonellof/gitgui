@@ -8,6 +8,7 @@ pub mod footer;
 pub mod help;
 pub mod highlight;
 pub mod log;
+pub mod logo;
 pub mod menu;
 pub mod merge;
 pub mod modal;

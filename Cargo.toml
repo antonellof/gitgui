@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 iced_core = "=0.14.0"
 iced_runtime = "=0.14.0"
-iced_widget = { version = "=0.14.2", default-features = false, features = ["canvas"] }
+iced_widget = { version = "=0.14.2", default-features = false, features = ["canvas", "image"] }
 tiny-skia = { version = "=0.11.4", default-features = false, features = ["std", "simd"] }
 iced_renderer = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "fira-sans", "geometry"] }
 libc = "0.2"
@@ -17,7 +17,7 @@ git2 = { version = "=0.21.0", default-features = false }
 png = "0.17"
 # Desktop window mode (src/window.rs): winit + softbuffer through the iced
 # umbrella crate, tiny-skia only, no wgpu. Same App, same widgets.
-iced = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "fira-sans", "thread-pool"] }
+iced = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "fira-sans", "thread-pool", "image-without-codecs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -25,7 +25,7 @@ serde_json = "1"
 # fails to compile (E0392 in make_dispatch); dlopen variants link nothing.
 [target.'cfg(target_os = "linux")'.dependencies]
 iced_tiny_skia = { version = "=0.14.0", default-features = false, features = ["x11", "wayland"] }
-iced = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "fira-sans", "thread-pool", "x11", "wayland"] }
+iced = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "fira-sans", "thread-pool", "image-without-codecs", "x11", "wayland"] }
 
 [profile.release]
 opt-level = 3
