@@ -149,6 +149,8 @@ Unit test with a fixture DAG: linear history, one merge, one octopus, two indepe
 
 Layout, an iced `pane_grid` with five panes. Every title bar drags its pane (the bar tints and the pointer becomes a hand over it), the gaps resize, the arrows glyph maximizes or restores (also `1` .. `5`), the x hides the pane and the footer grows a `+ <pane>` button to bring it back next to its usual neighbour:
 
+State file: the pane layouts (main and editor), the maximized pane, hidden panes, collapsed sidebar sections, wrap toggles, open tree folders, diff context and whitespace options and the commit list's column widths are written as JSON to `<gitdir>/gitgui.json` (`ui/state.rs`) whenever they change, once the pointer rests, and on quit; the next start of gitgui in that repository restores them. The file lives in the git directory so it never shows up as an untracked file. Unknown pane ids, duplicate panes or bad ratios make gitgui fall back to the default layout; a missing field takes its default. `GITGUI_NO_STATE=1` neither reads nor writes it.
+
 ```
 ┌ Repository ───┬ Commits ──────────────────────────────────────────┐
 │ ▾ Local       │ Commit | Author | Date header, dividers drag        │

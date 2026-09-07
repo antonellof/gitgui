@@ -22,7 +22,7 @@ use crate::git::repo::{DiffOpts, DiffTarget, DirEntry, FileStatus, RepoSnapshot,
 use crate::ui::editor::Editor;
 use crate::ui::theme::Theme;
 use crate::ui::merge::{MergeState, Resolution};
-use crate::ui::{changes, diff, editor, footer, log, menu, merge, modal, sidebar, tree, widgets};
+use crate::ui::{changes, diff, editor, footer, log, menu, merge, modal, sidebar, state, tree, widgets};
 
 pub type Renderer = crate::shell::Renderer;
 pub type Element<'a> = iced_core::Element<'a, Message, iced_core::Theme, Renderer>;
@@ -44,6 +44,25 @@ pub enum Pane {
 }
 
 impl Pane {
+    pub const ALL: &'static [Pane] = &[Pane::Sidebar, Pane::Files, Pane::Log, Pane::Changes, Pane::Detail];
+    /// Panes of the editor / merge layout.
+    pub const EDITOR: &'static [Pane] = &[Pane::Sidebar, Pane::Files, Pane::Detail];
+
+    /// Stable name in the state file.
+    pub fn id(self) -> &'static str {
+        match self {
+            Pane::Sidebar => "repository",
+            Pane::Files => "files",
+            Pane::Log => "commits",
+            Pane::Changes => "changes",
+            Pane::Detail => "diff",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Pane> {
+        Pane::ALL.iter().copied().find(|p| p.id() == id)
+    }
+
     pub fn title(self) -> &'static str {
         match self {
             Pane::Sidebar => "Repository",
@@ -338,6 +357,8 @@ pub enum Message {
     DiffNext(i32),
     DiffContext(i32),
     DiffWhitespace,
+    /// Commit list column widths after a header drag: (author, date).
+    LogColumns(f32, f32),
     DiffWrap,
     EditorWrap,
     DiffLineClick { hunk: usize, line: usize, shift: bool },
@@ -471,6 +492,13 @@ pub struct App {
     pub editor_panes: pane_grid::State<Pane>,
     /// The editor takes the whole main area (opened from the tree or --open).
     pub editor_full: bool,
+    /// Commit list column widths (author, date), dragged from the header.
+    pub log_columns: (f32, f32),
+    /// Where the per-repository UI state is saved, if there is a repository.
+    pub state_path: Option<PathBuf>,
+    /// The state as last captured; a change marks the file for writing.
+    persisted: state::Persisted,
+    state_dirty: bool,
 }
 
 impl App {
@@ -503,7 +531,8 @@ impl App {
             a: Box::new(left()),
             b: Box::new(Configuration::Pane(Pane::Detail)),
         });
-        Self {
+        let state_path = if std::env::var_os("GITGUI_NO_STATE").is_some() { None } else { state::path_for(&repo_path) };
+        let mut app = Self {
             theme,
             snapshot: Arc::new(RepoSnapshot::default()),
             have_snapshot: false,
@@ -567,7 +596,46 @@ impl App {
             grid_bounds: Cell::new(iced_core::Rectangle::default()),
             editor_panes,
             editor_full: false,
+            log_columns: (110.0, 44.0),
+            state_path,
+            persisted: state::Persisted::default(),
+            state_dirty: false,
+        };
+        if let Some(saved) = app.state_path.as_deref().and_then(state::load) {
+            saved.apply(&mut app);
         }
+        app.persisted = state::Persisted::capture(&app);
+        app
+    }
+
+    /// Note a change worth saving. Called after every message; the file is
+    /// written by `flush_state` so a drag does not write on every frame.
+    fn track_state(&mut self) {
+        if self.state_path.is_none() {
+            return;
+        }
+        let now = state::Persisted::capture(self);
+        if now != self.persisted {
+            self.persisted = now;
+            self.state_dirty = true;
+        }
+    }
+
+    /// Write the state file if anything changed since the last write.
+    pub fn flush_state(&mut self) {
+        if !self.state_dirty {
+            return;
+        }
+        self.state_dirty = false;
+        if let Some(path) = &self.state_path {
+            if let Err(e) = state::save(path, &self.persisted) {
+                self.toast(format!("cannot save {}: {e}", path.display()), true);
+            }
+        }
+    }
+
+    pub fn state_dirty(&self) -> bool {
+        self.state_dirty
     }
 
     fn in_editor_layout(&self) -> bool {
@@ -1697,6 +1765,7 @@ impl App {
     pub fn update(&mut self, msg: Message) {
         let had_modal = self.modal.is_some();
         self.update_inner(msg);
+        self.track_state();
         if !had_modal && self.modal.is_some() {
             // A dialog owns the keyboard: drop focus from the editors and
             // inputs underneath before the dialog's own field takes it.
@@ -1823,6 +1892,7 @@ impl App {
             }
             Message::DiffNext(dir) => self.diff_next_match(dir),
             Message::DiffContext(d) => self.change_diff_context(d),
+            Message::LogColumns(author, age) => self.log_columns = (author, age),
             Message::DiffWhitespace => self.toggle_whitespace(),
             Message::DiffWrap => self.wrap = !self.wrap,
             Message::EditorWrap => self.editor_wrap = !self.editor_wrap,

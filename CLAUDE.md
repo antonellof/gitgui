@@ -54,6 +54,7 @@ src/
     menu.rs          right-click menus as a stack overlay, clamped into the window
     help.rs          keyboard reference table and the `?` dialog
     widgets.rs       buttons, rows, sections, pane chrome, toasts, Layered, widget ids
+    state.rs         per-repository UI state (layouts, hidden panes, sections, wrap, columns) in <gitdir>/gitgui.json
     theme.rs         colors derived from terminal palette (OSC 10/11 query, fallback dark), iced Theme
   split.rs           open in a terminal split (cmux, Ghostty) with in-place fallback
   agent.rs           unix socket JSON-lines control API (phase 5)

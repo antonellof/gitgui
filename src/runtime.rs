@@ -483,14 +483,24 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                     let _ = worker.tx.send(cmd);
                 }
                 if app.quit {
+                    app.flush_state();
                     break;
                 }
                 last_frame = Instant::now();
-                let delay = match pass.redraw {
+                let mut delay = match pass.redraw {
                     RedrawRequest::NextFrame => Duration::ZERO,
                     RedrawRequest::At(at) => at.saturating_duration_since(last_frame),
                     RedrawRequest::Wait => Duration::from_secs(3600),
                 };
+                // Layout changes reach the state file once the pointer rests:
+                // a drag produces a frame per move and should not write each.
+                if app.state_dirty() {
+                    if pass.redraw == RedrawRequest::NextFrame {
+                        delay = Duration::from_millis(300);
+                    } else {
+                        app.flush_state();
+                    }
+                }
                 next_deadline = last_frame + delay.max(min_interval);
             }
         }
@@ -873,6 +883,49 @@ mod tests {
         let last = h.app.pane_of(Pane::Sidebar).unwrap();
         h.app.update(Message::PaneClose(last));
         assert_eq!(h.app.panes.len(), 1);
+    }
+
+    #[test]
+    fn layout_and_settings_persist_in_the_git_dir() {
+        use crate::ui::app::Message;
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        let mut h = Harness::new(&t.dir);
+        let path = h.app.state_path.clone().expect("a repository has a state path");
+        let git_dir = t.dir.join(".git").canonicalize().unwrap();
+        assert!(path.starts_with(&git_dir), "{}", path.display());
+        assert!(!h.app.state_dirty());
+        let files = h.app.pane_of(Pane::Files).unwrap();
+        h.app.update(Message::PaneClose(files));
+        h.app.update(Message::DiffWrap);
+        h.app.update(Message::SectionToggle("Tags"));
+        h.app.update(Message::LogColumns(160.0, 60.0));
+        let log = h.app.pane_of(Pane::Log).unwrap();
+        h.app.update(Message::PaneMaximize(log));
+        assert!(h.app.state_dirty());
+        h.app.flush_state();
+        assert!(!h.app.state_dirty());
+        let text = std::fs::read_to_string(&path).unwrap();
+        let main = serde_json::from_str::<serde_json::Value>(&text).unwrap()["panes"].to_string();
+        assert!(main.contains("\"commits\"") && !main.contains("\"files\""), "{main}");
+
+        let again = Harness::new(&t.dir);
+        assert_eq!(again.app.hidden_panes(), vec![Pane::Files]);
+        assert!(again.app.wrap);
+        assert!(again.app.sidebar_collapsed.contains("Tags"));
+        assert_eq!(again.app.log_columns, (160.0, 60.0));
+        assert_eq!(again.app.panes.maximized(), again.app.pane_of(Pane::Log));
+        assert!(!again.app.state_dirty());
+
+        // A broken file is ignored and the defaults come back.
+        std::fs::write(&path, "{\"panes\": {\"axis\": \"v\", \"ratio\": 0.5, \"a\": \"files\", \"b\": \"files\"}, \"wrap\": true}").unwrap();
+        let broken = Harness::new(&t.dir);
+        assert_eq!(broken.app.panes.len(), 5);
+        assert!(broken.app.wrap);
+        std::fs::write(&path, "not json").unwrap();
+        let junk = Harness::new(&t.dir);
+        assert_eq!(junk.app.panes.len(), 5);
+        assert!(!junk.app.wrap);
     }
 
     #[test]

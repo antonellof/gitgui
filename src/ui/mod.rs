@@ -12,6 +12,7 @@ pub mod menu;
 pub mod merge;
 pub mod modal;
 pub mod sidebar;
+pub mod state;
 pub mod theme;
 pub mod tree;
 pub mod widgets;

@@ -309,8 +309,9 @@ Not planned for v0.x: an interactive rebase editor, bisect, submodules,
 worktrees, sparse checkout, patch export. Use the git CLI in the
 neighbouring pane.
 
-### Recently shipped (v0.1.1 to v0.5.0)
+### Recently shipped (v0.1.1 to v0.5.1)
 
+- v0.5.1: layout and settings saved per repository in `.git/gitgui.json` (`ui/state.rs`)
 - v0.5.0: Files as its own pane, hide / show panes from an x and the footer, macOS-style maximize glyphs, title bar hover highlight and OSC 22 pointer shapes, resizable commit columns, scrollbars beside the content, README screenshots from the demo repos
 - v0.4.0: iced port: draggable pane grid, custom log / diff / merge widgets, three-way conflict resolver, collapsible sidebar sections, footer with name and version, direct tiny-skia draw
 - v0.3.3: a file opened from the sidebar tree hides the commit column (editor only, right of the sidebar)

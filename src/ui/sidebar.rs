@@ -8,6 +8,9 @@ use crate::git::ops::Command;
 use crate::ui::app::{App, Element, Message, MenuKind, Modal, Pane};
 use crate::ui::widgets::{self, row_button, section, small_button};
 
+/// Section titles, as used in `App::sidebar_collapsed` and the state file.
+pub const SECTIONS: &[&str] = &["Local", "Remote", "Tags", "Stashes"];
+
 pub fn view(app: &App) -> Element<'_> {
     let t = &app.theme;
     let s = &app.snapshot;

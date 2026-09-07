@@ -67,7 +67,8 @@ struct State {
     scroll: f32,
     /// Truncated strings by (text, width): measuring is the costly part of a row.
     fit: std::cell::RefCell<std::collections::HashMap<(String, u32), String>>,
-    /// Column widths, dragged from the header dividers.
+    /// Column widths while a header divider is dragged; otherwise the app's
+    /// `log_columns` (which is where a saved layout restores them to).
     author_w: f32,
     age_w: f32,
     /// (divider index, pointer x at press, width at press)
@@ -106,6 +107,16 @@ impl State {
         }
     }
 
+    /// Take the app's widths unless a drag is changing them right now.
+    fn sync(&mut self, app: &App) {
+        if self.drag.is_none() {
+            self.author_w = app.log_columns.0;
+            self.age_w = app.log_columns.1;
+        }
+    }
+}
+
+impl State {
     /// Divider under `p` in the header: 0 between summary and author, 1
     /// between author and date.
     fn divider_at(&self, bounds: Rectangle, p: Point) -> Option<u8> {
@@ -171,6 +182,7 @@ impl Widget<Message, iced_core::Theme, Renderer> for LogView<'_> {
         _viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_mut::<State>();
+        state.sync(self.app);
         let bounds = layout.bounds();
         let max = self.max_scroll(bounds.height);
         match event {
@@ -216,6 +228,7 @@ impl Widget<Message, iced_core::Theme, Renderer> for LogView<'_> {
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 if state.drag.take().is_some() {
+                    shell.publish(Message::LogColumns(state.author_w, state.age_w));
                     shell.capture_event();
                 }
             }

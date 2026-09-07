@@ -79,7 +79,7 @@ Give the agent the control API by linking `skill/SKILL.md` into its skills direc
 - **Merge and rebase state**: footer banner with continue / abort / skip; conflicted files show their markers and resolve with ours / theirs.
 - **Diff**: search, adjustable context, whitespace toggle, wrap toggle (diff and editor), hunk and line selection with the mouse.
 - **Conflict resolver**: a three-way merge tool (ours | result | theirs) with per-conflict take-left / take-right / keep-both / drop buttons, accept-all, edit the result, apply and mark resolved. Conflicted files also get a banner with whole-file ours / theirs.
-- **Panes**: repository, files, commits, changes and diff on a pane grid. Drag a title bar to move a pane, drag the gaps to resize, maximize with the arrows or `1` .. `5`, hide with the x and bring it back from the footer. The commit list's columns resize from its header.
+- **Panes**: repository, files, commits, changes and diff on a pane grid. Drag a title bar to move a pane, drag the gaps to resize, maximize with the arrows or `1` .. `5`, hide with the x and bring it back from the footer. The commit list's columns resize from its header. The layout, hidden panes, collapsed sections, wrap and diff settings are saved per repository in `.git/gitgui.json` and restored on the next start (`GITGUI_NO_STATE=1` skips this).
 - **File tree**: its own pane with the whole working tree, folders listed on demand, ignored entries dimmed, changed files colored. Repository sections collapse from their arrow.
 - **Editor**: built-in, on iced's text editor with syntax colors for the common languages, undo, `Ctrl+S`. A file opened from the tree takes the whole area next to the sidebar. `Shift+E` opens the file in your own editor in a new split (GUI editors such as `code` open detached), `Shift+O` opens cmux's file preview.
 - **Refresh**: watches the repository and refreshes on its own when another pane changes it.
@@ -133,7 +133,7 @@ Same trick as [terminal-browser](https://github.com/zenbu-labs/terminal-browser)
 Requires macOS or Linux and a kitty-graphics terminal (cmux, Ghostty, kitty, WezTerm). The one-liner at the top downloads a release binary into `~/.local/bin`, or builds from source with `cargo` when there is no binary for your platform.
 
 ```bash
-GITGUI_VERSION=0.5.0 GITGUI_INSTALL_DIR=~/bin bash scripts/install.sh   # pin a version, other dir
+GITGUI_VERSION=0.5.1 GITGUI_INSTALL_DIR=~/bin bash scripts/install.sh   # pin a version, other dir
 cargo install --git https://github.com/antonellof/gitgui                 # from source (Rust 1.95+)
 gitgui --probe                                                           # does this terminal support kitty graphics?
 ```
