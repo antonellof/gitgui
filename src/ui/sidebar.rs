@@ -7,7 +7,6 @@ use iced_widget::{column, mouse_area, row, scrollable, text, Space};
 use crate::git::ops::Command;
 use crate::ui::app::{App, Element, Message, MenuKind, Modal, Pane};
 use crate::ui::widgets::{self, row_button, section, small_button};
-use crate::ui::tree;
 
 pub fn view(app: &App) -> Element<'_> {
     let t = &app.theme;
@@ -89,9 +88,12 @@ pub fn view(app: &App) -> Element<'_> {
     } else if remote_count > 0 {
         for b in s.branches.iter().filter(|b| b.is_remote) {
             let selected = app.sidebar_selected.as_deref() == Some(b.name.as_str());
-            let label = row![Space::new().width(10), text(&b.name).size(13)]
-                .spacing(6)
-                .align_y(Alignment::Center);
+            let label = row![
+                Space::new().width(10),
+                text(&b.name).size(13).wrapping(iced_core::text::Wrapping::None)
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center);
             let btn = row_button(label, selected, focused, Message::SidebarSelect(b.name.clone(), b.oid));
             let name = b.name.clone();
             let mut area = mouse_area(btn).on_right_press(Message::MenuOpen(MenuKind::RemoteBranch(name.clone())));
@@ -170,17 +172,6 @@ pub fn view(app: &App) -> Element<'_> {
     }
     if s.stashes.is_empty() && open("Stashes") {
         col = col.push(row![Space::new().width(10), widgets::weak("none", t)].padding([2, 6]));
-    }
-
-    // Files.
-    col = col.push(section(
-        "Files",
-        !open("Files"),
-        Some(small_button("refresh", Some(Message::TreeRequest(String::new())))),
-        t,
-    ));
-    if open("Files") {
-        col = col.push(tree::view(app));
     }
 
     // `spacing` keeps the scrollbar beside the content instead of over its

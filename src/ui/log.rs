@@ -17,6 +17,9 @@ use crate::ui::app::{age, App, Element, Message, MenuKind, Pane, Renderer, Selec
 use crate::ui::widgets::{self, small_button};
 
 pub const ROW_H: f32 = 24.0;
+/// Column header row with the draggable dividers.
+const HEADER_H: f32 = 22.0;
+const DIVIDER_GRAB: f32 = 5.0;
 const LANE_W: f32 = 14.0;
 const MAX_LANES: usize = 12;
 const NODE_R: f32 = 3.5;
@@ -60,14 +63,64 @@ struct LogView<'a> {
     rows: Vec<Selection>,
 }
 
-#[derive(Default)]
 struct State {
     scroll: f32,
     /// Truncated strings by (text, width): measuring is the costly part of a row.
     fit: std::cell::RefCell<std::collections::HashMap<(String, u32), String>>,
+    /// Column widths, dragged from the header dividers.
+    author_w: f32,
+    age_w: f32,
+    /// (divider index, pointer x at press, width at press)
+    drag: Option<(u8, f32, f32)>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        State {
+            scroll: 0.0,
+            fit: Default::default(),
+            author_w: 110.0,
+            age_w: 44.0,
+            drag: None,
+        }
+    }
+}
+
+/// Column edges: (author_x, age_x). Narrow lists drop the author column.
+struct Columns {
+    author_x: f32,
+    age_x: f32,
+    show_author: bool,
 }
 
 impl State {
+    fn columns(&self, bounds: Rectangle) -> Columns {
+        let right = bounds.x + bounds.width;
+        let age_x = right - self.age_w;
+        let show_author = bounds.width > 420.0;
+        let author_x = if show_author { age_x - self.author_w } else { age_x };
+        Columns {
+            author_x,
+            age_x,
+            show_author,
+        }
+    }
+
+    /// Divider under `p` in the header: 0 between summary and author, 1
+    /// between author and date.
+    fn divider_at(&self, bounds: Rectangle, p: Point) -> Option<u8> {
+        if p.y < bounds.y || p.y > bounds.y + HEADER_H {
+            return None;
+        }
+        let c = self.columns(bounds);
+        if c.show_author && (p.x - c.author_x).abs() <= DIVIDER_GRAB {
+            Some(0)
+        } else if (p.x - c.age_x).abs() <= DIVIDER_GRAB {
+            Some(1)
+        } else {
+            None
+        }
+    }
     fn fit(&self, s: &str, width: f32, font: Font, size: Pixels) -> String {
         let key = (s.to_owned(), width.to_bits());
         if let Some(v) = self.fit.borrow().get(&key) {
@@ -85,7 +138,7 @@ impl State {
 
 impl LogView<'_> {
     fn max_scroll(&self, height: f32) -> f32 {
-        (self.rows.len() as f32 * ROW_H - height).max(0.0)
+        (self.rows.len() as f32 * ROW_H - (height - HEADER_H)).max(0.0)
     }
 }
 
@@ -125,10 +178,11 @@ impl Widget<Message, iced_core::Theme, Renderer> for LogView<'_> {
                 if self.app.scroll_to_selection.get() {
                     if let Some(i) = self.rows.iter().position(|r| *r == self.app.selection) {
                         let top = i as f32 * ROW_H;
+                        let body_h = bounds.height - HEADER_H;
                         if top < state.scroll {
                             state.scroll = top;
-                        } else if top + ROW_H > state.scroll + bounds.height {
-                            state.scroll = (top + ROW_H - bounds.height).max(0.0);
+                        } else if top + ROW_H > state.scroll + body_h {
+                            state.scroll = (top + ROW_H - body_h).max(0.0);
                         }
                         self.app.scroll_to_selection.set(false);
                         shell.request_redraw();
@@ -147,9 +201,40 @@ impl Widget<Message, iced_core::Theme, Renderer> for LogView<'_> {
                     shell.request_redraw();
                 }
             }
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                if let Some((which, start_x, start_w)) = state.drag {
+                    if let Some(p) = cursor.position() {
+                        let dx = p.x - start_x;
+                        match which {
+                            0 => state.author_w = (start_w - dx).clamp(50.0, 400.0),
+                            _ => state.age_w = (start_w - dx).clamp(36.0, 140.0),
+                        }
+                        shell.capture_event();
+                        shell.request_redraw();
+                    }
+                }
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if state.drag.take().is_some() {
+                    shell.capture_event();
+                }
+            }
             Event::Mouse(mouse::Event::ButtonPressed(button)) => {
+                if let Some(abs) = cursor.position() {
+                    if *button == mouse::Button::Left {
+                        if let Some(which) = state.divider_at(bounds, abs) {
+                            let w = if which == 0 { state.author_w } else { state.age_w };
+                            state.drag = Some((which, abs.x, w));
+                            shell.capture_event();
+                            return;
+                        }
+                    }
+                }
                 if let Some(p) = cursor.position_in(bounds) {
-                    let i = ((p.y + state.scroll) / ROW_H).floor() as usize;
+                    if p.y < HEADER_H {
+                        return;
+                    }
+                    let i = ((p.y - HEADER_H + state.scroll) / ROW_H).floor() as usize;
                     if let Some(sel) = self.rows.get(i).copied() {
                         shell.publish(Message::SelectRow(sel));
                         if *button == mouse::Button::Right {
@@ -167,13 +252,23 @@ impl Widget<Message, iced_core::Theme, Renderer> for LogView<'_> {
 
     fn mouse_interaction(
         &self,
-        _tree: &Tree,
+        tree: &Tree,
         layout: layout::Layout<'_>,
         cursor: mouse::Cursor,
         _viewport: &Rectangle,
         _renderer: &Renderer,
     ) -> mouse::Interaction {
-        if cursor.is_over(layout.bounds()) {
+        let state = tree.state.downcast_ref::<State>();
+        let bounds = layout.bounds();
+        if state.drag.is_some() {
+            return mouse::Interaction::ResizingHorizontally;
+        }
+        if let Some(p) = cursor.position() {
+            if state.divider_at(bounds, p).is_some() {
+                return mouse::Interaction::ResizingHorizontally;
+            }
+        }
+        if cursor.is_over(bounds) {
             mouse::Interaction::Pointer
         } else {
             mouse::Interaction::None
@@ -205,20 +300,38 @@ impl Widget<Message, iced_core::Theme, Renderer> for LogView<'_> {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
+        let body = Rectangle::new(
+            Point::new(bounds.x, bounds.y + HEADER_H),
+            Size::new(bounds.width, (bounds.height - HEADER_H).max(0.0)),
+        );
         let first = (state.scroll / ROW_H).floor() as usize;
-        let last = ((state.scroll + bounds.height) / ROW_H).ceil() as usize;
-        let show_author = bounds.width > 420.0;
-        let right_w = if show_author { 150.0 } else { 44.0 };
+        let last = ((state.scroll + body.height) / ROW_H).ceil() as usize;
+        let cols = state.columns(bounds);
+        let show_author = cols.show_author;
 
         renderer.with_layer(bounds, |renderer| {
+            // Column header with its dividers.
+            let header = Rectangle::new(bounds.position(), Size::new(bounds.width, HEADER_H));
+            fill(renderer, header, t.panel, 0.0);
+            let hy = header.center_y();
+            draw_text(renderer, "Commit".to_owned(), Point::new(bounds.x + graph_w + 6.0, hy), default_font, small, t.weak, header, false);
+            if show_author {
+                fill(renderer, Rectangle::new(Point::new(cols.author_x - 0.5, bounds.y + 4.0), Size::new(1.0, HEADER_H - 8.0)), t.border, 0.0);
+                let hclip = Rectangle::new(Point::new(cols.author_x, bounds.y), Size::new(cols.age_x - cols.author_x, HEADER_H));
+                draw_text(renderer, "Author".to_owned(), Point::new(cols.author_x + 6.0, hy), default_font, small, t.weak, hclip, true);
+            }
+            fill(renderer, Rectangle::new(Point::new(cols.age_x - 0.5, bounds.y + 4.0), Size::new(1.0, HEADER_H - 8.0)), t.border, 0.0);
+            let dclip = Rectangle::new(Point::new(cols.age_x, bounds.y), Size::new(state.age_w, HEADER_H));
+            draw_text(renderer, "Date".to_owned(), Point::new(cols.age_x + 6.0, hy), default_font, small, t.weak, dclip, true);
+
             // Absolute coordinates: tiny-skia applies a layer translation to
             // a geometry group's clip rect twice, which pushes it off-pane.
-            let mut frame = Frame::with_bounds(renderer, bounds);
+            let mut frame = Frame::with_bounds(renderer, body);
             for i in first..last.min(self.rows.len()) {
-                let y = bounds.y + i as f32 * ROW_H - state.scroll;
+                let y = body.y + i as f32 * ROW_H - state.scroll;
                 let full = Rectangle::new(Point::new(bounds.x, y), Size::new(bounds.width, ROW_H));
                 // Nested layers do not intersect in tiny-skia: clip rows to the widget ourselves.
-                let Some(rect) = full.intersection(&bounds) else { continue };
+                let Some(rect) = full.intersection(&body) else { continue };
                 let partial = rect.height < ROW_H - 0.5;
                 let sel = self.rows[i];
                 let selected = sel == app.selection;
@@ -272,18 +385,20 @@ impl Widget<Message, iced_core::Theme, Renderer> for LogView<'_> {
                             }
                             x += w + 4.0;
                         }
-                        let summary_w = (rect.x + rect.width - right_w - x - 8.0).max(40.0);
+                        let summary_w = (cols.author_x - x - 8.0).max(40.0);
                         let clip = Rectangle::new(Point::new(x, rect.y), Size::new(summary_w, rect.height));
                         let summary = state.fit(&c.summary, summary_w, default_font, font_size);
                         draw_text(renderer, summary, Point::new(x, full.center_y()), default_font, font_size, t.text, clip, partial);
                         if show_author {
-                            let ax = rect.x + rect.width - right_w + 4.0;
-                            let aclip = Rectangle::new(Point::new(ax, rect.y), Size::new(right_w - 48.0, rect.height));
-                            let author = state.fit(&c.author, right_w - 52.0, default_font, small);
+                            let ax = cols.author_x + 6.0;
+                            let aw = (cols.age_x - ax - 6.0).max(10.0);
+                            let aclip = Rectangle::new(Point::new(ax, rect.y), Size::new(aw, rect.height));
+                            let author = state.fit(&c.author, aw, default_font, small);
                             draw_text(renderer, author, Point::new(ax, full.center_y()), default_font, small, t.weak, aclip, partial);
                         }
-                        let age_s = age(now, c.time);
+                        let age_s = state.fit(&age(now, c.time), state.age_w - 12.0, default_font, small);
                         let aw = measure(&age_s, default_font, small);
+                        let dclip = Rectangle::new(Point::new(cols.age_x, rect.y), Size::new(state.age_w, rect.height));
                         draw_text(
                             renderer,
                             age_s,
@@ -291,7 +406,7 @@ impl Widget<Message, iced_core::Theme, Renderer> for LogView<'_> {
                             default_font,
                             small,
                             t.weak,
-                            rect,
+                            dclip,
                             partial,
                         );
                     }

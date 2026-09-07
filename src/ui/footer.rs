@@ -80,6 +80,9 @@ pub fn view(app: &App) -> Element<'_> {
     } else {
         r = r.push(text(app.repo_path.display().to_string()).size(12).font(Font::MONOSPACE).color(t.weak));
     }
+    for kind in app.hidden_panes() {
+        r = r.push(small_button(format!("+ {}", kind.title()), Some(Message::PaneShow(kind))));
+    }
     r = r.push(Space::new().width(Length::Fill));
     if app.show_debug {
         r = r.push(text(format!("{:.1} ms {} x{}", app.frame_ms, app.transport, app.scale)).size(11).color(t.weak));

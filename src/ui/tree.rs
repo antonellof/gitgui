@@ -60,6 +60,27 @@ fn dir_has_changes(status: &HashMap<String, Status>, dir: &str) -> bool {
 
 const INDENT: f32 = 12.0;
 
+/// The Files pane: a header with the refresh button, then the tree.
+pub fn pane(app: &App) -> Element<'_> {
+    let t = &app.theme;
+    let header = row![
+        text(app.snapshot.path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_owned())
+            .size(12)
+            .color(t.weak)
+            .wrapping(iced_core::text::Wrapping::None),
+        Space::new().width(Length::Fill),
+        crate::ui::widgets::small_button("refresh", Some(Message::TreeRequest(String::new()))),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center)
+    .padding([4, 6]);
+    column![
+        header,
+        iced_widget::scrollable(view(app)).spacing(6).width(Length::Fill).height(Length::Fill)
+    ]
+    .into()
+}
+
 pub fn view(app: &App) -> Element<'_> {
     let status = status_map(app);
     let mut col = column![].spacing(1).width(Length::Fill);
@@ -86,7 +107,7 @@ fn push_dir<'a>(
     if entries.is_empty() {
         col.push_ref_placeholder(depth, "empty", t);
     }
-    let focused = app.focus == Pane::Sidebar;
+    let focused = app.focus == Pane::Files;
     for e in entries {
         if e.is_dir {
             col.push_ref(dir_row(app, status, e, depth, focused));

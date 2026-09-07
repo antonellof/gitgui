@@ -147,21 +147,22 @@ Unit test with a fixture DAG: linear history, one merge, one octopus, two indepe
 
 ## 4. UI (ui/)
 
-Layout, an iced `pane_grid` with four panes (every one can be dragged by its title bar, resized at the gaps, maximized with the title-bar button or `1` .. `4`):
+Layout, an iced `pane_grid` with five panes. Every title bar drags its pane (the bar tints and the pointer becomes a hand over it), the gaps resize, the arrows glyph maximizes or restores (also `1` .. `5`), the x hides the pane and the footer grows a `+ <pane>` button to bring it back next to its usual neighbour:
 
 ```
 ┌ Repository ───┬ Commits ──────────────────────────────────────────┐
-│ ▾ Local       │ commit list (graph | refs + summary | author | age)│
-│    * main     │  row 0 is the virtual "Working tree" row when dirty │
+│ ▾ Local       │ Commit | Author | Date header, dividers drag        │
+│    * main     │ commit list (graph | refs + summary | author | age)│
 │ ▾ Remote      ├ Changes ──────────────┬ Diff ─────────────────────┤
 │ ▾ Tags        │ conflicts, unstaged,  │ diff, editor, or the       │
 │ ▾ Stashes     │ staged, commit box    │ three-way merge tool       │
-│ ▾ Files (tree)│ or the commit's files │                            │
+├ Files ────────┤ or the commit's files │                            │
+│ tree          │                       │                            │
 └───────────────┴───────────────────────┴────────────────────────────┘
-footer: name + version | branch switcher, ahead/behind, counts, merge banner, last op | fetch pull push refresh help quit
+footer: name + version | branch switcher, ahead/behind, counts, merge banner, last op | + hidden panes | fetch pull push refresh help quit
 ```
 
-A file opened from the tree, and the merge tool, switch to a second layout: Repository | Editor, nothing else. Closing restores the four panes. Sidebar sections collapse from the arrow in their header.
+A file opened from the tree, and the merge tool, switch to a second layout: Repository and Files on the left, the editor or the tool taking the rest. Closing restores the five panes. Sidebar sections collapse from the arrow in their header. The commit list's Author and Date columns are resized by dragging the dividers in its header row.
 
 Layout rules learned the hard way:
 

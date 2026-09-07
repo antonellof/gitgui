@@ -22,7 +22,7 @@ use crate::git::repo::{DiffOpts, DiffTarget, DirEntry, FileStatus, RepoSnapshot,
 use crate::ui::editor::Editor;
 use crate::ui::theme::Theme;
 use crate::ui::merge::{MergeState, Resolution};
-use crate::ui::{changes, diff, editor, footer, log, menu, merge, modal, sidebar, widgets};
+use crate::ui::{changes, diff, editor, footer, log, menu, merge, modal, sidebar, tree, widgets};
 
 pub type Renderer = crate::shell::Renderer;
 pub type Element<'a> = iced_core::Element<'a, Message, iced_core::Theme, Renderer>;
@@ -37,6 +37,7 @@ pub enum Selection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Sidebar,
+    Files,
     Log,
     Changes,
     Detail,
@@ -46,6 +47,7 @@ impl Pane {
     pub fn title(self) -> &'static str {
         match self {
             Pane::Sidebar => "Repository",
+            Pane::Files => "Files",
             Pane::Log => "Commits",
             Pane::Changes => "Changes",
             Pane::Detail => "Diff",
@@ -302,6 +304,10 @@ pub enum Message {
     PaneDragged(pane_grid::DragEvent),
     PaneResized(pane_grid::ResizeEvent),
     PaneMaximize(pane_grid::Pane),
+    /// Hide a pane (the x in its title bar).
+    PaneClose(pane_grid::Pane),
+    /// Bring a hidden pane back next to its usual neighbour.
+    PaneShow(Pane),
     PaneRestore,
     // Selection
     SelectRow(Selection),
@@ -469,10 +475,16 @@ pub struct App {
 
 impl App {
     pub fn new(theme: Theme, transport: &'static str, scale: f32, repo_path: PathBuf) -> Self {
+        let left = || Configuration::Split {
+            axis: Axis::Horizontal,
+            ratio: 0.55,
+            a: Box::new(Configuration::Pane(Pane::Sidebar)),
+            b: Box::new(Configuration::Pane(Pane::Files)),
+        };
         let panes = pane_grid::State::with_configuration(Configuration::Split {
             axis: Axis::Vertical,
             ratio: 0.2,
-            a: Box::new(Configuration::Pane(Pane::Sidebar)),
+            a: Box::new(left()),
             b: Box::new(Configuration::Split {
                 axis: Axis::Horizontal,
                 ratio: 0.5,
@@ -488,7 +500,7 @@ impl App {
         let editor_panes = pane_grid::State::with_configuration(Configuration::Split {
             axis: Axis::Vertical,
             ratio: 0.2,
-            a: Box::new(Configuration::Pane(Pane::Sidebar)),
+            a: Box::new(left()),
             b: Box::new(Configuration::Pane(Pane::Detail)),
         });
         Self {
@@ -598,6 +610,61 @@ impl App {
             return self.title_strips().iter().find(|(p, r)| *p == max && r.contains(self.cursor)).map(|(p, _)| *p);
         }
         self.title_strips().iter().find(|(_, r)| r.contains(self.cursor)).map(|(p, _)| *p)
+    }
+
+    /// Panes of the active layout that are hidden right now.
+    pub fn hidden_panes(&self) -> Vec<Pane> {
+        let all = if self.in_editor_layout() {
+            vec![Pane::Sidebar, Pane::Files, Pane::Detail]
+        } else {
+            vec![Pane::Sidebar, Pane::Files, Pane::Log, Pane::Changes, Pane::Detail]
+        };
+        all.into_iter().filter(|k| self.pane_of(*k).is_none()).collect()
+    }
+
+    fn close_pane(&mut self, p: pane_grid::Pane) {
+        if self.active_panes().len() <= 1 {
+            self.toast("the last pane stays", true);
+            return;
+        }
+        let kind = self.active_panes().get(p).copied();
+        if self.active_panes().maximized() == Some(p) {
+            self.active_panes_mut().restore();
+        }
+        if let Some((_, sibling)) = self.active_panes_mut().close(p) {
+            if kind == Some(self.focus) {
+                if let Some(k) = self.active_panes().get(sibling) {
+                    self.focus = *k;
+                }
+            }
+        }
+    }
+
+    /// Re-add a hidden pane where it usually sits: Files under Repository,
+    /// Repository left of everything, Changes left of Diff, Diff right of
+    /// Changes, Commits above Changes.
+    fn show_pane(&mut self, kind: Pane) {
+        if self.pane_of(kind).is_some() {
+            return;
+        }
+        let anchor = |this: &Self, prefs: &[Pane]| prefs.iter().find_map(|k| this.pane_of(*k));
+        let (axis, at, before) = match kind {
+            Pane::Files => (Axis::Horizontal, anchor(self, &[Pane::Sidebar, Pane::Log, Pane::Changes, Pane::Detail]), false),
+            Pane::Sidebar => (Axis::Vertical, anchor(self, &[Pane::Files, Pane::Log, Pane::Changes, Pane::Detail]), true),
+            Pane::Changes => (Axis::Vertical, anchor(self, &[Pane::Detail, Pane::Log, Pane::Sidebar, Pane::Files]), true),
+            Pane::Detail => (Axis::Vertical, anchor(self, &[Pane::Changes, Pane::Log, Pane::Sidebar, Pane::Files]), false),
+            Pane::Log => (Axis::Horizontal, anchor(self, &[Pane::Changes, Pane::Detail, Pane::Sidebar, Pane::Files]), true),
+        };
+        let Some(at) = at else { return };
+        if self.active_panes().maximized().is_some() {
+            self.active_panes_mut().restore();
+        }
+        if let Some((new, _)) = self.active_panes_mut().split(axis, at, kind) {
+            if before {
+                self.active_panes_mut().swap(new, at);
+            }
+            self.focus = kind;
+        }
     }
 
     fn active_panes_mut(&mut self) -> &mut pane_grid::State<Pane> {
@@ -1510,7 +1577,7 @@ impl App {
         if let Some(ed) = &self.editor {
             return Some(ed.path.clone());
         }
-        if self.focus == Pane::Sidebar {
+        if matches!(self.focus, Pane::Sidebar | Pane::Files) {
             if let Some(p) = &self.tree_selected {
                 return Some(p.clone());
             }
@@ -1654,6 +1721,8 @@ impl App {
                 self.active_panes_mut().resize(split, ratio);
             }
             Message::PaneMaximize(p) => self.active_panes_mut().maximize(p),
+            Message::PaneClose(p) => self.close_pane(p),
+            Message::PaneShow(kind) => self.show_pane(kind),
             Message::PaneRestore => self.active_panes_mut().restore(),
             Message::SelectRow(sel) => {
                 self.focus = Pane::Log;
@@ -1954,12 +2023,12 @@ impl App {
             }
             Message::TreeToggle(d) => {
                 self.tree_selected = Some(d.clone());
-                self.focus = Pane::Sidebar;
+                self.focus = Pane::Files;
                 self.toggle_dir(&d);
             }
             Message::TreeOpen(p) => {
                 self.tree_selected = Some(p.clone());
-                self.focus = Pane::Sidebar;
+                self.focus = Pane::Files;
                 self.open_editor(p, true);
             }
             Message::TreeRequest(d) => {
@@ -2024,7 +2093,7 @@ impl App {
                     self.toast("select a file first", true);
                     return;
                 };
-                let from_tree = self.focus == Pane::Sidebar && self.tree_selected.as_deref() == Some(path.as_str());
+                let from_tree = matches!(self.focus, Pane::Sidebar | Pane::Files) && self.tree_selected.as_deref() == Some(path.as_str());
                 self.open_editor(path, from_tree);
             }
             Message::EditorAction(action) => {
@@ -2222,7 +2291,8 @@ impl App {
             Some(Named::End) => return self.nav(1_000_000),
             Some(Named::Tab) => {
                 self.focus = match self.focus {
-                    Pane::Sidebar => Pane::Log,
+                    Pane::Sidebar => Pane::Files,
+                    Pane::Files => Pane::Log,
                     Pane::Log => Pane::Changes,
                     Pane::Changes => Pane::Detail,
                     Pane::Detail => Pane::Sidebar,
@@ -2360,12 +2430,13 @@ impl App {
             "P" => self.run(Command::Push),
             "r" => self.update(Message::Refresh),
             "q" => self.quit = true,
-            "1" | "2" | "3" | "4" => {
+            "1" | "2" | "3" | "4" | "5" => {
                 let kind = match ch {
                     "1" => Pane::Sidebar,
                     "2" => Pane::Log,
                     "3" => Pane::Changes,
-                    _ => Pane::Detail,
+                    "4" => Pane::Detail,
+                    _ => Pane::Files,
                 };
                 if let Some(p) = self.pane_of(kind) {
                     let panes = self.active_panes_mut();
@@ -2396,6 +2467,7 @@ impl App {
         let grid = pane_grid_widget(self.active_panes(), |pane, kind, maximized| {
             let body: Element<'_> = match kind {
                 Pane::Sidebar => sidebar::view(self),
+                Pane::Files => tree::pane(self),
                 Pane::Log => log::view(self),
                 Pane::Changes => changes::view(self),
                 Pane::Detail => {

@@ -127,6 +127,11 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
             "stash" => app.update(Message::OpenStashDialog),
             "reset" => app.update(Message::CommitAction(0, crate::ui::app::CommitAction::Reset)),
             "hover" => app.cursor = iced_core::Point::new(300.0, 14.0),
+            "hidden" => {
+                if let Some(p) = app.pane_of(crate::ui::app::Pane::Files) {
+                    app.update(Message::PaneClose(p));
+                }
+            }
             "maxhover" => {
                 app.cursor = iced_core::Point::new(300.0, 14.0);
                 if let Some(p) = app.pane_of(crate::ui::app::Pane::Log) {
@@ -778,12 +783,12 @@ mod tests {
         h.key(b"2");
         assert!(h.app.panes.maximized().is_none());
         // A tree file opens the editor over the whole main area: only the
-        // sidebar and the editor remain; closing it restores the four panes.
+        // repository, files and editor panes remain; closing it restores all.
         h.app.update(crate::ui::app::Message::TreeOpen("src/lib.rs".into()));
         h.frame();
         assert_eq!(h.app.editor.as_ref().map(|e| e.path.as_str()), Some("src/lib.rs"));
         assert!(h.app.editor_full);
-        assert_eq!(h.app.editor_panes.len(), 2);
+        assert_eq!(h.app.editor_panes.len(), 3);
         h.key(b"\x1b");
         assert!(h.app.editor.is_none());
         assert!(!h.app.editor_full);
@@ -842,6 +847,32 @@ mod tests {
         h.key(format!("\x1b[<35;{x};{y}M").as_bytes());
         assert_eq!(h.app.hovered_pane(), None);
         assert_ne!(pointer_shape(h.shell.frame(&mut h.app, &mut h.fb).interaction), "grab");
+    }
+
+    #[test]
+    fn panes_hide_from_the_x_and_come_back_from_the_footer() {
+        use crate::ui::app::Message;
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        let mut h = Harness::new(&t.dir);
+        assert_eq!(h.app.panes.len(), 5);
+        let files = h.app.pane_of(Pane::Files).unwrap();
+        h.app.update(Message::PaneClose(files));
+        h.frame();
+        assert_eq!(h.app.panes.len(), 4);
+        assert_eq!(h.app.hidden_panes(), vec![Pane::Files]);
+        h.app.update(Message::PaneShow(Pane::Files));
+        h.frame();
+        assert_eq!(h.app.panes.len(), 5);
+        assert!(h.app.hidden_panes().is_empty());
+        // The last pane cannot be closed.
+        for kind in [Pane::Files, Pane::Log, Pane::Changes, Pane::Detail] {
+            let p = h.app.pane_of(kind).unwrap();
+            h.app.update(Message::PaneClose(p));
+        }
+        let last = h.app.pane_of(Pane::Sidebar).unwrap();
+        h.app.update(Message::PaneClose(last));
+        assert_eq!(h.app.panes.len(), 1);
     }
 
     #[test]

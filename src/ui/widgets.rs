@@ -222,11 +222,17 @@ pub fn pane<'a>(
     body: Element<'a>,
 ) -> pane_grid::Content<'a, Message, iced_core::Theme, crate::ui::app::Renderer> {
     let t = &app.theme;
-    let controls: Element<'a> = if maximized {
+    let size_control: Element<'a> = if maximized {
         icon_button(Icon::Restore, t.text, Message::PaneRestore)
     } else {
         icon_button(Icon::Maximize, t.text, Message::PaneMaximize(pane))
     };
+    let controls: Element<'a> = row![
+        icon_button(Icon::Close, t.text, Message::PaneClose(pane)),
+        size_control,
+    ]
+    .spacing(2)
+    .into();
     let title_color = if focused || hovered { t.strong } else { t.weak };
     // The grip and the hint say "drag me"; the pointer turns into a hand.
     let grip_color = if hovered { t.accent } else { alpha(t.weak, 0.6) };
@@ -638,10 +644,12 @@ impl<'a> iced_core::Widget<Message, iced_core::Theme, crate::ui::app::Renderer> 
 /// Window-style glyphs drawn with quads, so no font has to carry them.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
-    /// A square outline: maximize.
+    /// Diagonal arrows pointing out: maximize.
     Maximize,
-    /// Two overlapping squares: restore.
+    /// Diagonal arrows pointing in: restore.
     Restore,
+    /// An x: hide the pane.
+    Close,
 }
 
 struct IconWidget {
@@ -682,6 +690,13 @@ impl iced_core::Widget<Message, iced_core::Theme, crate::ui::app::Renderer> for 
         let mut frame = Frame::with_bounds(renderer, b);
         let pt = |px: f32, py: f32| iced_core::Point::new(x + px, y + py);
         let path = Path::new(|p| {
+            if self.icon == Icon::Close {
+                p.move_to(pt(3.0, 3.0));
+                p.line_to(pt(9.0, 9.0));
+                p.move_to(pt(9.0, 3.0));
+                p.line_to(pt(3.0, 9.0));
+                return;
+            }
             // Diagonal from bottom-left to top-right, macOS style.
             p.move_to(pt(2.5, 9.5));
             p.line_to(pt(9.5, 2.5));
@@ -695,6 +710,7 @@ impl iced_core::Widget<Message, iced_core::Theme, crate::ui::app::Renderer> for 
                     p.line_to(pt(2.5, 9.5));
                     p.line_to(pt(2.5, 5.5));
                 }
+                Icon::Close => {}
                 Icon::Restore => {
                     // Heads near the center, pointing inward.
                     p.move_to(pt(9.5, 5.5));
@@ -714,13 +730,15 @@ impl iced_core::Widget<Message, iced_core::Theme, crate::ui::app::Renderer> for 
 /// A small square button with a window glyph.
 pub fn icon_button<'a>(icon: Icon, color: Color, on_press: Message) -> Element<'a> {
     let glyph: Element<'a> = iced_core::Element::new(IconWidget { icon, color });
+    let danger = icon == Icon::Close;
     button_widget::Button::new(glyph)
         .padding(4)
         .on_press(on_press)
-        .style(|theme: &iced_core::Theme, status| {
+        .style(move |theme: &iced_core::Theme, status| {
             let p = theme.extended_palette();
             button_widget::Style {
                 background: match status {
+                    button_widget::Status::Hovered if danger => Some(Background::Color(alpha(p.danger.base.color, 0.6))),
                     button_widget::Status::Hovered => Some(Background::Color(p.background.strong.color)),
                     button_widget::Status::Pressed => Some(Background::Color(p.background.strongest.color)),
                     _ => None,
