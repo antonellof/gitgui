@@ -1,6 +1,6 @@
 # gitgui
 
-A pixel-rendered git GUI that runs inside kitty-graphics terminals (Ghostty, cmux, kitty). No Chromium, no Electron. A single Rust binary renders an iced UI with the tiny-skia software renderer into an RGBA framebuffer, ships frames to the terminal with the kitty graphics protocol, and reads pixel-precise mouse and keyboard input back from the terminal.
+A pixel-rendered git GUI that runs inside kitty-graphics terminals (Ghostty, cmux, kitty). No Chromium, no Electron. A single Rust binary renders an iced UI with the tiny-skia software renderer into an RGBA framebuffer, ships frames to the terminal with the kitty graphics protocol, and reads pixel-precise mouse and keyboard input back from the terminal. Without kitty graphics (or with `--window`) the same UI opens in a native window (`window.rs`).
 
 Reference projects for the idea (not the implementation): zenbu-labs/terminal-browser and zenbu-labs/terminal-code. We reuse their trick (pixels in the terminal via kitty graphics + synthetic input) but skip the browser engine entirely.
 

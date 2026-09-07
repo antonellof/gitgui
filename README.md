@@ -1,6 +1,6 @@
 # gitgui
 
-A git GUI that runs inside your terminal, next to your coding agent. One Rust binary paints an [iced](https://iced.rs) interface as pixels into a cmux, Ghostty, kitty or WezTerm pane over the kitty graphics protocol. No Electron, no browser engine, no TUI. Works over SSH.
+A git GUI that runs inside your terminal, next to your coding agent. One Rust binary paints an [iced](https://iced.rs) interface as pixels into a cmux, Ghostty, kitty or WezTerm pane over the kitty graphics protocol. No Electron, no browser engine, no TUI. Works over SSH. In any other terminal, or from Finder, the same binary opens a desktop window.
 
 
 Install:
@@ -139,7 +139,7 @@ Same trick as [terminal-browser](https://github.com/zenbu-labs/terminal-browser)
 Requires macOS or Linux. In-terminal rendering needs a kitty-graphics terminal (cmux, Ghostty, kitty, WezTerm); anywhere else gitgui opens a desktop window. The one-liner at the top downloads a release binary into `~/.local/bin`, or builds from source with `cargo` when there is no binary for your platform.
 
 ```bash
-GITGUI_VERSION=0.5.1 GITGUI_INSTALL_DIR=~/bin bash scripts/install.sh   # pin a version, other dir
+GITGUI_VERSION=0.6.0 GITGUI_INSTALL_DIR=~/bin bash scripts/install.sh   # pin a version, other dir
 cargo install --git https://github.com/antonellof/gitgui                 # from source (Rust 1.95+)
 gitgui --probe                                                           # does this terminal support kitty graphics?
 ```
