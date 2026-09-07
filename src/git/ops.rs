@@ -42,6 +42,8 @@ pub enum Command {
     LoadCommitFiles(Oid),
     /// Working tree directory listing for the sidebar file tree.
     ListDir(String),
+    /// Switch to another repository (or a plain folder, which replies NoRepo).
+    Open(PathBuf),
     /// Context lines and whitespace handling for every diff from now on.
     SetDiffOpts(DiffOpts),
     /// Whether the UI is focused (reserved; auto-refresh polls regardless).
@@ -288,6 +290,7 @@ impl Command {
             Command::DeleteRemoteBranch { .. } => "delete remote branch",
             Command::PublishGithub { .. } => "publish",
             Command::InitRepo => "init",
+            Command::Open(_) => "open",
         }
     }
 
@@ -338,7 +341,7 @@ pub struct Worker {
 
 /// Start the worker. Every reply is handed to `reply`, which the runtime
 /// uses to forward into its own event channel.
-pub fn spawn(path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Worker {
+pub fn spawn(mut path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Worker {
     let (tx, rx) = mpsc::channel::<Command>();
     std::thread::Builder::new()
         .name("git".into())
@@ -354,7 +357,7 @@ pub fn spawn(path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Worker {
                     None
                 }
             };
-            let workdir = repo
+            let mut workdir = repo
                 .as_ref()
                 .map(|r| r.workdir().to_path_buf())
                 .unwrap_or_else(|| path.clone());
@@ -382,6 +385,29 @@ pub fn spawn(path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Worker {
             loop {
                 match rx.recv_timeout(POLL_INTERVAL) {
                     Ok(Command::Quit) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Ok(Command::Open(new_path)) => {
+                        path = new_path;
+                        match Repo::open(&path) {
+                            Ok(r) => {
+                                repo = Some(r);
+                                limit = COMMIT_LIMIT;
+                                let r = repo.as_mut().expect("just opened");
+                                workdir = r.workdir().to_path_buf();
+                                (stamp, work_fp) = refresh_tracking(r);
+                                send_snapshot(r, limit);
+                            }
+                            Err(GitError::NotARepository(_)) => {
+                                repo = None;
+                                workdir = path.clone();
+                                reply(Reply::NoRepo(path.clone()));
+                            }
+                            Err(e) => {
+                                repo = None;
+                                workdir = path.clone();
+                                reply(Reply::Error(e.to_string()));
+                            }
+                        }
+                    }
                     Ok(Command::InitRepo) => {
                         if repo.is_some() {
                             reply(Reply::Op {

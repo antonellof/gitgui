@@ -48,6 +48,7 @@ pub fn view<'a>(app: &'a App, modal: &'a Modal) -> Element<'a> {
         Modal::DeleteBranch(_) => "Delete branch".into(),
         Modal::DropStash(_) => "Drop stash".into(),
         Modal::BranchPicker { .. } => "Switch branch".into(),
+        Modal::OpenFolder { .. } => "Open repository".into(),
         Modal::CheckoutConfirm { .. } => "Uncommitted changes".into(),
         Modal::PublishGithub { .. } => "Publish to GitHub".into(),
         Modal::Confirm { title, .. } => (*title).into(),
@@ -131,6 +132,44 @@ pub fn view<'a>(app: &'a App, modal: &'a Modal) -> Element<'a> {
                 input("filter branches", filter, true, Message::ModalValue),
                 container(scrollable(list)).max_height(260.0),
                 actions,
+            ]
+            .spacing(10)
+            .into()
+        }
+        Modal::OpenFolder { path, entries } => {
+            let here = std::path::PathBuf::from(path.as_str());
+            let is_repo = here.join(".git").exists();
+            let mut list = column![].spacing(1);
+            if here.parent().is_some() {
+                list = list.push(row_button(
+                    row![text("..").size(13).font(iced_core::Font::MONOSPACE), text("parent folder").size(11).color(t.weak)]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                    false,
+                    true,
+                    Message::OpenFolderUp,
+                ));
+            }
+            for (name, repo) in entries.iter().take(400) {
+                let mut label = row![text(name).size(13)].spacing(8).align_y(Alignment::Center);
+                if *repo {
+                    label = label.push(text("git").size(11).color(t.accent));
+                }
+                list = list.push(row_button(label, false, true, Message::OpenFolderEnter(name.clone())));
+            }
+            if entries.is_empty() {
+                list = list.push(text(if here.is_dir() { "no subfolders" } else { "not a folder" }).size(12).color(t.weak));
+            }
+            let hint = if is_repo {
+                text("this folder is a git repository").size(12).color(t.accent)
+            } else {
+                text("pick a folder, or type a path and press Enter").size(12).color(t.weak)
+            };
+            column![
+                input("path to a repository", path, true, Message::ModalValue),
+                hint,
+                container(scrollable(list).spacing(6)).max_height(300.0),
+                buttons(primary_button("Open", here.is_dir().then_some(Message::ModalConfirm)), "Cancel"),
             ]
             .spacing(10)
             .into()
@@ -291,7 +330,7 @@ pub fn view<'a>(app: &'a App, modal: &'a Modal) -> Element<'a> {
         }
     };
     let width = match modal {
-        Modal::BranchPicker { .. } | Modal::Help => 520.0,
+        Modal::BranchPicker { .. } | Modal::OpenFolder { .. } | Modal::Help => 520.0,
         _ => 420.0,
     };
     let dialog = container(

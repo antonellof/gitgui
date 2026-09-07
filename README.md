@@ -84,6 +84,7 @@ Give the agent the control API by linking `skill/SKILL.md` into its skills direc
 - **File tree**: its own pane with the whole working tree, folders listed on demand, ignored entries dimmed, changed files colored. Repository sections collapse from their arrow.
 - **Editor**: built-in, on iced's text editor with syntax colors for the common languages, undo, `Ctrl+S`. A file opened from the tree takes the whole area next to the sidebar. `Shift+E` opens the file in your own editor in a new split (GUI editors such as `code` open detached), `Shift+O` opens cmux's file preview.
 - **Desktop window**: the same UI in a native window with `--window`, or on its own when the terminal has no kitty graphics (Terminal.app, iTerm2, VS Code's terminal, tmux). Keys, panes, the state file and the agent API work the same; the terminal split and cmux preview do not apply.
+- **Open another repository**: `Ctrl+O`, the `open` button in the Files pane, or the button on the not-a-repository screen. A folder dialog with the subfolders listed, git repositories marked, `..` to go up, or type a path.
 - **Refresh**: watches the repository and refreshes on its own when another pane changes it.
 - **Agent API**: Unix socket, JSON lines, `gitgui ls` and `gitgui action`.
 
@@ -109,6 +110,7 @@ Not planned: an interactive rebase editor, bisect, submodules, worktrees. Use th
 | Copy hash, open commit in browser | `y`, `o` |
 | Continue, abort or skip a merge / rebase | `m` |
 | Fetch, pull, push, refresh | `f`, `p`, `Shift+P`, `r` |
+| Open another repository | `Ctrl+O` |
 | Cycle panes, maximize / restore a pane | `Tab`, `1` .. `5` |
 | Clear filter, search or selection; close dialog | `Escape` |
 | Help, quit | `?`, `q` or `Ctrl+C` |

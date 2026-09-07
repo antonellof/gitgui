@@ -128,6 +128,7 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
             "stash" => app.update(Message::OpenStashDialog),
             "reset" => app.update(Message::CommitAction(0, crate::ui::app::CommitAction::Reset)),
             "hover" => app.cursor = iced_core::Point::new(300.0, 14.0),
+            "folder" => app.update(Message::OpenFolderDialog),
             "hidden" => {
                 if let Some(p) = app.pane_of(crate::ui::app::Pane::Files) {
                     app.update(Message::PaneClose(p));
@@ -931,6 +932,58 @@ mod tests {
         let junk = Harness::new(&t.dir);
         assert_eq!(junk.app.panes.len(), 5);
         assert!(!junk.app.wrap);
+    }
+
+    #[test]
+    fn open_another_repository_from_the_folder_dialog() {
+        use crate::ui::app::{Message, Modal};
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        let other = TempRepo::new();
+        other.commit_file("b.txt", "two\n", "other");
+        let mut h = Harness::new(&t.dir);
+        h.app.update(Message::OpenFolderDialog);
+        let Some(Modal::OpenFolder { path, entries }) = h.app.modal.clone() else {
+            panic!("dialog expected")
+        };
+        // Starts at the parent of the current repository, where both temp
+        // repositories sit, and marks them as git.
+        let parent = t.dir.canonicalize().unwrap().parent().unwrap().to_path_buf();
+        assert_eq!(std::path::PathBuf::from(&path), parent);
+        let name = t.dir.file_name().unwrap().to_str().unwrap();
+        assert!(entries.iter().any(|(n, git)| n == name && *git), "{entries:?}");
+
+        // Enter a subfolder, back up, then type the other path and confirm.
+        h.app.update(Message::OpenFolderEnter(name.to_owned()));
+        assert!(matches!(&h.app.modal, Some(Modal::OpenFolder { path, .. }) if path.ends_with(name)));
+        h.app.update(Message::OpenFolderUp);
+        assert!(matches!(&h.app.modal, Some(Modal::OpenFolder { path, .. }) if parent == std::path::Path::new(path)));
+        h.app.update(Message::ModalValue(other.dir.display().to_string()));
+        h.app.update(Message::ModalConfirm);
+        assert!(h.app.modal.is_none());
+        assert!(!h.app.have_snapshot);
+        assert_eq!(h.app.pending.pop(), Some(Command::Open(other.dir.clone())));
+        h.app.pending.clear();
+
+        // The worker answers with the other repository's snapshot.
+        let mut repo = Repo::open(&other.dir).unwrap();
+        h.app.apply(Reply::Snapshot(repo.snapshot(100).unwrap()));
+        h.frame();
+        assert_eq!(h.app.snapshot.path.canonicalize().unwrap(), other.dir.canonicalize().unwrap());
+        assert!(h.app.snapshot.commits.iter().any(|c| c.summary == "other"));
+        h.app.pending.clear();
+
+        // A plain folder lands on the no-repository screen, which still opens the dialog.
+        let plain = std::env::temp_dir().join(format!("gitgui-plain-{}", std::process::id()));
+        std::fs::create_dir_all(&plain).unwrap();
+        h.app.apply(Reply::NoRepo(plain.clone()));
+        assert!(h.app.no_repo);
+        h.frame();
+        h.app.update(Message::OpenFolderDialog);
+        assert!(matches!(&h.app.modal, Some(Modal::OpenFolder { .. })));
+        h.frame();
+        h.app.pending.clear();
+        let _ = std::fs::remove_dir(&plain);
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -87,6 +87,12 @@ pub enum Modal {
     DropStash(usize),
     BranchPicker {
         filter: String,
+    },
+    /// Pick another repository: a path field and the folders under it.
+    OpenFolder {
+        path: String,
+        /// (name, has a .git) for the subfolders of `path`.
+        entries: Vec<(String, bool)>,
     },
     CheckoutConfirm {
         target: String,
@@ -385,6 +391,12 @@ pub enum Message {
     DiffWhitespace,
     /// Commit list column widths after a header drag: (author, date).
     LogColumns(f32, f32),
+    /// The open-repository dialog.
+    OpenFolderDialog,
+    /// Descend into a subfolder of the dialog's path.
+    OpenFolderEnter(String),
+    /// Go to the parent of the dialog's path.
+    OpenFolderUp,
     /// Window mode only: a git reply or agent job from another thread.
     External(Inbox),
     /// Window mode only: a timer tick (toasts, state file).
@@ -1222,6 +1234,71 @@ impl App {
         )));
     }
 
+    /// The open-repository dialog, starting at the current folder's parent.
+    pub fn open_folder_dialog(&mut self) {
+        self.menu = None;
+        let start = if self.no_repo || self.snapshot.path.as_os_str().is_empty() {
+            self.repo_path.clone()
+        } else {
+            self.snapshot.path.clone()
+        };
+        let start = start.parent().map(Path::to_path_buf).unwrap_or(start);
+        self.list_folder(start);
+        self.focus_modal_input();
+    }
+
+    fn list_folder(&mut self, path: PathBuf) {
+        let entries = list_subfolders(&path);
+        self.modal = Some(Modal::OpenFolder {
+            path: path.display().to_string(),
+            entries,
+        });
+    }
+
+    /// Leave the current repository behind and ask the worker for `path`.
+    pub fn open_repository(&mut self, path: PathBuf) {
+        self.modal = None;
+        self.menu = None;
+        self.editor = None;
+        self.editor_full = false;
+        self.merge = None;
+        self.line_sel = None;
+        self.diff = None;
+        self.diff_loading = false;
+        self.selected_file = None;
+        self.commit_files.clear();
+        self.filter.clear();
+        self.filter_active = false;
+        self.filtered.clear();
+        self.diff_search.clear();
+        self.diff_search_active = false;
+        self.selection = Selection::WorkingTree;
+        self.sidebar_selected = None;
+        self.tree.clear();
+        self.tree_open.clear();
+        self.tree_requested.clear();
+        self.tree_selected = None;
+        self.amend = false;
+        self.amend_loaded = false;
+        self.set_commit_message("");
+        self.snapshot = Arc::new(RepoSnapshot::default());
+        self.have_snapshot = false;
+        self.no_repo = false;
+        self.focus = Pane::Log;
+        self.repo_path = path.clone();
+        if self.state_path.is_some() || std::env::var_os("GITGUI_NO_STATE").is_none() {
+            self.flush_state();
+            self.state_path = state::path_for(&path);
+            if let Some(saved) = self.state_path.as_deref().and_then(state::load) {
+                saved.apply(self);
+            }
+            self.persisted = state::Persisted::capture(self);
+            self.state_dirty = false;
+        }
+        self.toast(format!("opening {}", path.display()), false);
+        self.pending.push(Command::Open(path));
+    }
+
     fn commit_label(&self, idx: usize) -> String {
         self.snapshot
             .commits
@@ -1929,6 +2006,20 @@ impl App {
             Message::DiffNext(dir) => self.diff_next_match(dir),
             Message::DiffContext(d) => self.change_diff_context(d),
             Message::LogColumns(author, age) => self.log_columns = (author, age),
+            Message::OpenFolderDialog => self.open_folder_dialog(),
+            Message::OpenFolderEnter(name) => {
+                if let Some(Modal::OpenFolder { path, .. }) = &self.modal {
+                    let next = PathBuf::from(path).join(name);
+                    self.list_folder(next);
+                }
+            }
+            Message::OpenFolderUp => {
+                if let Some(Modal::OpenFolder { path, .. }) = &self.modal {
+                    if let Some(parent) = PathBuf::from(path).parent() {
+                        self.list_folder(parent.to_path_buf());
+                    }
+                }
+            }
             Message::External(_) | Message::Tick => {}
             Message::WindowResized(size) => self.window = size,
             Message::CursorMoved(p) => self.cursor = p,
@@ -2231,6 +2322,11 @@ impl App {
             Some(Modal::Input { value, .. }) => *value = v,
             Some(Modal::NewBranch { name, .. }) => *name = v,
             Some(Modal::BranchPicker { filter }) => *filter = v,
+            Some(Modal::OpenFolder { path, entries }) => {
+                *path = v;
+                let p = PathBuf::from(path.as_str());
+                *entries = if p.is_dir() { list_subfolders(&p) } else { Vec::new() };
+            }
             Some(Modal::PublishGithub { name, .. }) => *name = v,
             Some(Modal::StashOpts { message, .. }) => *message = v,
             _ => {}
@@ -2279,6 +2375,14 @@ impl App {
                 }
             }
             Modal::CheckoutConfirm { .. } => self.update(Message::ModalCheckoutStash),
+            Modal::OpenFolder { path, .. } => {
+                let p = expand_home(&path);
+                if p.is_dir() {
+                    self.open_repository(p);
+                } else {
+                    self.toast(format!("{} is not a folder", p.display()), true);
+                }
+            }
             Modal::PublishGithub {
                 name,
                 description,
@@ -2377,6 +2481,7 @@ impl App {
             match ch {
                 "c" => self.quit = true,
                 "f" => self.update(Message::DiffSearchOpen),
+                "o" => self.open_folder_dialog(),
                 "w" => self.toggle_whitespace(),
                 "d" => self.show_debug = !self.show_debug,
                 "s" => self.save_editor(),
@@ -2628,8 +2733,12 @@ impl App {
         let body = column![
             text("Not a git repository").size(20),
             text(self.repo_path.display().to_string()).font(iced_core::Font::MONOSPACE),
-            text("Initialize a repository here to start using gitgui."),
-            widgets::button("Initialize git repository", (self.busy == 0).then_some(Message::InitRepo)),
+            text("Initialize a repository here, or open another folder."),
+            iced_widget::row![
+                widgets::button("Initialize git repository", (self.busy == 0).then_some(Message::InitRepo)),
+                widgets::button("Open another folder", Some(Message::OpenFolderDialog)),
+            ]
+            .spacing(8),
         ]
         .spacing(10)
         .align_x(iced_core::Alignment::Center);
@@ -2638,11 +2747,46 @@ impl App {
             footer::view(self)
         ];
         let mut layers = stack![Element::from(content)];
+        if let Some(m) = &self.modal {
+            layers = layers.push(widgets::layered(modal::view(self, m)));
+        }
         if !self.toasts.is_empty() {
             layers = layers.push(widgets::layered(widgets::toasts(self)));
         }
         layers.into()
     }
+}
+
+/// `~` and `~/x` to the home directory.
+pub fn expand_home(path: &str) -> PathBuf {
+    let trimmed = path.trim();
+    if let Some(rest) = trimmed.strip_prefix('~') {
+        if rest.is_empty() || rest.starts_with('/') {
+            if let Some(home) = std::env::var_os("HOME") {
+                return PathBuf::from(home).join(rest.trim_start_matches('/'));
+            }
+        }
+    }
+    PathBuf::from(trimmed)
+}
+
+/// Visible subfolders of `dir`, sorted, each with whether it holds a `.git`.
+pub fn list_subfolders(dir: &Path) -> Vec<(String, bool)> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out: Vec<(String, bool)> = rd
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_owned();
+            if name.starts_with('.') {
+                return None;
+            }
+            let is_repo = e.path().join(".git").exists();
+            Some((name, is_repo))
+        })
+        .collect();
+    out.sort_by_key(|(name, _)| name.to_lowercase());
+    out
 }
 
 /// Human readable age like "3m", "2h", "5d", "3mo", "2y".

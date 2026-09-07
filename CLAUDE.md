@@ -75,7 +75,7 @@ Toolchain at kickoff: rustc 1.98.0, cargo 1.98.0 (2026-08). Both crates below ar
   - Overlays go through `widgets::layered` so they draw above the custom widgets' layers.
 - `git2 = "=0.21.0"` with `default-features = false` (builds libgit2 from source, no system dependency). Most string getters return `Result` in this version (`Reference::shorthand`, `Commit::summary` gives `Result<Option<&str>>`, `Signature::name`, `StatusEntry::path`, `StringArray::iter` yields `Result<Option<&str>>`).
 - `png = "0.17"`, used by `--headless-frame`.
-- `GITGUI_HEADLESS_OPEN=picker|help|menu|stash|reset|merge` makes `--headless-frame` open that dialog or tool first, for visual review.
+- `GITGUI_HEADLESS_OPEN=picker|help|menu|stash|reset|merge|folder|hidden` makes `--headless-frame` open that dialog or tool first, for visual review.
 
 ## Commands
 
