@@ -17,6 +17,11 @@ pub static EDITOR_ID: LazyLock<Id> = LazyLock::new(|| Id::new("editor"));
 pub static FILTER_ID: LazyLock<Id> = LazyLock::new(|| Id::new("filter"));
 pub static DIFF_SEARCH_ID: LazyLock<Id> = LazyLock::new(|| Id::new("diff_search"));
 
+pub const PANE_SPACING: f32 = 4.0;
+pub const PANE_MIN: f32 = 80.0;
+/// Height of a pane title bar (padding 2 + row padding 2 + a 12 pt line).
+pub const TITLE_H: f32 = 26.0;
+
 fn border(color: Color) -> Border {
     Border {
         color,
@@ -213,6 +218,7 @@ pub fn pane<'a>(
     title: &'a str,
     focused: bool,
     maximized: bool,
+    hovered: bool,
     body: Element<'a>,
 ) -> pane_grid::Content<'a, Message, iced_core::Theme, crate::ui::app::Renderer> {
     let t = &app.theme;
@@ -221,27 +227,39 @@ pub fn pane<'a>(
     } else {
         small_button("max", Some(Message::PaneMaximize(pane)))
     };
-    let title_color = if focused { t.strong } else { t.weak };
-    let bar = TitleBar::new(
-        row![text(title).size(12).color(title_color)]
-            .align_y(Alignment::Center)
-            .padding(Padding::from([2, 6])),
-    )
-    .controls(controls)
-    .padding(2)
-    .style(|theme: &iced_core::Theme| {
-        let p = theme.extended_palette();
-        container::Style {
-            background: Some(Background::Color(p.background.weak.color)),
-            text_color: Some(p.background.base.text),
-            border: Border {
-                radius: iced_core::border::Radius::new(6.0).bottom(0.0),
-                ..Default::default()
-            },
-            ..Default::default()
-        }
-    });
+    let title_color = if focused || hovered { t.strong } else { t.weak };
+    // The grip and the hint say "drag me"; the pointer turns into a hand.
+    let grip_color = if hovered { t.accent } else { alpha(t.weak, 0.6) };
+    // Keep the title row the same width hovered or not: a wider title row
+    // makes the title bar decide it does not fit beside the controls and
+    // drop the title altogether.
+    let head = row![
+        text("⋮⋮").size(12).color(grip_color),
+        text(title).size(12).color(title_color).wrapping(iced_core::text::Wrapping::None),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center)
+    .padding(Padding::from([2, 6]));
     let accent = t.accent;
+    let bar = TitleBar::new(head)
+        .controls(controls)
+        .padding(2)
+        .style(move |theme: &iced_core::Theme| {
+            let p = theme.extended_palette();
+            container::Style {
+                background: Some(Background::Color(if hovered {
+                    alpha(accent, 0.28)
+                } else {
+                    p.background.weak.color
+                })),
+                text_color: Some(p.background.base.text),
+                border: Border {
+                    radius: iced_core::border::Radius::new(6.0).bottom(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        });
     let border_color = t.border;
     pane_grid::Content::new(container(body).width(Length::Fill).height(Length::Fill))
         .title_bar(bar)
@@ -480,6 +498,128 @@ impl<'a> iced_core::Widget<Message, iced_core::Theme, crate::ui::app::Renderer> 
         renderer.with_layer(*viewport, |renderer| {
             self.child.as_widget().draw(tree, renderer, theme, style, layout, cursor, viewport);
         });
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut iced_core::widget::Tree,
+        layout: iced_core::Layout<'b>,
+        renderer: &crate::ui::app::Renderer,
+        viewport: &iced_core::Rectangle,
+        translation: iced_core::Vector,
+    ) -> Option<iced_core::overlay::Element<'b, Message, iced_core::Theme, crate::ui::app::Renderer>> {
+        self.child.as_widget_mut().overlay(tree, layout, renderer, viewport, translation)
+    }
+}
+
+/// Wraps the pane grid: remembers where it was drawn (so the app can tell
+/// which title bar the pointer is over) and asks for a grab pointer there.
+pub struct GridFrame<'a> {
+    app: &'a App,
+    child: Element<'a>,
+}
+
+pub fn grid_frame<'a>(app: &'a App, child: impl Into<Element<'a>>) -> Element<'a> {
+    iced_core::Element::new(GridFrame { app, child: child.into() })
+}
+
+impl<'a> iced_core::Widget<Message, iced_core::Theme, crate::ui::app::Renderer> for GridFrame<'a> {
+    fn size(&self) -> iced_core::Size<Length> {
+        self.child.as_widget().size()
+    }
+
+    fn size_hint(&self) -> iced_core::Size<Length> {
+        self.child.as_widget().size_hint()
+    }
+
+    fn tag(&self) -> iced_core::widget::tree::Tag {
+        self.child.as_widget().tag()
+    }
+
+    fn state(&self) -> iced_core::widget::tree::State {
+        self.child.as_widget().state()
+    }
+
+    fn children(&self) -> Vec<iced_core::widget::Tree> {
+        self.child.as_widget().children()
+    }
+
+    fn diff(&self, tree: &mut iced_core::widget::Tree) {
+        self.child.as_widget().diff(tree);
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut iced_core::widget::Tree,
+        renderer: &crate::ui::app::Renderer,
+        limits: &iced_core::layout::Limits,
+    ) -> iced_core::layout::Node {
+        self.child.as_widget_mut().layout(tree, renderer, limits)
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut iced_core::widget::Tree,
+        layout: iced_core::Layout<'_>,
+        renderer: &crate::ui::app::Renderer,
+        operation: &mut dyn iced_core::widget::Operation,
+    ) {
+        self.child.as_widget_mut().operate(tree, layout, renderer, operation);
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut iced_core::widget::Tree,
+        event: &iced_core::Event,
+        layout: iced_core::Layout<'_>,
+        cursor: iced_core::mouse::Cursor,
+        renderer: &crate::ui::app::Renderer,
+        clipboard: &mut dyn iced_core::Clipboard,
+        shell: &mut iced_core::Shell<'_, Message>,
+        viewport: &iced_core::Rectangle,
+    ) {
+        self.app.grid_bounds.set(layout.bounds());
+        if let iced_core::Event::Mouse(iced_core::mouse::Event::CursorMoved { .. }) = event {
+            // The highlight follows the pointer without a message round trip.
+            shell.request_redraw();
+        }
+        self.child
+            .as_widget_mut()
+            .update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &iced_core::widget::Tree,
+        layout: iced_core::Layout<'_>,
+        cursor: iced_core::mouse::Cursor,
+        viewport: &iced_core::Rectangle,
+        renderer: &crate::ui::app::Renderer,
+    ) -> iced_core::mouse::Interaction {
+        let inner = self.child.as_widget().mouse_interaction(tree, layout, cursor, viewport, renderer);
+        if inner != iced_core::mouse::Interaction::None {
+            return inner;
+        }
+        if let Some(p) = cursor.position() {
+            if self.app.title_strips().iter().any(|(_, r)| r.contains(p)) {
+                return iced_core::mouse::Interaction::Grab;
+            }
+        }
+        inner
+    }
+
+    fn draw(
+        &self,
+        tree: &iced_core::widget::Tree,
+        renderer: &mut crate::ui::app::Renderer,
+        theme: &iced_core::Theme,
+        style: &iced_core::renderer::Style,
+        layout: iced_core::Layout<'_>,
+        cursor: iced_core::mouse::Cursor,
+        viewport: &iced_core::Rectangle,
+    ) {
+        self.app.grid_bounds.set(layout.bounds());
+        self.child.as_widget().draw(tree, renderer, theme, style, layout, cursor, viewport);
     }
 
     fn overlay<'b>(

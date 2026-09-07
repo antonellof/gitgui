@@ -459,6 +459,8 @@ pub struct App {
     pub tree_requested: HashSet<String>,
     pub line_sel: Option<LineSel>,
     pub panes: pane_grid::State<Pane>,
+    /// Where the pane grid was drawn last frame (for title bar hover).
+    pub grid_bounds: Cell<iced_core::Rectangle>,
     /// Layout while a file opened from the tree is shown: sidebar + editor.
     pub editor_panes: pane_grid::State<Pane>,
     /// The editor takes the whole main area (opened from the tree or --open).
@@ -550,6 +552,7 @@ impl App {
             tree_requested: HashSet::new(),
             line_sel: None,
             panes,
+            grid_bounds: Cell::new(iced_core::Rectangle::default()),
             editor_panes,
             editor_full: false,
         }
@@ -565,6 +568,36 @@ impl App {
         } else {
             &self.panes
         }
+    }
+
+    /// Title bar strips of the active layout, in window coordinates.
+    pub fn title_strips(&self) -> Vec<(pane_grid::Pane, iced_core::Rectangle)> {
+        let grid = self.grid_bounds.get();
+        if grid.width <= 0.0 {
+            return Vec::new();
+        }
+        self.active_panes()
+            .layout()
+            .pane_regions(widgets::PANE_SPACING, widgets::PANE_MIN, grid.size())
+            .into_iter()
+            .map(|(pane, r)| {
+                (
+                    pane,
+                    iced_core::Rectangle::new(
+                        Point::new(grid.x + r.x, grid.y + r.y),
+                        iced_core::Size::new(r.width, widgets::TITLE_H),
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    /// The pane whose title bar is under the pointer: the drag handle.
+    pub fn hovered_pane(&self) -> Option<pane_grid::Pane> {
+        if let Some(max) = self.active_panes().maximized() {
+            return self.title_strips().iter().find(|(p, r)| *p == max && r.contains(self.cursor)).map(|(p, _)| *p);
+        }
+        self.title_strips().iter().find(|(_, r)| r.contains(self.cursor)).map(|(p, _)| *p)
     }
 
     fn active_panes_mut(&mut self) -> &mut pane_grid::State<Pane> {
@@ -2359,6 +2392,7 @@ impl App {
         if self.no_repo {
             return self.view_no_repo();
         }
+        let hovered = self.hovered_pane();
         let grid = pane_grid_widget(self.active_panes(), |pane, kind, maximized| {
             let body: Element<'_> = match kind {
                 Pane::Sidebar => sidebar::view(self),
@@ -2379,17 +2413,17 @@ impl App {
                 Pane::Detail if self.editor.is_some() => "Editor",
                 k => k.title(),
             };
-            widgets::pane(self, pane, title, *kind == self.focus, maximized, body)
+            widgets::pane(self, pane, title, *kind == self.focus, maximized, hovered == Some(pane), body)
         })
-        .spacing(4)
-        .min_size(80)
+        .spacing(widgets::PANE_SPACING)
+        .min_size(widgets::PANE_MIN)
         .on_click(Message::PaneClicked)
         .on_drag(Message::PaneDragged)
         .on_resize(8, Message::PaneResized)
         .style(widgets::pane_grid_style);
 
         let mut main = column![].spacing(0);
-        main = main.push(container(grid).width(Length::Fill).height(Length::Fill).padding(4));
+        main = main.push(container(widgets::grid_frame(self, grid)).width(Length::Fill).height(Length::Fill).padding(4));
         if self.net.open {
             main = main.push(footer::net_log(self));
         }

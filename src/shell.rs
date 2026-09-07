@@ -52,6 +52,8 @@ pub struct FrameOut {
     pub redraw: window::RedrawRequest,
     /// Text to put on the terminal clipboard.
     pub copy: Vec<String>,
+    /// What the pointer hovers, for the terminal's pointer shape.
+    pub interaction: mouse::Interaction,
 }
 
 impl Shell {
@@ -215,9 +217,13 @@ impl Shell {
             self.resize(phys.width, phys.height, self.ppp);
         }
         app.window = self.size;
+        if let Some(p) = self.cursor.position() {
+            app.cursor = p;
+        }
         let mut events = std::mem::take(&mut self.events);
         events.push(Event::Window(window::Event::RedrawRequested(Instant::now())));
         let mut redraw = window::RedrawRequest::Wait;
+        let mut interaction = mouse::Interaction::None;
         let mut messages: Vec<Message> = Vec::new();
         let mut ops: Vec<Box<dyn iced_core::widget::Operation>> = std::mem::take(&mut app.ops);
 
@@ -239,8 +245,14 @@ impl Shell {
                 &mut self.clipboard,
                 &mut messages,
             );
-            if let user_interface::State::Updated { redraw_request, .. } = state {
+            if let user_interface::State::Updated {
+                redraw_request,
+                mouse_interaction,
+                ..
+            } = state
+            {
                 redraw = merge_redraw(redraw, redraw_request);
+                interaction = mouse_interaction;
             }
             for (ev, status) in events.iter().zip(statuses) {
                 if status == iced_core::event::Status::Ignored {
@@ -281,6 +293,7 @@ impl Shell {
         FrameOut {
             redraw,
             copy: std::mem::take(&mut self.clipboard.copied),
+            interaction,
         }
     }
 

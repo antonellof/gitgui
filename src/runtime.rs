@@ -48,6 +48,35 @@ pub fn font_size_for_cell(cell_h_px: u32, ppp: f32) -> f32 {
 /// The scale is NOT set with `set_pixels_per_point`: egui multiplies its
 /// zoom factor by `native_pixels_per_point` from `RawInput`, so setting
 /// both would double the scale. Only the raw input carries it.
+/// `OSC 22 ; <shape> ST`: the pointer shape (kitty, Ghostty, cmux). An
+/// empty shape restores the terminal's default.
+pub fn encode_pointer_shape(out: &mut Vec<u8>, shape: &str) {
+    out.extend_from_slice(b"\x1b]22;");
+    out.extend_from_slice(shape.as_bytes());
+    out.extend_from_slice(b"\x1b\\");
+}
+
+/// CSS-style pointer name for what iced reports under the pointer.
+pub fn pointer_shape(i: iced_core::mouse::Interaction) -> &'static str {
+    use iced_core::mouse::Interaction as I;
+    match i {
+        I::Pointer => "pointer",
+        I::Grab => "grab",
+        I::Grabbing => "grabbing",
+        I::Text => "text",
+        I::ResizingHorizontally => "ew-resize",
+        I::ResizingVertically => "ns-resize",
+        I::ResizingDiagonallyUp => "nesw-resize",
+        I::ResizingDiagonallyDown => "nwse-resize",
+        I::Move => "move",
+        I::NotAllowed | I::NoDrop => "not-allowed",
+        I::Crosshair => "crosshair",
+        I::Help => "help",
+        I::Wait | I::Progress => "wait",
+        _ => "",
+    }
+}
+
 /// `OSC 52 ; c ; <base64> ST`: write to the terminal clipboard.
 pub fn encode_osc52_copy(out: &mut Vec<u8>, text: &str) {
     out.extend_from_slice(b"\x1b]52;c;");
@@ -97,6 +126,7 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
             "menu" => app.update(Message::MenuOpen(crate::ui::app::MenuKind::Commit(0))),
             "stash" => app.update(Message::OpenStashDialog),
             "reset" => app.update(Message::CommitAction(0, crate::ui::app::CommitAction::Reset)),
+            "hover" => app.cursor = iced_core::Point::new(300.0, 14.0),
             "wrap" => {
                 app.wrap = true;
                 app.editor_wrap = true;
@@ -331,6 +361,7 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
     let mut resize_needed = false;
     let mut screenshot: Option<std::path::PathBuf> = None;
     let mut screenshot_reply: Option<mpsc::Sender<String>> = None;
+    let mut pointer = "";
 
     loop {
         if term::quit_requested() {
@@ -389,6 +420,11 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                 out.clear();
                 for text in pass.copy.iter().chain(app.pending_copy.iter()) {
                     encode_osc52_copy(&mut out, text);
+                }
+                let shape = pointer_shape(pass.interaction);
+                if shape != pointer {
+                    pointer = shape;
+                    encode_pointer_shape(&mut out, shape);
                 }
                 app.pending_copy.clear();
                 if fb.is_dirty() {
@@ -524,6 +560,11 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
             break;
         }
         next_deadline = Instant::now();
+    }
+    if !pointer.is_empty() {
+        out.clear();
+        encode_pointer_shape(&mut out, "");
+        let _ = term::write_all(&out);
     }
     let _ = worker.tx.send(Command::Quit);
     drop(session);
@@ -762,6 +803,39 @@ mod tests {
         let after = row(&h);
         assert_ne!(before, after, "rows should have moved under the pointer");
         assert_eq!(h.app.selection, Selection::Commit(0), "scrolling does not change the selection");
+    }
+
+    #[test]
+    fn pointer_shape_sequences() {
+        let mut out = Vec::new();
+        encode_pointer_shape(&mut out, "grab");
+        assert_eq!(out, b"\x1b]22;grab\x1b\\");
+        out.clear();
+        encode_pointer_shape(&mut out, "");
+        assert_eq!(out, b"\x1b]22;\x1b\\");
+        assert_eq!(pointer_shape(iced_core::mouse::Interaction::Grab), "grab");
+        assert_eq!(pointer_shape(iced_core::mouse::Interaction::None), "");
+    }
+
+    #[test]
+    fn title_bar_hover_highlights_and_asks_for_a_grab_pointer() {
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        let mut h = Harness::new(&t.dir);
+        let log = h.app.pane_of(Pane::Log).unwrap();
+        let region = h.app.panes.layout().pane_regions(4.0, 80.0, iced_core::Size::new(900.0, 700.0 - 34.0 - 8.0));
+        let r = region[&log];
+        // The title bar is the top strip of the pane; move over its middle.
+        let (x, y) = ((r.x + r.width / 2.0) as i32 + 4, (r.y + 12.0) as i32 + 4);
+        h.key(format!("\x1b[<35;{x};{y}M").as_bytes());
+        assert_eq!(h.app.hovered_pane(), Some(log));
+        let out = h.shell.frame(&mut h.app, &mut h.fb);
+        assert_eq!(pointer_shape(out.interaction), "grab");
+        // Leaving the bar clears it.
+        let (x, y) = ((r.x + r.width / 2.0) as i32, (r.y + r.height / 2.0) as i32);
+        h.key(format!("\x1b[<35;{x};{y}M").as_bytes());
+        assert_eq!(h.app.hovered_pane(), None);
+        assert_ne!(pointer_shape(h.shell.frame(&mut h.app, &mut h.fb).interaction), "grab");
     }
 
     #[test]

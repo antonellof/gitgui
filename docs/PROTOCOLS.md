@@ -1,5 +1,7 @@
 # Terminal protocols used by gitgui
 
+Pointer shape: `OSC 22 ; <shape> ST` (`ESC ] 22 ; grab ESC \`) sets the terminal's mouse pointer (kitty, Ghostty, cmux); an empty shape restores the default. Sent whenever what iced reports under the pointer changes (grab over a pane title bar, resize over a pane gap, pointer over rows), and reset on exit.
+
 Exact sequences. `ESC` is 0x1B, `CSI` is `ESC [`, `APC` is `ESC _`, `ST` is `ESC \`. All numbers are decimal ASCII.
 
 ## 1. Session setup and teardown
