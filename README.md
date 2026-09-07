@@ -48,6 +48,7 @@ Conflicts open a three-way resolver: ours, result, theirs, with per-conflict but
 gitgui                    open the repository containing the current directory
 gitgui <path>             open the repository at <path>
 gitgui --split right      open in a new terminal split next to your agent (cmux, kitty)
+gitgui --window           open a desktop window instead (automatic in terminals without kitty graphics)
 gitgui --open src/main.rs open a file in the built-in editor at startup
 gitgui --editor "code -w" editor for Shift+E (or: git config gitgui.editor nano)
 gitgui ls                 list running gitgui instances
@@ -82,6 +83,7 @@ Give the agent the control API by linking `skill/SKILL.md` into its skills direc
 - **Panes**: repository, files, commits, changes and diff on a pane grid. Drag a title bar to move a pane, drag the gaps to resize, maximize with the arrows or `1` .. `5`, hide with the x and bring it back from the footer. The commit list's columns resize from its header. The layout, hidden panes, collapsed sections, wrap and diff settings are saved per repository in `.git/gitgui.json` and restored on the next start (`GITGUI_NO_STATE=1` skips this).
 - **File tree**: its own pane with the whole working tree, folders listed on demand, ignored entries dimmed, changed files colored. Repository sections collapse from their arrow.
 - **Editor**: built-in, on iced's text editor with syntax colors for the common languages, undo, `Ctrl+S`. A file opened from the tree takes the whole area next to the sidebar. `Shift+E` opens the file in your own editor in a new split (GUI editors such as `code` open detached), `Shift+O` opens cmux's file preview.
+- **Desktop window**: the same UI in a native window with `--window`, or on its own when the terminal has no kitty graphics (Terminal.app, iTerm2, VS Code's terminal, tmux). Keys, panes, the state file and the agent API work the same; the terminal split and cmux preview do not apply.
 - **Refresh**: watches the repository and refreshes on its own when another pane changes it.
 - **Agent API**: Unix socket, JSON lines, `gitgui ls` and `gitgui action`.
 
@@ -126,11 +128,11 @@ Frames go through POSIX shared memory locally and zlib + base64 over SSH (detect
 | Terminal | kitty graphics, kitty keyboard, SGR pixel mouse |
 | Splits | cmux CLI, kitty `@ launch`, Ghostty hint fallback |
 
-Same trick as [terminal-browser](https://github.com/zenbu-labs/terminal-browser) and [terminal-code](https://github.com/zenbu-labs/terminal-code), minus Chromium. tmux and Zellij are not supported yet (kitty graphics need passthrough).
+Same trick as [terminal-browser](https://github.com/zenbu-labs/terminal-browser) and [terminal-code](https://github.com/zenbu-labs/terminal-code), minus Chromium. Under tmux, Zellij or a terminal without kitty graphics, gitgui opens a desktop window instead (winit + softbuffer, still the tiny-skia renderer, no GPU).
 
 ## Install options
 
-Requires macOS or Linux and a kitty-graphics terminal (cmux, Ghostty, kitty, WezTerm). The one-liner at the top downloads a release binary into `~/.local/bin`, or builds from source with `cargo` when there is no binary for your platform.
+Requires macOS or Linux. In-terminal rendering needs a kitty-graphics terminal (cmux, Ghostty, kitty, WezTerm); anywhere else gitgui opens a desktop window. The one-liner at the top downloads a release binary into `~/.local/bin`, or builds from source with `cargo` when there is no binary for your platform.
 
 ```bash
 GITGUI_VERSION=0.5.1 GITGUI_INSTALL_DIR=~/bin bash scripts/install.sh   # pin a version, other dir

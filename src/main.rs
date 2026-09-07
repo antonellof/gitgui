@@ -10,6 +10,7 @@ mod shell;
 mod split;
 mod term;
 mod ui;
+mod window;
 
 use std::env;
 use std::process::ExitCode;
@@ -107,11 +108,20 @@ fn main() -> ExitCode {
         let r = runtime::run_dump_input();
         term::restore_terminal();
         r
+    } else if cli.window || !term::is_tty() {
+        window::run_window(&opts)
     } else {
         term::install_handlers();
         let r = runtime::run_interactive(&opts);
         term::restore_terminal();
-        r
+        // No kitty graphics here: the same UI in a desktop window instead.
+        match r {
+            Ok(code) if code == runtime::NO_GRAPHICS || code == runtime::NO_GRAPHICS_MUX => {
+                eprintln!("gitgui: opening a desktop window instead (--window skips the probe).");
+                window::run_window(&opts)
+            }
+            other => other,
+        }
     };
     match result {
         Ok(code) => ExitCode::from(code as u8),

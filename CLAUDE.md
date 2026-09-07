@@ -9,7 +9,8 @@ Read `docs/SPEC.md` (architecture, UI, git layer, milestones) and `docs/PROTOCOL
 ## Stack
 
 - Rust, latest stable, edition 2021
-- `iced_core` + `iced_runtime` + `iced_widget` + `iced_renderer` (tiny-skia backend only, no `iced` umbrella crate, no winit, no wgpu)
+- `iced_core` + `iced_runtime` + `iced_widget` + `iced_renderer` (tiny-skia backend only, no wgpu) for the terminal path
+- `iced` umbrella crate (tiny-skia + winit + softbuffer, no wgpu) only for `window.rs`, the desktop window fallback
 - `tiny-skia` for the pixmap the renderer draws into
 - `git2` (libgit2) for all repository reads and index/commit writes; `git` CLI subprocess only for network ops (fetch, pull, push)
 - `libc` for termios, ioctl, POSIX shared memory
@@ -56,6 +57,7 @@ src/
     widgets.rs       buttons, rows, sections, pane chrome, toasts, Layered, widget ids
     state.rs         per-repository UI state (layouts, hidden panes, sections, wrap, columns) in <gitdir>/gitgui.json
     theme.rs         colors derived from terminal palette (OSC 10/11 query, fallback dark), iced Theme
+  window.rs          desktop window mode: the same App through iced::application (winit + softbuffer), --window or no kitty graphics
   split.rs           open in a terminal split (cmux, Ghostty) with in-place fallback
   agent.rs           unix socket JSON-lines control API (phase 5)
 ```
@@ -65,7 +67,7 @@ src/
 Toolchain at kickoff: rustc 1.98.0, cargo 1.98.0 (2026-08). Both crates below are pinned with `=` in Cargo.toml.
 
 - `iced_core`, `iced_runtime`, `iced_renderer` `=0.14.0`, `iced_widget` `=0.14.2`, `tiny-skia` `=0.11.4`. API notes:
-  - No window, no `iced` crate: `iced_runtime::user_interface::UserInterface::build(element, size, cache, &mut renderer)`, `update(&events, cursor, &mut renderer, &mut clipboard, &mut messages)`, `draw(...)`, `into_cache()`. `iced_renderer::Renderer::new(font, size)` with only the tiny-skia feature; `Renderer::draw(&mut PixmapMut, &mut Mask, &Viewport, &[damage], bg)` rasterizes.
+  - Terminal path, no window: `iced_runtime::user_interface::UserInterface::build(element, size, cache, &mut renderer)`, `update(&events, cursor, &mut renderer, &mut clipboard, &mut messages)`, `draw(...)`, `into_cache()`. `iced_renderer::Renderer::new(font, size)` with only the tiny-skia feature; `Renderer::draw(&mut PixmapMut, &mut Mask, &Viewport, &[damage], bg)` rasterizes.
   - Custom widgets implement `iced_core::Widget`: `size`, `layout`, `update(tree, event, layout, cursor, renderer, clipboard, shell, viewport)`, `draw`. Widget state lives in `tree.state` (`tree::Tag::of::<State>()`).
   - Text in custom widgets goes through `log::draw_text` (handles tiny-skia's clip quirks) and `log::measure` / `log::fit` (a `Paragraph` per call: cache the results).
   - Geometry (the graph) uses `iced_widget::canvas::{Frame, Path, Stroke}` with `Frame::with_bounds` in absolute coordinates, never `with_translation`.
@@ -84,6 +86,7 @@ cargo run -- --headless-frame /tmp/frame.png --repo .      # render one frame to
 cargo run -- --dump-input                                   # print parsed input events, Ctrl+C to exit
 cargo run -- --probe                                        # print detected terminal capabilities
 cargo run --release                                         # interactive, in current repo
+cargo run --release -- --window                             # desktop window (also automatic without kitty graphics)
 ```
 
 ## Working rules

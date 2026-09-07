@@ -313,6 +313,32 @@ pub enum HunkAction {
     Discard,
 }
 
+/// Work handed to the window-mode program from another thread. Boxed behind
+/// a mutex so `Message` stays `Clone + Debug`; the receiver takes it once.
+#[derive(Clone)]
+pub struct Inbox(Arc<std::sync::Mutex<Option<External>>>);
+
+impl Inbox {
+    pub fn new(e: External) -> Self {
+        Inbox(Arc::new(std::sync::Mutex::new(Some(e))))
+    }
+
+    pub fn take(&self) -> Option<External> {
+        self.0.lock().ok().and_then(|mut g| g.take())
+    }
+}
+
+impl std::fmt::Debug for Inbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Inbox")
+    }
+}
+
+pub enum External {
+    Reply(Reply),
+    Agent(crate::agent::AgentJob),
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     /// A key press no widget consumed.
@@ -359,6 +385,16 @@ pub enum Message {
     DiffWhitespace,
     /// Commit list column widths after a header drag: (author, date).
     LogColumns(f32, f32),
+    /// Window mode only: a git reply or agent job from another thread.
+    External(Inbox),
+    /// Window mode only: a timer tick (toasts, state file).
+    Tick,
+    /// Window mode only: the window's logical size changed.
+    WindowResized(iced_core::Size),
+    /// Window mode only: the pointer moved (the shell sets `cursor` itself).
+    CursorMoved(Point),
+    /// Window mode only: modifier keys changed.
+    ModifiersChanged(keyboard::Modifiers),
     DiffWrap,
     EditorWrap,
     DiffLineClick { hunk: usize, line: usize, shift: bool },
@@ -1893,6 +1929,10 @@ impl App {
             Message::DiffNext(dir) => self.diff_next_match(dir),
             Message::DiffContext(d) => self.change_diff_context(d),
             Message::LogColumns(author, age) => self.log_columns = (author, age),
+            Message::External(_) | Message::Tick => {}
+            Message::WindowResized(size) => self.window = size,
+            Message::CursorMoved(p) => self.cursor = p,
+            Message::ModifiersChanged(m) => self.modifiers = m,
             Message::DiffWhitespace => self.toggle_whitespace(),
             Message::DiffWrap => self.wrap = !self.wrap,
             Message::EditorWrap => self.editor_wrap = !self.editor_wrap,

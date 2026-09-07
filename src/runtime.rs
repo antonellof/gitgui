@@ -21,6 +21,7 @@ use crate::ui::theme::Theme;
 
 const ESC_TIMEOUT: Duration = Duration::from_millis(50);
 
+#[derive(Clone)]
 pub struct Options {
     pub no_shm: bool,
     pub crash: bool,
@@ -220,6 +221,10 @@ fn spawn_stdin_thread<T: Send + 'static>(
         .expect("spawn stdin thread");
 }
 
+/// Exit codes of the probe that main turns into the desktop window fallback.
+pub const NO_GRAPHICS: i32 = 3;
+pub const NO_GRAPHICS_MUX: i32 = 4;
+
 struct Probed {
     caps: probe::Capabilities,
     transport: kitty::Transport,
@@ -234,11 +239,11 @@ fn probe_or_exit(no_shm: bool) -> anyhow::Result<Result<Probed, i32>> {
     drop(raw);
     if let Some(m) = &caps.multiplexer {
         eprintln!("gitgui: running inside {m}, which does not pass kitty graphics through. Run it directly in Ghostty, cmux or kitty.");
-        return Ok(Err(4));
+        return Ok(Err(NO_GRAPHICS_MUX));
     }
     if !caps.kitty_graphics {
         eprintln!("gitgui: this terminal did not answer the kitty graphics probe. Supported: Ghostty, cmux, kitty, WezTerm.");
-        return Ok(Err(3));
+        return Ok(Err(NO_GRAPHICS));
     }
     let transport = if caps.shm && !no_shm {
         kitty::Transport::Shm
