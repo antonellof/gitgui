@@ -111,7 +111,7 @@ fn worktree(app: &App) -> Element<'_> {
         for f in &s.conflicted {
             list = list.push(conflict_row(app, f));
         }
-        col = col.push(scrollable(list.padding([0, 4])).height(Length::Shrink));
+        col = col.push(scrollable(list.padding([0, 4])).spacing(6).height(Length::Shrink));
     }
 
     // Unstaged.
@@ -134,7 +134,7 @@ fn worktree(app: &App) -> Element<'_> {
     if unstaged_n == 0 {
         list = list.push(container(text("nothing to stage").size(12).color(t.weak)).padding([2, 12]));
     }
-    col = col.push(scrollable(list.padding([0, 4])).height(Length::FillPortion(1)));
+    col = col.push(scrollable(list.padding([0, 4])).spacing(6).height(Length::FillPortion(1)));
 
     // Staged.
     col = col.push(
@@ -154,7 +154,7 @@ fn worktree(app: &App) -> Element<'_> {
     if s.staged.is_empty() {
         list = list.push(container(text("nothing staged").size(12).color(t.weak)).padding([2, 12]));
     }
-    col = col.push(scrollable(list.padding([0, 4])).height(Length::FillPortion(1)));
+    col = col.push(scrollable(list.padding([0, 4])).spacing(6).height(Length::FillPortion(1)));
 
     // Commit box.
     let editor = iced_widget::TextEditor::new(&app.commit_msg)
@@ -254,6 +254,6 @@ fn commit(app: &App, idx: usize) -> Element<'_> {
             list = list.push(text("loading").size(12).color(t.weak));
         }
     }
-    col = col.push(scrollable(list).height(Length::Fill));
+    col = col.push(scrollable(list).spacing(6).height(Length::Fill));
     col.into()
 }

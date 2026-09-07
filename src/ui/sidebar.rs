@@ -183,7 +183,10 @@ pub fn view(app: &App) -> Element<'_> {
         col = col.push(tree::view(app));
     }
 
+    // `spacing` keeps the scrollbar beside the content instead of over its
+    // right edge, where the section buttons live.
     scrollable(col.padding([0, 4]))
+        .spacing(6)
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
