@@ -1022,6 +1022,64 @@ mod tests {
     }
 
     #[test]
+    fn agent_writes_with_an_id_are_safe_to_retry() {
+        use crate::agent::{handle_in_app, AgentCmd};
+        use crate::ui::app::AgentOutcome;
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        t.write("a.txt", "two\n");
+        let mut h = Harness::new(&t.dir);
+        let mut shot = None;
+        let parse = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+
+        // First send queues; a retry before the worker answered says so.
+        let r = parse(&handle_in_app(&mut h.app, AgentCmd::Stage { paths: vec!["a.txt".into()], id: Some("s1".into()) }, &mut shot));
+        assert_eq!(r["data"]["queued"], "stage");
+        assert_eq!(r["data"]["id"], "s1");
+        let r = parse(&handle_in_app(&mut h.app, AgentCmd::Stage { paths: vec!["a.txt".into()], id: Some("s1".into()) }, &mut shot));
+        assert_eq!(r["data"]["duplicate"], true);
+        assert_eq!(r["data"]["state"], "queued");
+        assert_eq!(h.app.pending.len(), 1, "the retry did not queue again");
+        h.settle();
+
+        // After the worker ran it, the retry returns the recorded result.
+        let r = parse(&handle_in_app(&mut h.app, AgentCmd::Stage { paths: vec!["a.txt".into()], id: Some("s1".into()) }, &mut shot));
+        assert_eq!(r["data"]["state"], "done");
+        assert_eq!(r["data"]["ok"], true);
+        assert!(h.app.pending.is_empty());
+        let r = parse(&handle_in_app(&mut h.app, AgentCmd::Result { id: "s1".into() }, &mut shot));
+        assert_eq!(r["data"]["duplicate"], false);
+        let r = parse(&handle_in_app(&mut h.app, AgentCmd::Result { id: "nope".into() }, &mut shot));
+        assert_eq!(r["ok"], false);
+
+        // A commit, then a retried commit with a new id: nothing to commit.
+        let r = parse(&handle_in_app(&mut h.app, AgentCmd::Commit { message: "two".into(), id: Some("c1".into()) }, &mut shot));
+        assert_eq!(r["data"]["queued"], "commit");
+        h.settle();
+        assert_eq!(h.app.agent_result("c1"), Some(&AgentOutcome::Done { ok: true, message: "committed".into() }));
+        let st = parse(&handle_in_app(&mut h.app, AgentCmd::Status, &mut shot));
+        assert_eq!(st["data"]["last_op"]["label"], "commit");
+        assert_eq!(st["data"]["last_op"]["ok"], true);
+        assert_eq!(st["data"]["head"].as_str().unwrap().len(), 40);
+        handle_in_app(&mut h.app, AgentCmd::Commit { message: "two".into(), id: Some("c2".into()) }, &mut shot);
+        h.settle();
+        match h.app.agent_result("c2") {
+            Some(AgentOutcome::Done { ok: false, message }) => assert!(message.contains("nothing to commit"), "{message}"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(h.app.snapshot.commits.len(), 2);
+
+        // commit_and_push answers twice; a failed push ends it as an error.
+        h.app.run_for_agent(Some("cp".into()), Command::CommitAndPush { message: "m".into(), amend: false });
+        h.app.pending.clear();
+        h.app.apply(Reply::Op { label: "commit", result: Ok("committed".into()) });
+        assert_eq!(h.app.agent_result("cp"), Some(&AgentOutcome::Queued));
+        h.app.apply(Reply::Op { label: "push", result: Err("no remote".into()) });
+        assert_eq!(h.app.agent_result("cp"), Some(&AgentOutcome::Done { ok: false, message: "no remote".into() }));
+        h.frame();
+    }
+
+    #[test]
     fn font_size_tracks_cell_height() {
         assert_eq!(font_size_for_cell(0, 2.0), 13.0);
         assert_eq!(font_size_for_cell(34, 2.0), 13.0);

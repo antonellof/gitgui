@@ -277,6 +277,8 @@ Mirror terminal-browser's `action` idea so a coding agent in the neighboring pan
 {"cmd":"list"}                        // list open instances (answered by any instance via a directory scan)
 ```
 
+Writes answer `{"queued":..}` at once and run on the git worker. `status` carries `busy`, `head` (the HEAD oid) and `last_op` (`label`, `ok`, `message` of the last finished write). Every write takes an optional `id`: `App::run_for_agent` records `Queued` under it, and when the worker's `Op` replies come back in queue order (`App::queued_ops`, `commit_and_push` expects `commit` then `push`) the id flips to `Done { ok, message }`; a repeat with a known id returns that record with `duplicate: true` instead of queueing again, and `{"cmd":"result","id":..}` reads it. The last 256 ids are kept. `Repo::commit` refuses an index equal to HEAD, so an untagged retried commit fails instead of adding an empty commit.
+
 `gitgui action <json>` and `gitgui ls` are the CLI front ends. Ship a `skill/SKILL.md` describing the API for agents, same as terminal-browser does.
 
 ## 8. Milestones

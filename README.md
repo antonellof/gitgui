@@ -87,7 +87,7 @@ Give the agent the control API by linking `skill/SKILL.md` into its skills direc
 - **Open another repository**: `Ctrl+O`, the `Change folder` button in the footer, or the one on the not-a-repository screen. A folder dialog with the subfolders listed, git repositories marked, `..` to go up, or type a path.
 - **SHA-256 repositories**: `git init --object-format=sha256` repositories open, read and commit like any other.
 - **Refresh**: watches the repository and refreshes on its own when another pane changes it.
-- **Agent API**: Unix socket, JSON lines, `gitgui ls` and `gitgui action`.
+- **Agent API**: Unix socket, JSON lines, `gitgui ls` and `gitgui action`. Writes take an `id` so a retry after a lost response returns the first outcome instead of running twice; `status` reports `head` and the last operation's result.
 
 Not planned: an interactive rebase editor, bisect, submodules, worktrees. Use the git CLI in the neighbouring pane. Open items: [docs/PLAN.md](docs/PLAN.md).
 

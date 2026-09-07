@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::git::ops::Command;
-use crate::ui::app::{App, Selection};
+use crate::ui::app::{AgentOutcome, App, Selection};
 
 /// Where instance sockets and metadata live.
 pub fn socket_dir() -> PathBuf {
@@ -42,20 +42,51 @@ pub struct InstanceMeta {
 #[serde(tag = "cmd", rename_all = "lowercase")]
 pub enum AgentCmd {
     Status,
-    Select { oid: String },
-    Stage { paths: Vec<String> },
-    Unstage { paths: Vec<String> },
-    Commit { message: String },
+    Select {
+        oid: String,
+    },
+    Stage {
+        paths: Vec<String>,
+        #[serde(default)]
+        id: Option<String>,
+    },
+    Unstage {
+        paths: Vec<String>,
+        #[serde(default)]
+        id: Option<String>,
+    },
+    Commit {
+        message: String,
+        #[serde(default)]
+        id: Option<String>,
+    },
     #[serde(rename = "commit_and_push")]
     CommitAndPush {
         message: String,
         #[serde(default)]
         amend: bool,
+        #[serde(default)]
+        id: Option<String>,
     },
-    Fetch,
-    Pull,
-    Push,
-    Screenshot { path: String },
+    Fetch {
+        #[serde(default)]
+        id: Option<String>,
+    },
+    Pull {
+        #[serde(default)]
+        id: Option<String>,
+    },
+    Push {
+        #[serde(default)]
+        id: Option<String>,
+    },
+    /// The outcome of a write sent with an `id`.
+    Result {
+        id: String,
+    },
+    Screenshot {
+        path: String,
+    },
     List,
 }
 
@@ -180,49 +211,45 @@ pub fn handle_in_app(app: &mut App, cmd: AgentCmd, screenshot: &mut Option<PathB
             Ok(()) => ok(json!({ "selected": selection_label(app) })),
             Err(e) => err(e),
         },
-        AgentCmd::Stage { paths } => {
+        AgentCmd::Stage { paths, id } => {
             if paths.is_empty() {
                 return err("paths is empty");
             }
-            app.run(Command::Stage(paths));
-            ok(json!({ "queued": "stage" }))
+            queue(app, id, Command::Stage(paths), "stage")
         }
-        AgentCmd::Unstage { paths } => {
+        AgentCmd::Unstage { paths, id } => {
             if paths.is_empty() {
                 return err("paths is empty");
             }
-            app.run(Command::Unstage(paths));
-            ok(json!({ "queued": "unstage" }))
+            queue(app, id, Command::Unstage(paths), "unstage")
         }
-        AgentCmd::Commit { message } => {
+        AgentCmd::Commit { message, id } => {
             if message.trim().is_empty() {
                 return err("message is empty");
             }
-            app.run(Command::Commit {
-                message,
-                amend: false,
-            });
-            ok(json!({ "queued": "commit" }))
+            queue(
+                app,
+                id,
+                Command::Commit {
+                    message,
+                    amend: false,
+                },
+                "commit",
+            )
         }
-        AgentCmd::CommitAndPush { message, amend } => {
+        AgentCmd::CommitAndPush { message, amend, id } => {
             if message.trim().is_empty() {
                 return err("message is empty");
             }
-            app.run(Command::CommitAndPush { message, amend });
-            ok(json!({ "queued": "commit_and_push" }))
+            queue(app, id, Command::CommitAndPush { message, amend }, "commit_and_push")
         }
-        AgentCmd::Fetch => {
-            app.run(Command::Fetch);
-            ok(json!({ "queued": "fetch" }))
-        }
-        AgentCmd::Pull => {
-            app.run(Command::Pull);
-            ok(json!({ "queued": "pull" }))
-        }
-        AgentCmd::Push => {
-            app.run(Command::Push);
-            ok(json!({ "queued": "push" }))
-        }
+        AgentCmd::Fetch { id } => queue(app, id, Command::Fetch, "fetch"),
+        AgentCmd::Pull { id } => queue(app, id, Command::Pull, "pull"),
+        AgentCmd::Push { id } => queue(app, id, Command::Push, "push"),
+        AgentCmd::Result { id } => match app.agent_result(&id) {
+            Some(outcome) => ok(outcome_json(&id, outcome, false)),
+            None => err(format!("unknown id {id}")),
+        },
         AgentCmd::Screenshot { path } => {
             screenshot.replace(PathBuf::from(path));
             ok(json!({ "queued": "screenshot" }))
@@ -231,11 +258,48 @@ pub fn handle_in_app(app: &mut App, cmd: AgentCmd, screenshot: &mut Option<PathB
     }
 }
 
+/// Queue a write. With an `id`, a repeat of an id already seen returns what
+/// happened to the first one instead of queueing again.
+fn queue(app: &mut App, id: Option<String>, cmd: Command, name: &str) -> String {
+    if let Some(id) = &id {
+        if let Some(outcome) = app.agent_result(id) {
+            return ok(outcome_json(id, outcome, true));
+        }
+    }
+    if !app.run_for_agent(id.clone(), cmd) {
+        return err("not a git repository");
+    }
+    let mut v = json!({ "queued": name });
+    if let Some(id) = id {
+        v["id"] = json!(id);
+    }
+    ok(v)
+}
+
+fn outcome_json(id: &str, outcome: &AgentOutcome, duplicate: bool) -> Value {
+    match outcome {
+        AgentOutcome::Queued => json!({ "id": id, "state": "queued", "duplicate": duplicate }),
+        AgentOutcome::Done { ok, message } => json!({
+            "id": id,
+            "state": "done",
+            "ok": ok,
+            "result": message,
+            "duplicate": duplicate,
+        }),
+    }
+}
+
 fn status_json(app: &App) -> Value {
     json!({
         "pid": std::process::id(),
         "repo": app.snapshot.path,
         "branch": app.snapshot.head.as_ref().and_then(|h| h.branch_name.clone()),
+        "head": app.snapshot.head.as_ref().and_then(|h| h.oid).map(|o| o.to_string()),
+        "last_op": app.last_result.as_ref().map(|r| json!({
+            "label": r.label,
+            "ok": r.ok,
+            "message": r.message,
+        })),
         "detached": app.snapshot.head.as_ref().is_some_and(|h| h.detached),
         "staged": app.snapshot.staged.len(),
         "unstaged": app.snapshot.unstaged.len(),
@@ -388,7 +452,12 @@ mod tests {
         let s: AgentCmd = serde_json::from_str(r#"{"cmd":"commit_and_push","message":"fix"}"#).unwrap();
         assert!(matches!(s, AgentCmd::CommitAndPush { .. }));
         let s: AgentCmd = serde_json::from_str(r#"{"cmd":"push"}"#).unwrap();
-        assert!(matches!(s, AgentCmd::Push));
+        assert!(matches!(s, AgentCmd::Push { id: None }));
+        let s: AgentCmd =
+            serde_json::from_str(r#"{"cmd":"commit_and_push","message":"fix","id":"req-7"}"#).unwrap();
+        assert!(matches!(s, AgentCmd::CommitAndPush { id: Some(ref i), .. } if i == "req-7"));
+        let s: AgentCmd = serde_json::from_str(r#"{"cmd":"result","id":"req-7"}"#).unwrap();
+        assert!(matches!(s, AgentCmd::Result { ref id } if id == "req-7"));
     }
 
     #[test]

@@ -1106,6 +1106,15 @@ impl Repo {
             )?);
         }
         let parent = self.repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+        // Like git: an index equal to HEAD (or an empty first commit) is not a
+        // commit. This keeps a retried agent commit from producing an empty one.
+        let unchanged = match &parent {
+            Some(p) => p.tree_id() == tree_id,
+            None => tree.is_empty(),
+        };
+        if unchanged {
+            return Err(git2::Error::from_str("nothing to commit, the index matches HEAD").into());
+        }
         let parents: Vec<&git2::Commit> = parent.iter().collect();
         Ok(self
             .repo
@@ -1891,6 +1900,24 @@ mod tests {
         assert_eq!(src[0].path, "src/main.rs");
         assert!(!src[0].is_dir);
         assert!(r.list_dir("missing").is_err());
+    }
+
+    #[test]
+    fn commit_refuses_an_index_equal_to_head() {
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        let repo = Repo::open(&t.dir).unwrap();
+        let err = repo.commit("again", false).unwrap_err();
+        assert!(err.to_string().contains("nothing to commit"), "{err}");
+        // Amend still works, and a real change commits.
+        repo.commit("init reworded", true).unwrap();
+        t.write("a.txt", "two\n");
+        repo.stage(&["a.txt".to_owned()]).unwrap();
+        repo.commit("second", false).unwrap();
+        let mut repo = repo;
+        let snap = repo.snapshot(10).unwrap();
+        assert_eq!(snap.commits.len(), 2);
+        assert_eq!(snap.commits[1].summary, "init reworded");
     }
 
     /// A repository created with `git init --object-format=sha256`: libgit2

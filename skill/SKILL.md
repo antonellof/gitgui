@@ -34,7 +34,7 @@ automatically via the controlling tty. Otherwise pass `--pid`.
 
 | Command | JSON | Notes |
 |---|---|---|
-| Status | `{"cmd":"status"}` | Branch, dirty counts, selection |
+| Status | `{"cmd":"status"}` | Branch, `head` oid, dirty counts, selection, `busy`, `last_op` |
 | Select commit | `{"cmd":"select","oid":"abc123"}` | Prefix match on short or full oid; use `"working-tree"` for the index |
 | Stage | `{"cmd":"stage","paths":["a.rs"]}` | Queues a stage on the worker thread |
 | Unstage | `{"cmd":"unstage","paths":["a.rs"]}` | Queues an unstage |
@@ -43,11 +43,25 @@ automatically via the controlling tty. Otherwise pass `--pid`.
 | Fetch | `{"cmd":"fetch"}` | Opens network log |
 | Pull | `{"cmd":"pull"}` | Opens network log |
 | Push | `{"cmd":"push"}` | Opens network log |
+| Result | `{"cmd":"result","id":"req-7"}` | Outcome of a write sent with that `id` |
 | Screenshot | `{"cmd":"screenshot","path":"/tmp/frame.png"}` | Saves the current frame as PNG |
 | List | `{"cmd":"list"}` | Same as `gitgui ls` |
 
 Write operations return `{"queued":"..."}` immediately; poll `status` until
-`busy` is zero and counts change.
+`busy` is zero, then read `last_op` (`{"label","ok","message"}`) and `head`.
+
+Retries: every write accepts an optional `id` (any string you pick). If the
+response is lost or you time out, send the same command with the same `id`:
+gitgui does not queue it again, it answers with what happened to the first
+one, `{"id":..,"state":"queued"|"done","ok":..,"result":..,"duplicate":true}`.
+`{"cmd":"result","id":..}` reads the same record. Without an `id` a retry is a
+new write; a second `commit` with nothing staged fails with
+"nothing to commit" rather than creating an empty commit.
+
+```bash
+gitgui action '{"cmd":"commit_and_push","message":"fix layout","id":"cp-1"}'
+gitgui action '{"cmd":"result","id":"cp-1"}'
+```
 
 ## Open in a split
 

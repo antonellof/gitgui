@@ -311,6 +311,7 @@ neighbouring pane.
 
 ### Recently shipped (v0.1.1 to v0.6.0)
 
+- agent-idempotent branch (unreleased): agent writes take an `id` and a retry returns the first outcome; `status` has `head` and `last_op`; `{"cmd":"result"}`; `Repo::commit` refuses an index equal to HEAD
 - v0.6.0: `window.rs`, the same App in a native window through the iced umbrella crate, `--window` or automatic without kitty graphics; open another repository from a folder dialog (`Ctrl+O`, footer `Change folder`, no-repository screen), `Command::Open`; logo on the no-repository screen and as the app icon; zoom keys; SHA-256 repositories through git2's `unstable-sha256`
 - v0.5.1: layout and settings saved per repository in `.git/gitgui.json` (`ui/state.rs`)
 - v0.5.0: Files as its own pane, hide / show panes from an x and the footer, macOS-style maximize glyphs, title bar hover highlight and OSC 22 pointer shapes, resizable commit columns, scrollbars beside the content, README screenshots from the demo repos

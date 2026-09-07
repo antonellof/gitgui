@@ -3,7 +3,7 @@
 //! can be dragged, resized and maximized.
 
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -319,6 +319,32 @@ pub enum HunkAction {
     Discard,
 }
 
+/// Result of the last write the worker finished, for the agent's `status`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpResult {
+    pub label: &'static str,
+    pub ok: bool,
+    pub message: String,
+}
+
+/// What became of an agent write sent with an `id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentOutcome {
+    Queued,
+    Done { ok: bool, message: String },
+}
+
+/// A queued command that will answer with `Op` replies, in worker order.
+/// `commit_and_push` answers twice (commit, then push).
+#[derive(Debug)]
+struct QueuedOp {
+    id: Option<String>,
+    labels: Vec<&'static str>,
+    next: usize,
+}
+
+const AGENT_RESULTS_KEPT: usize = 256;
+
 /// Work handed to the window-mode program from another thread. Boxed behind
 /// a mutex so `Message` stays `Clone + Debug`; the receiver takes it once.
 #[derive(Clone)]
@@ -544,6 +570,15 @@ pub struct App {
     pub log_columns: (f32, f32),
     /// UI zoom, Ctrl+= / Ctrl+- / Ctrl+0. The runtime scales points by it.
     pub zoom: f32,
+    /// The last finished write (label, ok, message).
+    pub last_result: Option<OpResult>,
+    /// Commands in flight that answer with `Op` replies, worker order.
+    queued_ops: VecDeque<QueuedOp>,
+    /// Outcomes by agent id, so a retried write returns the first result.
+    agent_results: HashMap<String, AgentOutcome>,
+    agent_order: VecDeque<String>,
+    /// Id for the next `run`, set by `run_for_agent`.
+    agent_tag: Option<String>,
     /// Where the per-repository UI state is saved, if there is a repository.
     pub state_path: Option<PathBuf>,
     /// The state as last captured; a change marks the file for writing.
@@ -648,6 +683,11 @@ impl App {
             editor_full: false,
             log_columns: (110.0, 44.0),
             zoom: 1.0,
+            last_result: None,
+            queued_ops: VecDeque::new(),
+            agent_results: HashMap::new(),
+            agent_order: VecDeque::new(),
+            agent_tag: None,
             state_path,
             persisted: state::Persisted::default(),
             state_dirty: false,
@@ -934,6 +974,15 @@ impl App {
             }
             Reply::Op { label, result } => {
                 self.busy = self.busy.saturating_sub(1);
+                self.last_result = Some(OpResult {
+                    label,
+                    ok: result.is_ok(),
+                    message: match &result {
+                        Ok(m) => m.clone(),
+                        Err(e) => e.clone(),
+                    },
+                });
+                self.settle_queued_op(label, &result);
                 match result {
                     Ok(msg) => {
                         if label == "commit" {
@@ -966,13 +1015,93 @@ impl App {
     }
 
     /// Queue a write or network command.
+    /// Queue a command for the worker.
     pub fn run(&mut self, cmd: Command) {
+        let tag = self.agent_tag.take();
         if self.no_repo && !matches!(cmd, Command::InitRepo) {
             self.toast("not a git repository", true);
             return;
         }
+        let label = cmd.label();
+        if !label.is_empty() {
+            let labels = if matches!(cmd, Command::CommitAndPush { .. }) {
+                vec!["commit", "push"]
+            } else {
+                vec![label]
+            };
+            self.queued_ops.push_back(QueuedOp {
+                id: tag.clone(),
+                labels,
+                next: 0,
+            });
+        }
+        if let Some(id) = tag {
+            self.record_agent(id, AgentOutcome::Queued);
+        }
         self.busy += 1;
         self.pending.push(cmd);
+    }
+
+    /// `run` for an agent write carrying an idempotency `id`: the outcome is
+    /// kept under that id and a retry with the same id gets it back. False
+    /// when there is no repository to run it in.
+    pub fn run_for_agent(&mut self, id: Option<String>, cmd: Command) -> bool {
+        if self.no_repo && !matches!(cmd, Command::InitRepo) {
+            if let Some(id) = id {
+                self.record_agent(
+                    id,
+                    AgentOutcome::Done {
+                        ok: false,
+                        message: "not a git repository".into(),
+                    },
+                );
+            }
+            self.toast("not a git repository", true);
+            return false;
+        }
+        self.agent_tag = id;
+        self.run(cmd);
+        true
+    }
+
+    pub fn agent_result(&self, id: &str) -> Option<&AgentOutcome> {
+        self.agent_results.get(id)
+    }
+
+    fn record_agent(&mut self, id: String, outcome: AgentOutcome) {
+        if !self.agent_results.contains_key(&id) {
+            self.agent_order.push_back(id.clone());
+            while self.agent_order.len() > AGENT_RESULTS_KEPT {
+                if let Some(old) = self.agent_order.pop_front() {
+                    self.agent_results.remove(&old);
+                }
+            }
+        }
+        self.agent_results.insert(id, outcome);
+    }
+
+    /// Match an `Op` reply to the oldest queued command expecting it. The
+    /// worker answers in queue order; a reply nobody queued leaves the queue
+    /// alone.
+    fn settle_queued_op(&mut self, label: &'static str, result: &Result<String, String>) {
+        let Some(front) = self.queued_ops.front_mut() else { return };
+        if front.labels.get(front.next) != Some(&label) {
+            return;
+        }
+        front.next += 1;
+        if result.is_err() || front.next >= front.labels.len() {
+            let op = self.queued_ops.pop_front().expect("front exists");
+            if let Some(id) = op.id {
+                let outcome = AgentOutcome::Done {
+                    ok: result.is_ok(),
+                    message: match result {
+                        Ok(m) => m.clone(),
+                        Err(e) => e.clone(),
+                    },
+                };
+                self.record_agent(id, outcome);
+            }
+        }
     }
 
     // ---- selection ----
