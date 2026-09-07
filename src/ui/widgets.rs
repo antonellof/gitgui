@@ -675,40 +675,39 @@ impl iced_core::Widget<Message, iced_core::Theme, crate::ui::app::Renderer> for 
         _cursor: iced_core::mouse::Cursor,
         _viewport: &iced_core::Rectangle,
     ) {
-        use iced_core::Renderer as _;
+        use iced_widget::canvas::{Frame, Path, Stroke};
         let b = layout.bounds();
-        let outline = |renderer: &mut crate::ui::app::Renderer, r: iced_core::Rectangle, fill: Color| {
-            renderer.fill_quad(
-                iced_core::renderer::Quad {
-                    bounds: r,
-                    border: Border {
-                        color: self.color,
-                        width: 1.5,
-                        radius: 1.5.into(),
-                    },
-                    ..Default::default()
-                },
-                fill,
-            );
-        };
-        match self.icon {
-            Icon::Maximize => {
-                let r = iced_core::Rectangle::new(
-                    iced_core::Point::new(b.x + 1.0, b.y + 1.0),
-                    iced_core::Size::new(ICON_SIZE - 2.0, ICON_SIZE - 2.0),
-                );
-                outline(renderer, r, Color::TRANSPARENT);
+        let (x, y) = (b.x, b.y);
+        let stroke = Stroke::default().with_color(self.color).with_width(1.5);
+        let mut frame = Frame::with_bounds(renderer, b);
+        let pt = |px: f32, py: f32| iced_core::Point::new(x + px, y + py);
+        let path = Path::new(|p| {
+            // Diagonal from bottom-left to top-right, macOS style.
+            p.move_to(pt(2.5, 9.5));
+            p.line_to(pt(9.5, 2.5));
+            match self.icon {
+                Icon::Maximize => {
+                    // Heads at the corners, pointing outward.
+                    p.move_to(pt(5.5, 2.5));
+                    p.line_to(pt(9.5, 2.5));
+                    p.line_to(pt(9.5, 6.5));
+                    p.move_to(pt(6.5, 9.5));
+                    p.line_to(pt(2.5, 9.5));
+                    p.line_to(pt(2.5, 5.5));
+                }
+                Icon::Restore => {
+                    // Heads near the center, pointing inward.
+                    p.move_to(pt(9.5, 5.5));
+                    p.line_to(pt(6.5, 5.5));
+                    p.line_to(pt(6.5, 2.5));
+                    p.move_to(pt(2.5, 6.5));
+                    p.line_to(pt(5.5, 6.5));
+                    p.line_to(pt(5.5, 9.5));
+                }
             }
-            Icon::Restore => {
-                let s = ICON_SIZE - 4.0;
-                let back = iced_core::Rectangle::new(iced_core::Point::new(b.x + 4.0, b.y), iced_core::Size::new(s, s));
-                let front = iced_core::Rectangle::new(iced_core::Point::new(b.x, b.y + 4.0), iced_core::Size::new(s, s));
-                outline(renderer, back, Color::TRANSPARENT);
-                // The front square hides the back one's corner: fill it with
-                // the bar color, then outline.
-                outline(renderer, front, Color { a: 1.0, ..Color::from_rgb8(0x24, 0x24, 0x26) });
-            }
-        }
+        });
+        frame.stroke(&path, stroke);
+        iced_widget::graphics::geometry::Renderer::draw_geometry(renderer, frame.into_geometry());
     }
 }
 
