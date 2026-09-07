@@ -3,6 +3,12 @@ name = "gitgui"
 version = "0.5.1"
 edition = "2021"
 
+[features]
+default = ["sha256"]
+# SHA-256 repositories (git init --object-format=sha256). libgit2 calls this
+# experimental; the whole read / write path is covered by the test suite.
+sha256 = ["git2/unstable-sha256"]
+
 [dependencies]
 iced_core = "=0.14.0"
 iced_runtime = "=0.14.0"

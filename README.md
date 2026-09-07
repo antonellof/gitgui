@@ -85,6 +85,7 @@ Give the agent the control API by linking `skill/SKILL.md` into its skills direc
 - **Editor**: built-in, on iced's text editor with syntax colors for the common languages, undo, `Ctrl+S`. A file opened from the tree takes the whole area next to the sidebar. `Shift+E` opens the file in your own editor in a new split (GUI editors such as `code` open detached), `Shift+O` opens cmux's file preview.
 - **Desktop window**: the same UI in a native window with `--window`, or on its own when the terminal has no kitty graphics (Terminal.app, iTerm2, VS Code's terminal, tmux). Keys, panes, the state file and the agent API work the same; the terminal split and cmux preview do not apply. `scripts/bundle-macos.sh` wraps it as `gitgui.app` with the logo as its icon.
 - **Open another repository**: `Ctrl+O`, the `Change folder` button in the footer, or the one on the not-a-repository screen. A folder dialog with the subfolders listed, git repositories marked, `..` to go up, or type a path.
+- **SHA-256 repositories**: `git init --object-format=sha256` repositories open, read and commit like any other.
 - **Refresh**: watches the repository and refreshes on its own when another pane changes it.
 - **Agent API**: Unix socket, JSON lines, `gitgui ls` and `gitgui action`.
 
@@ -127,7 +128,7 @@ Frames go through POSIX shared memory locally and zlib + base64 over SSH (detect
 | Layer | Technology |
 |---|---|
 | UI | iced 0.14 (`iced_core`, `iced_runtime`, `iced_widget`, `iced_renderer`), tiny-skia software renderer, no winit, no GPU |
-| Git | git2 0.21 (libgit2) for reads and writes, `git` subprocess for network |
+| Git | git2 0.21 (libgit2, built with SHA-256 object support) for reads and writes, `git` subprocess for network |
 | Terminal | kitty graphics, kitty keyboard, SGR pixel mouse |
 | Splits | cmux CLI, kitty `@ launch`, Ghostty hint fallback |
 

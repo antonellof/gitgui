@@ -311,7 +311,7 @@ neighbouring pane.
 
 ### Recently shipped (v0.1.1 to v0.5.1)
 
-- desktop branch (unreleased): `window.rs`, the same App in a native window through the iced umbrella crate, `--window` or automatic without kitty graphics; open another repository from a folder dialog (`Ctrl+O`, Files pane `open`, no-repository screen), `Command::Open`
+- desktop branch (unreleased): `window.rs`, the same App in a native window through the iced umbrella crate, `--window` or automatic without kitty graphics; open another repository from a folder dialog (`Ctrl+O`, footer `Change folder`, no-repository screen), `Command::Open`; logo on the no-repository screen and as the app icon; zoom keys; SHA-256 repositories through git2's `unstable-sha256`
 - v0.5.1: layout and settings saved per repository in `.git/gitgui.json` (`ui/state.rs`)
 - v0.5.0: Files as its own pane, hide / show panes from an x and the footer, macOS-style maximize glyphs, title bar hover highlight and OSC 22 pointer shapes, resizable commit columns, scrollbars beside the content, README screenshots from the demo repos
 - v0.4.0: iced port: draggable pane grid, custom log / diff / merge widgets, three-way conflict resolver, collapsible sidebar sections, footer with name and version, direct tiny-skia draw

@@ -75,7 +75,7 @@ Toolchain at kickoff: rustc 1.98.0, cargo 1.98.0 (2026-08). Both crates below ar
   - Geometry (the graph) uses `iced_widget::canvas::{Frame, Path, Stroke}` with `Frame::with_bounds` in absolute coordinates, never `with_translation`.
   - `text_editor` and `text_input` key bindings run even when unfocused: check `KeyPress::status`. Focus is moved with `iced_core::widget::operation::focusable::{focus, unfocus}` queued in `App::ops`.
   - Overlays go through `widgets::layered` so they draw above the custom widgets' layers.
-- `git2 = "=0.21.0"` with `default-features = false` (builds libgit2 from source, no system dependency). Most string getters return `Result` in this version (`Reference::shorthand`, `Commit::summary` gives `Result<Option<&str>>`, `Signature::name`, `StatusEntry::path`, `StringArray::iter` yields `Result<Option<&str>>`).
+- `git2 = "=0.21.0"` with `default-features = false` (builds libgit2 from source, no system dependency) plus `unstable-sha256` through our default `sha256` feature: libgit2 with GIT_EXPERIMENTAL_SHA256, so SHA-256 repositories open and commit (`Oid` holds up to 32 bytes; never assume 20). Most string getters return `Result` in this version (`Reference::shorthand`, `Commit::summary` gives `Result<Option<&str>>`, `Signature::name`, `StatusEntry::path`, `StringArray::iter` yields `Result<Option<&str>>`).
 - `png = "0.17"`, used by `--headless-frame`.
 - `GITGUI_HEADLESS_OPEN=picker|help|menu|stash|reset|merge|folder|hidden|zoom` makes `--headless-frame` open that dialog or tool first, for visual review.
 

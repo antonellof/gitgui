@@ -1893,6 +1893,44 @@ mod tests {
         assert!(r.list_dir("missing").is_err());
     }
 
+    /// A repository created with `git init --object-format=sha256`: libgit2
+    /// with GIT_EXPERIMENTAL_SHA256 reads it, stages and commits into it.
+    #[cfg(feature = "sha256")]
+    #[test]
+    fn sha256_repository_reads_and_writes() {
+        let dir = std::env::temp_dir().join(format!("gitgui-sha256-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        git(&["init", "-q", "--object-format=sha256"]);
+        git(&["config", "user.name", "Test User"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+
+        let mut repo = Repo::open(&dir).unwrap();
+        repo.stage(&["a.txt".to_owned()]).unwrap();
+        let first = repo.commit("first", false).unwrap();
+        assert_eq!(first.to_string().len(), 64, "32-byte object id");
+        assert_eq!(git(&["rev-parse", "HEAD"]), first.to_string());
+
+        std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
+        repo.stage(&["a.txt".to_owned()]).unwrap();
+        let second = repo.commit("second", false).unwrap();
+        let snap = repo.snapshot(10).unwrap();
+        assert_eq!(snap.commits.len(), 2);
+        assert_eq!(snap.commits[0].oid, second);
+        assert_eq!(short_id(second).len(), 7);
+        assert_eq!(git(&["rev-parse", "--show-object-format"]), "sha256");
+        assert_eq!(git(&["log", "--format=%s", "-n", "2"]), "second\nfirst");
+        drop(repo);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn stash_push_pop_drop() {
         let t = TempRepo::new();
