@@ -383,6 +383,19 @@ pub fn text_input_style(theme: &iced_core::Theme, status: iced_widget::text_inpu
     }
 }
 
+/// A text editor that looks like plain text: no box, no border, just the
+/// value and a selection color. For read-only, selectable text.
+pub fn text_readonly_style(theme: &iced_core::Theme, _status: iced_widget::text_editor::Status) -> iced_widget::text_editor::Style {
+    let p = theme.extended_palette();
+    iced_widget::text_editor::Style {
+        background: Background::Color(Color::TRANSPARENT),
+        border: Border::default(),
+        placeholder: alpha(p.background.base.text, 0.45),
+        value: p.background.base.text,
+        selection: alpha(p.primary.base.color, 0.5),
+    }
+}
+
 pub fn text_editor_style(theme: &iced_core::Theme, status: iced_widget::text_editor::Status) -> iced_widget::text_editor::Style {
     use iced_widget::text_editor::{Status, Style};
     let p = theme.extended_palette();

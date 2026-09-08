@@ -233,11 +233,25 @@ fn commit(app: &App, idx: usize) -> Element<'_> {
     );
     col = col.push(text(&c.summary).size(14).color(t.strong));
     if !c.body.is_empty() {
+        // A read-only editor: the body can be selected with the mouse or
+        // Ctrl+A and copied with Ctrl+C; edits are dropped in App.
         col = col.push(
-            scrollable(container(text(&c.body).size(12).font(Font::MONOSPACE)).padding([4, 0]))
-                .width(Length::Fill)
-                .height(Length::Shrink)
-                .spacing(2),
+            scrollable(
+                container(
+                    iced_widget::TextEditor::new(&app.detail_body)
+                        .on_action(Message::DetailAction)
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .padding(2)
+                        .height(Length::Shrink)
+                        .wrapping(iced_core::text::Wrapping::Word)
+                        .style(widgets::text_readonly_style),
+                )
+                .padding([4, 0]),
+            )
+            .width(Length::Fill)
+            .height(Length::Shrink)
+            .spacing(2),
         );
     }
     let files = app.commit_files.get(&c.oid);

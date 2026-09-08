@@ -9,7 +9,7 @@ use iced_core::{layout, renderer, Color, Element as CoreElement, Event, Font, Le
 use iced_widget::{column, container, row, text as text_widget, text_input};
 
 use crate::git::repo::{DiffLine, DiffText, DiffTarget, FileKind};
-use crate::ui::app::{App, Element, HunkAction, Message, Pane, Renderer};
+use crate::ui::app::{App, DiffPos, Element, HunkAction, Message, Pane, Renderer};
 use crate::ui::log::{draw_text, draw_text_wrapped, fill, measure};
 use crate::ui::theme::alpha;
 use crate::ui::widgets::{self, small_button};
@@ -259,8 +259,17 @@ struct DiffView<'a> {
 struct State {
     scroll: f32,
     scroll_x: f32,
+    /// Dragging over the gutter: extending the line selection.
     dragging: bool,
+    /// Left button down over the text: (position, where, shift held).
+    /// A release without movement is a line click; movement selects text.
+    press: Option<(DiffPos, Point, bool)>,
+    /// Anchor of a text drag in progress.
+    text_drag: Option<DiffPos>,
 }
+
+/// Pointer travel before a press over the text becomes a text drag.
+const DRAG_SLOP: f32 = 3.0;
 
 /// Conflict summary from the markers: (count, ours label, theirs label).
 fn conflict_info(d: &DiffText) -> (usize, String, String) {
@@ -318,6 +327,28 @@ struct Geometry {
 }
 
 impl DiffView<'_> {
+    /// The character position under `p` (relative to the widget), if it is
+    /// over a diff line.
+    fn pos_at(&self, p: Point, rows: &[Row<'_>], offs: &[f32], geo: &Geometry, state: &State) -> Option<DiffPos> {
+        let i = self.row_at_y(offs, p.y + state.scroll)?;
+        let Row::Line(hunk, line, l) = rows.get(i)? else { return None };
+        let row_top = offs[i] - state.scroll;
+        let x = (p.x - geo.gutter + state.scroll_x).max(0.0);
+        let base = (x / geo.char_w).round() as usize;
+        let n = l.text.chars().count();
+        let col = if geo.cpl > 0 {
+            let sub = ((p.y - row_top) / ROW_H).floor().max(0.0) as usize;
+            sub * geo.cpl + base.min(geo.cpl)
+        } else {
+            base
+        };
+        Some(DiffPos {
+            hunk: *hunk,
+            line: *line,
+            col: col.min(n),
+        })
+    }
+
     fn geometry(&self, renderer: &Renderer, bounds: Rectangle) -> Geometry {
         let size = Pixels(text::Renderer::default_size(renderer).0 - 0.5);
         let char_w = measure("0", Font::MONOSPACE, size).max(1.0);
@@ -467,11 +498,18 @@ impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
                         }
                     }
                     Row::Line(hunk, line, _) => {
-                        if hunk_actions(self.diff).is_some() {
+                        let shift = self.app.modifiers.shift();
+                        if p.x >= geo.gutter {
+                            // Over the text: decide on release (click) or
+                            // on movement (text selection).
+                            if let Some(pos) = self.pos_at(p, &rows, &offs, &geo, state) {
+                                state.press = Some((pos, p, shift));
+                            }
+                        } else if hunk_actions(self.diff).is_some() {
                             shell.publish(Message::DiffLineClick {
                                 hunk: *hunk,
                                 line: *line,
-                                shift: self.app.modifiers.shift(),
+                                shift,
                             });
                             state.dragging = true;
                         }
@@ -479,8 +517,19 @@ impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
                 }
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
-                if state.dragging {
-                    if let Some(p) = cursor.position_in(bounds) {
+                let p = cursor.position_in(bounds);
+                if let (Some((anchor, at, _)), Some(p)) = (state.press, p) {
+                    if state.text_drag.is_none() && (p.x - at.x).abs().max((p.y - at.y).abs()) > DRAG_SLOP {
+                        state.text_drag = Some(anchor);
+                    }
+                }
+                if let Some(anchor) = state.text_drag {
+                    if let Some(head) = p.and_then(|p| self.pos_at(p, &rows, &offs, &geo, state)) {
+                        shell.publish(Message::DiffTextDrag { anchor, head });
+                        shell.capture_event();
+                    }
+                } else if state.dragging {
+                    if let Some(p) = p {
                         if let Some(i) = self.row_at_y(&offs, p.y + state.scroll) {
                             if let Some(Row::Line(hunk, line, _)) = rows.get(i) {
                                 shell.publish(Message::DiffDragTo {
@@ -494,6 +543,15 @@ impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 state.dragging = false;
+                if let Some((pos, _, shift)) = state.press.take() {
+                    if state.text_drag.take().is_none() && hunk_actions(self.diff).is_some() {
+                        shell.publish(Message::DiffLineClick {
+                            hunk: pos.hunk,
+                            line: pos.line,
+                            shift,
+                        });
+                    }
+                }
             }
             _ => {}
         }
@@ -624,6 +682,43 @@ impl Widget<Message, iced_core::Theme, Renderer> for DiffView<'_> {
                                 if focused { alpha(t.selection, 0.85) } else { alpha(t.selection_inactive, 0.85) },
                                 0.0,
                             );
+                        }
+                        if let Some((a, b)) = app.diff_text_sel.map(|s| s.ordered()) {
+                            let here = (*hunk, *line);
+                            if (a.hunk, a.line) <= here && here <= (b.hunk, b.line) {
+                                let n = l.text.chars().count();
+                                let start = if here == (a.hunk, a.line) { a.col.min(n) } else { 0 };
+                                let mut end = if here == (b.hunk, b.line) { b.col.min(n) } else { n };
+                                if here != (b.hunk, b.line) {
+                                    end = end.max(start + 1);
+                                }
+                                let text_x = bounds.x + geo.gutter;
+                                let text_w = (bounds.width - geo.gutter).max(0.0);
+                                let color = if focused { alpha(t.selection, 0.7) } else { alpha(t.selection_inactive, 0.9) };
+                                let segments: Vec<(usize, usize, f32)> = if geo.cpl > 0 && rh > ROW_H {
+                                    (0..)
+                                        .map(|k| (k * geo.cpl, (k + 1) * geo.cpl))
+                                        .take_while(|(s0, _)| *s0 < end.max(1))
+                                        .enumerate()
+                                        .filter_map(|(k, (s0, s1))| {
+                                            let s = start.max(s0);
+                                            let e = end.min(s1);
+                                            (s < e).then_some((s - s0, e - s0, y + k as f32 * ROW_H))
+                                        })
+                                        .collect()
+                                } else {
+                                    vec![(start, end, y)]
+                                };
+                                for (s0, e0, sy) in segments {
+                                    let x0 = text_x + s0 as f32 * geo.char_w - if geo.cpl > 0 { 0.0 } else { state.scroll_x };
+                                    let w = (e0.saturating_sub(s0)) as f32 * geo.char_w;
+                                    let hl = Rectangle::new(Point::new(x0, sy), Size::new(w, ROW_H));
+                                    let clip = Rectangle::new(Point::new(text_x, rect.y), Size::new(text_w, rect.height));
+                                    if let Some(r) = hl.intersection(&clip) {
+                                        fill(renderer, r, color, 0.0);
+                                    }
+                                }
+                            }
                         }
                         if match_rows.binary_search(&i).is_ok() {
                             fill(

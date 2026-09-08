@@ -319,6 +319,32 @@ pub enum HunkAction {
     Discard,
 }
 
+/// A character position in the diff view: a line of a hunk and a column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DiffPos {
+    pub hunk: usize,
+    pub line: usize,
+    pub col: usize,
+}
+
+/// Text selected in the diff view by dragging over the text, copied with
+/// Ctrl+C. `anchor` is where the drag started, `head` where it is now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffTextSel {
+    pub anchor: DiffPos,
+    pub head: DiffPos,
+}
+
+impl DiffTextSel {
+    pub fn ordered(&self) -> (DiffPos, DiffPos) {
+        if self.anchor <= self.head {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        }
+    }
+}
+
 /// Result of the last write the worker finished, for the agent's `status`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpResult {
@@ -437,6 +463,11 @@ pub enum Message {
     EditorWrap,
     DiffLineClick { hunk: usize, line: usize, shift: bool },
     DiffDragTo { hunk: usize, line: usize },
+    /// Dragging over the diff text: the selection from `anchor` to `head`.
+    DiffTextDrag { anchor: DiffPos, head: DiffPos },
+    /// The commit detail body is a read-only editor: cursor and selection
+    /// actions apply, edits are dropped.
+    DetailAction(text_editor::Action),
     DiffHunk(HunkAction, usize),
     LinesStage,
     LinesUnstage,
@@ -580,6 +611,11 @@ pub struct App {
     pub zoom: f32,
     /// The last finished write (label, ok, message).
     pub last_result: Option<OpResult>,
+    /// Text selected by dragging in the diff view.
+    pub diff_text_sel: Option<DiffTextSel>,
+    /// The selected commit's message body, in a read-only editor so it can
+    /// be selected and copied.
+    pub detail_body: text_editor::Content<Renderer>,
     commit_hist: undo::ContentHistory,
     modal_multi_hist: undo::ContentHistory,
     modal_hist: undo::TextHistory,
@@ -697,6 +733,8 @@ impl App {
             log_columns: (110.0, 44.0),
             zoom: 1.0,
             last_result: None,
+            diff_text_sel: None,
+            detail_body: text_editor::Content::new(),
             commit_hist: undo::ContentHistory::default(),
             modal_multi_hist: undo::ContentHistory::default(),
             modal_hist: undo::TextHistory::default(),
@@ -996,6 +1034,9 @@ impl App {
                     if self.diff.as_ref().map(|old| old.hunks.len()) != Some(d.hunks.len()) {
                         self.line_sel = None;
                     }
+                    if self.diff.as_ref() != Some(&d) {
+                        self.diff_text_sel = None;
+                    }
                     self.diff = Some(d);
                     self.diff_loading = false;
                 }
@@ -1230,10 +1271,12 @@ impl App {
     pub fn on_selection_changed(&mut self) {
         self.diff = None;
         self.selected_file = None;
+        self.diff_text_sel = None;
         match self.selection {
             Selection::WorkingTree => self.select_first_worktree_file(),
             Selection::Commit(i) => {
                 if let Some(c) = self.snapshot.commits.get(i) {
+                    self.detail_body = text_editor::Content::with_text(&c.body);
                     let oid = c.oid;
                     if let Some(files) = self.commit_files.get(&oid) {
                         let first = files.first().map(|f| DiffTarget::Commit(oid, f.path.clone()));
@@ -1672,6 +1715,31 @@ impl App {
 
     pub fn copy(&mut self, text: String) {
         self.pending_copy.push(text);
+    }
+
+    /// The text under the diff view's drag selection, lines joined with
+    /// newlines, without the line-number gutter.
+    pub fn diff_selected_text(&self) -> Option<String> {
+        let sel = self.diff_text_sel?;
+        let diff = self.diff.as_ref()?;
+        let (a, b) = sel.ordered();
+        if a == b {
+            return None;
+        }
+        let mut out = Vec::new();
+        for (h, hunk) in diff.hunks.iter().enumerate().take(b.hunk + 1).skip(a.hunk) {
+            for (l, line) in hunk.lines.iter().enumerate() {
+                let here = (h, l);
+                if here < (a.hunk, a.line) || here > (b.hunk, b.line) {
+                    continue;
+                }
+                let n = line.text.chars().count();
+                let start = if here == (a.hunk, a.line) { a.col.min(n) } else { 0 };
+                let end = if here == (b.hunk, b.line) { b.col.min(n) } else { n };
+                out.push(line.text.chars().skip(start).take(end.saturating_sub(start)).collect::<String>());
+            }
+        }
+        Some(out.join("\n"))
     }
 
     pub fn web_remote(&self) -> Option<&str> {
@@ -2266,6 +2334,16 @@ impl App {
                     }
                 }
             }
+            Message::DiffTextDrag { anchor, head } => {
+                self.line_sel = None;
+                self.diff_text_sel = Some(DiffTextSel { anchor, head });
+                self.focus = Pane::Detail;
+            }
+            Message::DetailAction(action) => {
+                if !action.is_edit() {
+                    self.detail_body.perform(action);
+                }
+            }
             Message::DiffDragTo { hunk, line } => {
                 if let Some(sel) = self.line_sel {
                     if sel.hunk == hunk {
@@ -2712,8 +2790,9 @@ impl App {
                 self.merge = None;
             } else if self.editor.is_some() {
                 self.close_editor();
-            } else if self.line_sel.is_some() {
+            } else if self.line_sel.is_some() || self.diff_text_sel.is_some() {
                 self.line_sel = None;
+                self.diff_text_sel = None;
             } else if self.diff_search_active {
                 self.update(Message::DiffSearchClose);
             } else if self.filter_active {
@@ -2723,7 +2802,16 @@ impl App {
         }
         if ctrl {
             match ch {
-                "c" => self.quit = true,
+                "c" => {
+                    // Ctrl+C copies a diff selection; without one it quits.
+                    if let Some(text) = self.diff_selected_text() {
+                        let lines = text.lines().count().max(1);
+                        self.copy(text);
+                        self.toast(format!("copied {lines} line{}", if lines == 1 { "" } else { "s" }), false);
+                    } else {
+                        self.quit = true;
+                    }
+                }
                 "f" => self.update(Message::DiffSearchOpen),
                 "o" => self.open_folder_dialog(),
                 "z" => self.field_undo(shift),

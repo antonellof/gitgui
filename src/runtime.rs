@@ -130,6 +130,28 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
             "hover" => app.cursor = iced_core::Point::new(300.0, 14.0),
             "folder" => app.update(Message::OpenFolderDialog),
             "zoom" => app.set_zoom(1.4),
+            "difftext" => {
+                use crate::ui::app::DiffPos;
+                app.update(Message::DiffTextDrag {
+                    anchor: DiffPos { hunk: 0, line: 1, col: 2 },
+                    head: DiffPos { hunk: 0, line: 4, col: 9 },
+                });
+            }
+            "detail" => {
+                let i = app.snapshot.commits.iter().position(|c| !c.body.is_empty()).unwrap_or(1);
+                app.select(crate::ui::app::Selection::Commit(i));
+                app.update(Message::DetailAction(iced_widget::text_editor::Action::SelectAll));
+            }
+            "select" => {
+                use iced_widget::text_editor::{Action, Edit};
+                for c in "fix: select this text".chars() {
+                    app.update(Message::CommitMsg(Action::Edit(Edit::Insert(c))));
+                }
+                app.update(Message::CommitMsg(Action::SelectAll));
+                app.ops.push(Box::new(iced_core::widget::operation::focusable::focus(
+                    crate::ui::widgets::COMMIT_BOX_ID.clone(),
+                )));
+            }
             "hidden" => {
                 if let Some(p) = app.pane_of(crate::ui::app::Pane::Files) {
                     app.update(Message::PaneClose(p));
@@ -1194,6 +1216,87 @@ mod tests {
         assert_eq!(h.app.filter, "");
         h.key(b"\x1b[121;5u");
         assert_eq!(h.app.filter, "ma");
+    }
+
+    /// Pixels that differ between two frames of the same size.
+    fn changed_pixels(a: &[u8], b: &[u8]) -> usize {
+        a.chunks(4).zip(b.chunks(4)).filter(|(x, y)| x != y).count()
+    }
+
+    #[test]
+    fn selecting_text_in_the_commit_box_draws_a_highlight() {
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        t.write("a.txt", "two\n");
+        let mut h = Harness::new(&t.dir);
+        h.key(b"c");
+        for b in b"select all of this text please" {
+            h.key(&[*b]);
+        }
+        h.frame();
+        let before = h.fb.pixels().to_vec();
+        h.key(b"\x1b[97;5u");
+        h.frame();
+        assert_eq!(h.app.commit_msg.selection().as_deref(), Some("select all of this text please"));
+        let changed = changed_pixels(&before, h.fb.pixels());
+        assert!(changed > 1500, "selection highlight missing: {changed} pixels changed");
+
+        // Dragging with the mouse (SGR pixel reports) selects too: press on
+        // the first word, move, release.
+        h.key(b"\x1b[97;5u");
+        h.key(b"\x1b[D");
+        assert!(h.app.commit_msg.selection().is_none());
+        h.key(b"\x1b[<0;200;568M");
+        h.key(b"\x1b[<32;260;568M");
+        h.key(b"\x1b[<32;300;568M");
+        h.key(b"\x1b[<0;300;568m");
+        let dragged = h.app.commit_msg.selection();
+        assert!(dragged.as_deref().is_some_and(|s| s.len() > 3), "{dragged:?}");
+    }
+
+    #[test]
+    fn dragging_over_the_diff_text_selects_it_and_ctrl_c_copies() {
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "alpha beta gamma\ndelta epsilon zeta\neta theta iota\n", "init");
+        t.write("a.txt", "alpha beta gamma\ndelta epsilon zeta changed\neta theta iota\n");
+        let mut h = Harness::new(&t.dir);
+        h.frame();
+        assert!(h.app.diff.is_some(), "the working tree diff is loaded");
+        let (_, detail) = h
+            .app
+            .title_strips()
+            .into_iter()
+            .find(|(p, _)| h.app.panes.get(*p) == Some(&Pane::Detail))
+            .expect("detail pane");
+        // Below the title bar and the diff header, right of the gutter.
+        let x0 = (detail.x + 110.0) as i32;
+        let y0 = (detail.y + 95.0) as i32;
+        let press = format!("\x1b[<0;{x0};{y0}M");
+        let mv1 = format!("\x1b[<32;{};{}M", x0 + 30, y0);
+        let mv2 = format!("\x1b[<32;{};{}M", x0 + 60, y0 + 18);
+        let rel = format!("\x1b[<0;{};{}m", x0 + 60, y0 + 18);
+        h.key(press.as_bytes());
+        assert!(h.app.diff_text_sel.is_none(), "a press alone selects nothing");
+        h.key(mv1.as_bytes());
+        h.key(mv2.as_bytes());
+        h.key(rel.as_bytes());
+        let sel = h.app.diff_text_sel.expect("drag selected text");
+        let (a, b) = sel.ordered();
+        assert!(a < b, "{sel:?}");
+        let text = h.app.diff_selected_text().expect("selected text");
+        assert!(text.contains('\n'), "two rows: {text:?}");
+        assert!(h.app.line_sel.is_none(), "a text drag is not a line selection");
+        // Ctrl+C copies instead of quitting; Escape clears; a plain click
+        // on the text still selects the line for staging.
+        h.key(b"\x1b[99;5u");
+        assert!(!h.app.quit);
+        assert_eq!(h.app.pending_copy.last(), Some(&text));
+        h.key(b"\x1b");
+        assert!(h.app.diff_text_sel.is_none());
+        h.key(press.as_bytes());
+        h.key(format!("\x1b[<0;{x0};{y0}m").as_bytes());
+        assert!(h.app.diff_text_sel.is_none());
+        assert!(h.app.line_sel.is_some(), "click selects the line");
     }
 
     #[test]
