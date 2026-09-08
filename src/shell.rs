@@ -14,22 +14,65 @@ use crate::ui::app::{App, Message};
 
 pub type Renderer = iced_renderer::Renderer;
 
-/// Terminal clipboard: writes go out as OSC 52 (collected here, encoded by
-/// the runtime), reads return the last bracketed paste so Ctrl+V works.
+/// Terminal clipboard. Writes go out as OSC 52 (collected here, encoded by
+/// the runtime) and are remembered. Reads, for Ctrl+V, take in order: the
+/// bracketed paste the terminal just delivered (its own Cmd+V), the system
+/// clipboard through the platform's paste command, and the last text copied
+/// inside gitgui.
 #[derive(Default)]
 pub struct Clipboard {
     pub copied: Vec<String>,
     pub paste: Option<String>,
+    last_copied: Option<String>,
 }
 
 impl clipboard::Clipboard for Clipboard {
     fn read(&self, _kind: clipboard::Kind) -> Option<String> {
-        self.paste.clone()
+        if let Some(p) = &self.paste {
+            return Some(p.clone());
+        }
+        system_clipboard().or_else(|| self.last_copied.clone())
     }
 
     fn write(&mut self, _kind: clipboard::Kind, contents: String) {
+        self.last_copied = Some(contents.clone());
         self.copied.push(contents);
     }
+}
+
+/// The system clipboard through `pbpaste`, `wl-paste` or `xclip`, when one
+/// exists. Skipped over SSH (it would be the remote machine's) and when
+/// `GITGUI_NO_SYSTEM_CLIPBOARD` is set (tests).
+fn system_clipboard() -> Option<String> {
+    if std::env::var_os("GITGUI_NO_SYSTEM_CLIPBOARD").is_some()
+        || std::env::var_os("SSH_TTY").is_some()
+        || std::env::var_os("SSH_CONNECTION").is_some()
+    {
+        return None;
+    }
+    let candidates: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
+        &[("pbpaste", &[])]
+    } else if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        &[("wl-paste", &["--no-newline"]), ("xclip", &["-selection", "clipboard", "-o"])]
+    } else {
+        &[("xclip", &["-selection", "clipboard", "-o"]), ("xsel", &["-ob"])]
+    };
+    for (cmd, args) in candidates {
+        let out = std::process::Command::new(cmd)
+            .args(*args)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output();
+        if let Ok(out) = out {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                if !text.is_empty() {
+                    return Some(text);
+                }
+            }
+        }
+    }
+    None
 }
 
 pub struct Shell {

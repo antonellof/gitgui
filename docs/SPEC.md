@@ -57,7 +57,7 @@ Two `Vec<u8>` RGBA buffers of `w*h*4`. After drawing, compare against the last s
 - Key press / release -> `keyboard::Event::KeyPressed / KeyReleased { key, modified_key, physical_key, location, modifiers, text, repeat }`. Named keys map to `keyboard::key::Named`, characters carry the shifted text; `text` is dropped for ctrl / alt combos and control characters.
 - Mouse press / release -> `CursorMoved` then `ButtonPressed / ButtonReleased`, motion -> `CursorMoved`, wheel -> `WheelScrolled { delta: Lines }` (positive y scrolls up, like winit). Positions are `pixel / pixels_per_point`.
 - Focus -> `window::Event::Focused / Unfocused`. Resize -> new logical size on the next build.
-- Paste (bracketed) is stored in the shell clipboard and delivered as a synthetic Ctrl+V so the focused text widget takes it through its own paste path. Copy requests from widgets and the app go out as `OSC 52 ; c ; <base64> ST`.
+- Paste (bracketed) is stored in the shell clipboard and delivered as a synthetic Ctrl+V so the focused text widget takes it through its own paste path. A Ctrl+V pressed as a key reads, in order, that bracketed text, the system clipboard through `pbpaste` (`wl-paste` / `xclip` / `xsel` on Linux; skipped over SSH and under `GITGUI_NO_SYSTEM_CLIPBOARD`), then the last text gitgui itself copied. Copy requests from widgets and the app go out as `OSC 52 ; c ; <base64> ST`.
 
 ## 3. Git layer (git/)
 

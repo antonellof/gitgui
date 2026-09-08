@@ -662,6 +662,8 @@ mod tests {
 
     impl Harness {
         fn new(dir: &std::path::Path) -> Self {
+            // Never read the developer's real clipboard in tests.
+            std::env::set_var("GITGUI_NO_SYSTEM_CLIPBOARD", "1");
             let theme = Theme::dark();
             let shell = Shell::new(13.0, 1.0, 900, 700, theme.iced());
             let mut app = App::new(theme, "test", 1.0, dir.to_path_buf());
@@ -1488,6 +1490,26 @@ mod tests {
         assert_eq!(out.copy.len(), 1, "Cmd+C copies the selection");
         assert!(out.copy[0].contains("fn main"));
         assert!(!h.app.quit);
+    }
+
+    #[test]
+    fn ctrl_v_pastes_what_gitgui_copied_last() {
+        let t = TempRepo::new();
+        t.commit_file("a.rs", "fn main() {}\n", "init");
+        let mut h = Harness::new(&t.dir);
+        h.key(b"e");
+        // Copy the whole buffer, go to the end, paste: the text doubles.
+        h.key(b"\x1b[97;5u");
+        let events: Vec<_> = h.parser.feed(b"\x1b[99;5u").into_iter().chain(h.parser.flush()).collect();
+        for ev in &events {
+            h.shell.push(ev);
+        }
+        let out = h.shell.frame(&mut h.app, &mut h.fb);
+        assert_eq!(out.copy.len(), 1);
+        h.key(b"\x1b[F");
+        h.key(b"\x1b[118;5u");
+        let text = h.app.editor.as_ref().unwrap().content.text();
+        assert_eq!(text.matches("fn main() {}").count(), 2, "{text:?}");
     }
 
     #[test]

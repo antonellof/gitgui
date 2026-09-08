@@ -103,6 +103,7 @@ Not planned: an interactive rebase editor, bisect, submodules, worktrees. Use th
 | Edit (built-in), open in your editor, preview in cmux | `e` or double-click, `Shift+E`, `Shift+O` |
 | Save, close the editor | `Ctrl+S`, `Escape` |
 | Undo, redo in any text field | `Ctrl+Z`, `Ctrl+Y` |
+| Copy, paste in any text field | `Ctrl+C`, `Ctrl+V` (the terminal's own paste works too) |
 | Copy the text selected in the diff (or in any field) | `Ctrl+C` |
 | Commit, commit and push, focus the message | `Ctrl+Enter`, `Ctrl+Shift+Enter`, `c` |
 | Stash | `Shift+S` |
@@ -141,7 +142,7 @@ Same trick as [terminal-browser](https://github.com/zenbu-labs/terminal-browser)
 Requires macOS or Linux. In-terminal rendering needs a kitty-graphics terminal (cmux, Ghostty, kitty, WezTerm); anywhere else gitgui opens a desktop window. The one-liner at the top downloads a release binary into `~/.local/bin`, or builds from source with `cargo` when there is no binary for your platform.
 
 ```bash
-GITGUI_VERSION=0.7.6 GITGUI_INSTALL_DIR=~/bin bash scripts/install.sh   # pin a version, other dir
+GITGUI_VERSION=0.7.7 GITGUI_INSTALL_DIR=~/bin bash scripts/install.sh   # pin a version, other dir
 cargo install --git https://github.com/antonellof/gitgui                 # from source (Rust 1.95+)
 gitgui --probe                                                           # does this terminal support kitty graphics?
 ```
