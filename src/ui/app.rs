@@ -868,6 +868,17 @@ impl App {
     /// Re-add a hidden pane where it usually sits: Files under Repository,
     /// Repository left of everything, Changes left of Diff, Diff right of
     /// Changes, Commits above Changes.
+    /// The editor and the merge tool draw in the Diff pane. If that pane was
+    /// hidden in the active layout (and saved that way), bring it back, or
+    /// the layout switches and nothing shows the file.
+    fn ensure_detail_pane(&mut self) {
+        if self.pane_of(Pane::Detail).is_none() {
+            let focus = self.focus;
+            self.show_pane(Pane::Detail);
+            self.focus = focus;
+        }
+    }
+
     fn show_pane(&mut self, kind: Pane) {
         if self.pane_of(kind).is_some() {
             return;
@@ -2059,6 +2070,7 @@ impl App {
             Ok(ed) => {
                 self.editor = Some(ed);
                 self.editor_full = full;
+                self.ensure_detail_pane();
                 self.focus = Pane::Detail;
                 self.ops.push(Box::new(iced_core::widget::operation::focusable::focus(
                     widgets::EDITOR_ID.clone(),
@@ -2083,6 +2095,7 @@ impl App {
                 self.editor = None;
                 self.selection = Selection::WorkingTree;
                 self.select_file(Some(DiffTarget::WorkdirUnstaged(path)));
+                self.ensure_detail_pane();
                 self.focus = Pane::Detail;
             }
             Err(e) => self.toast(e, true),

@@ -1365,6 +1365,32 @@ mod tests {
     }
 
     #[test]
+    fn opening_a_file_brings_back_a_hidden_diff_pane() {
+        use crate::ui::app::Message;
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        let mut h = Harness::new(&t.dir);
+        // Open a file from the tree, hide the Diff pane of the editor layout
+        // with its x, close the editor. The layout is remembered that way.
+        h.app.update(Message::TreeOpen("a.txt".into()));
+        h.frame();
+        assert!(h.app.editor_full);
+        let detail = h.app.pane_of(Pane::Detail).expect("diff pane in the editor layout");
+        h.app.update(Message::PaneClose(detail));
+        h.frame();
+        assert!(h.app.pane_of(Pane::Detail).is_none());
+        h.app.update(Message::EditorClose);
+        h.frame();
+        assert!(h.app.editor.is_none());
+        // Clicking a file again must show the editor, not an empty layout.
+        h.app.update(Message::TreeOpen("a.txt".into()));
+        h.frame();
+        assert_eq!(h.app.editor.as_ref().map(|e| e.path.as_str()), Some("a.txt"));
+        assert!(h.app.pane_of(Pane::Detail).is_some(), "the diff pane is back");
+        assert_eq!(h.app.focus, Pane::Detail);
+    }
+
+    #[test]
     fn font_size_tracks_cell_height() {
         assert_eq!(font_size_for_cell(0, 2.0), 13.0);
         assert_eq!(font_size_for_cell(34, 2.0), 13.0);

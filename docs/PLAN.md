@@ -309,8 +309,9 @@ Not planned for v0.x: an interactive rebase editor, bisect, submodules,
 worktrees, sparse checkout, patch export. Use the git CLI in the
 neighbouring pane.
 
-### Recently shipped (v0.1.1 to v0.7.1)
+### Recently shipped (v0.1.1 to v0.7.2)
 
+- v0.7.2: opening a file or the merge tool brings back a Diff pane hidden in the saved editor layout (the file had nowhere to show)
 - v0.7.1: double-click on a file row opens the editor again (lost in the iced port), Cmd variants of the custom bindings in the native window
 - v0.7.0: text selection with the mouse in the diff view (drag over the text, Ctrl+C copies, click still selects the line), the commit message body is a selectable read-only editor, undo everywhere, paste and Ctrl+A / C / X / V on macOS, Escape closes dialogs on the first press
 - v0.6.4: undo / redo in every text field (`ui/undo.rs`: commit box, dialog fields, reword editor, commit filter, diff search), typing grouped per word, Escape closes a dialog on the first press even with a focused field
