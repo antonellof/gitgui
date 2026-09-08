@@ -1459,6 +1459,25 @@ mod tests {
     }
 
     #[test]
+    fn cmd_c_forwarded_by_the_terminal_copies_in_the_editor() {
+        let t = TempRepo::new();
+        t.commit_file("a.rs", "fn main() {}\n", "init");
+        let mut h = Harness::new(&t.dir);
+        h.key(b"e");
+        h.key(b"\x1b[97;5u");
+        // Cmd+C as the kitty keyboard protocol encodes it: super = 8, so 9.
+        let events: Vec<_> = h.parser.feed(b"\x1b[99;9u").into_iter().chain(h.parser.flush()).collect();
+        assert!(!events.is_empty(), "parsed");
+        for ev in &events {
+            h.shell.push(ev);
+        }
+        let out = h.shell.frame(&mut h.app, &mut h.fb);
+        assert_eq!(out.copy.len(), 1, "Cmd+C copies the selection");
+        assert!(out.copy[0].contains("fn main"));
+        assert!(!h.app.quit);
+    }
+
+    #[test]
     fn font_size_tracks_cell_height() {
         assert_eq!(font_size_for_cell(0, 2.0), 13.0);
         assert_eq!(font_size_for_cell(34, 2.0), 13.0);

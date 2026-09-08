@@ -319,9 +319,17 @@ impl Shell {
                 window::RedrawRequest::At(Instant::now() + std::time::Duration::from_millis(500)),
             );
         }
+        let copy = std::mem::take(&mut self.clipboard.copied);
+        if let Some(text) = copy.last() {
+            // Say so: the terminal may still refuse OSC 52, and the user
+            // should know the key was understood.
+            let n = text.chars().count();
+            app.toast(format!("copied {n} character{} to the clipboard", if n == 1 { "" } else { "s" }), false);
+            redraw = merge_redraw(redraw, window::RedrawRequest::NextFrame);
+        }
         FrameOut {
             redraw,
-            copy: std::mem::take(&mut self.clipboard.copied),
+            copy,
             interaction,
         }
     }
