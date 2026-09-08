@@ -371,6 +371,9 @@ struct QueuedOp {
 
 const AGENT_RESULTS_KEPT: usize = 256;
 
+/// Two clicks on the same file row this close together open the editor.
+const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
+
 /// Work handed to the window-mode program from another thread. Boxed behind
 /// a mutex so `Message` stays `Clone + Debug`; the receiver takes it once.
 #[derive(Clone)]
@@ -465,6 +468,8 @@ pub enum Message {
     DiffDragTo { hunk: usize, line: usize },
     /// Dragging over the diff text: the selection from `anchor` to `head`.
     DiffTextDrag { anchor: DiffPos, head: DiffPos },
+    /// Double-click on a file row: open it in the built-in editor.
+    EditFile(String),
     /// The commit detail body is a read-only editor: cursor and selection
     /// actions apply, edits are dropped.
     DetailAction(text_editor::Action),
@@ -613,6 +618,10 @@ pub struct App {
     pub last_result: Option<OpResult>,
     /// Text selected by dragging in the diff view.
     pub diff_text_sel: Option<DiffTextSel>,
+    /// The last file row clicked and when: a second click on the same row
+    /// within `DOUBLE_CLICK` opens the editor. Rows sit on buttons, which
+    /// swallow presses before iced's mouse_area can count them.
+    last_file_click: Option<(DiffTarget, Instant)>,
     /// The selected commit's message body, in a read-only editor so it can
     /// be selected and copied.
     pub detail_body: text_editor::Content<Renderer>,
@@ -734,6 +743,7 @@ impl App {
             zoom: 1.0,
             last_result: None,
             diff_text_sel: None,
+            last_file_click: None,
             detail_body: text_editor::Content::new(),
             commit_hist: undo::ContentHistory::default(),
             modal_multi_hist: undo::ContentHistory::default(),
@@ -2180,12 +2190,17 @@ impl App {
             }
             Message::SelectFile(t) => {
                 self.focus = Pane::Changes;
-                if let Some(ed) = &self.editor {
-                    if !ed.dirty() && ed.path != t.path() {
-                        // Fall through: follow_selection_in_editor handles it.
-                    }
-                }
+                let now = Instant::now();
+                let double = self
+                    .last_file_click
+                    .as_ref()
+                    .is_some_and(|(prev, at)| *prev == t && now.duration_since(*at) <= DOUBLE_CLICK);
+                self.last_file_click = Some((t.clone(), now));
+                let path = t.path().to_owned();
                 self.select_file(Some(t));
+                if double {
+                    self.update(Message::EditFile(path));
+                }
             }
             Message::SidebarSelect(name, oid) => {
                 self.sidebar_selected = Some(name);
@@ -2333,6 +2348,10 @@ impl App {
                         });
                     }
                 }
+            }
+            Message::EditFile(path) => {
+                self.tree_selected = Some(path.clone());
+                self.open_editor(path, false);
             }
             Message::DiffTextDrag { anchor, head } => {
                 self.line_sel = None;
@@ -2756,7 +2775,9 @@ impl App {
     // ---- keyboard ----
 
     fn key(&mut self, key: keyboard::Key, mods: keyboard::Modifiers) {
-        let ctrl = mods.control();
+        // Ctrl in a terminal (which also carries the command bit), Cmd in
+        // the native window on macOS.
+        let ctrl = mods.control() || mods.command();
         let shift = mods.shift();
         let plain = !ctrl && !mods.alt() && !mods.logo();
         let ch = match &key {
@@ -2808,7 +2829,8 @@ impl App {
                         let lines = text.lines().count().max(1);
                         self.copy(text);
                         self.toast(format!("copied {lines} line{}", if lines == 1 { "" } else { "s" }), false);
-                    } else {
+                    } else if mods.control() {
+                        // Ctrl+C quits; Cmd+C in the native window does not.
                         self.quit = true;
                     }
                 }

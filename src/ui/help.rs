@@ -26,7 +26,7 @@ pub const KEYS: &[(&str, &str, &str)] = &[
     ("Working tree", "d", "discard the selected file or lines (asks)"),
     ("Working tree", "Shift+D", "discard every change (asks)"),
     ("Working tree", "i", "add the selected untracked file to .gitignore"),
-    ("Working tree", "e", "edit the selected file (built-in editor)"),
+    ("Working tree", "e, double-click", "edit the selected file (built-in editor)"),
     ("Working tree", "Shift+E", "open the selected file in your editor (--editor, gitgui.editor, $EDITOR)"),
     ("Working tree", "Shift+O", "open the selected file in a cmux preview tab"),
     ("Working tree", "c", "focus the commit message"),

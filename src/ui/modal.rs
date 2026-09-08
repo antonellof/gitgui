@@ -230,12 +230,12 @@ pub fn view<'a>(app: &'a App, modal: &'a Modal) -> Element<'a> {
                             }
                             let mods = press.modifiers;
                             match &press.key {
-                                Key::Character(c) if mods.control() && c.as_str() == "z" => Some(Binding::Custom(if mods.shift() {
+                                Key::Character(c) if (mods.control() || mods.command()) && c.as_str() == "z" => Some(Binding::Custom(if mods.shift() {
                                     Message::ModalRedo
                                 } else {
                                     Message::ModalUndo
                                 })),
-                                Key::Character(c) if mods.control() && c.as_str() == "y" => Some(Binding::Custom(Message::ModalRedo)),
+                                Key::Character(c) if (mods.control() || mods.command()) && c.as_str() == "y" => Some(Binding::Custom(Message::ModalRedo)),
                                 _ => Binding::from_key_press(press),
                             }
                         })

@@ -1300,6 +1300,71 @@ mod tests {
     }
 
     #[test]
+    fn clicking_a_file_in_the_tree_opens_the_editor_twice_too() {
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        let mut h = Harness::new(&t.dir);
+        h.frame();
+        assert!(h.app.tree.contains_key(""), "root listed");
+        let (_, files) = h
+            .app
+            .title_strips()
+            .into_iter()
+            .find(|(p, _)| h.app.panes.get(*p) == Some(&Pane::Files))
+            .expect("files pane");
+        // Below the title bar and the pane header sits the first row.
+        let x = (files.x + 40.0) as i32;
+        let y = (files.y + 26.0 + 30.0 + 11.0) as i32;
+        let press = format!("\x1b[<0;{x};{y}M");
+        let release = format!("\x1b[<0;{x};{y}m");
+        h.key(press.as_bytes());
+        h.key(release.as_bytes());
+        assert_eq!(h.app.editor.as_ref().map(|e| e.path.as_str()), Some("a.txt"), "single click opens");
+        // A double click (second press right after) keeps it open.
+        h.key(press.as_bytes());
+        h.key(release.as_bytes());
+        h.key(press.as_bytes());
+        h.key(release.as_bytes());
+        assert_eq!(h.app.editor.as_ref().map(|e| e.path.as_str()), Some("a.txt"), "double click keeps it open");
+        assert!(h.app.editor_full);
+    }
+
+    #[test]
+    fn double_click_on_a_changed_file_opens_the_editor() {
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        t.write("a.txt", "two\n");
+        let mut h = Harness::new(&t.dir);
+        h.frame();
+        let (_, changes) = h
+            .app
+            .title_strips()
+            .into_iter()
+            .find(|(p, _)| h.app.panes.get(*p) == Some(&Pane::Changes))
+            .expect("changes pane");
+        // Find the row of a.txt by clicking down the pane until it is selected.
+        let x = (changes.x + 70.0) as i32;
+        let mut row_y = None;
+        for dy in (30..160).step_by(6) {
+            let y = (changes.y + dy as f32) as i32;
+            h.app.selected_file = None;
+            h.key(format!("\x1b[<0;{x};{y}M").as_bytes());
+            h.key(format!("\x1b[<0;{x};{y}m").as_bytes());
+            if matches!(&h.app.selected_file, Some(crate::git::repo::DiffTarget::WorkdirUnstaged(p)) if p == "a.txt") {
+                row_y = Some(y);
+                break;
+            }
+        }
+        let y = row_y.expect("a.txt row");
+        assert!(h.app.editor.is_none(), "a single click only selects");
+        // Two clicks in quick succession: pushed together, one frame.
+        let seq = format!("\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m");
+        h.key(seq.as_bytes());
+        assert_eq!(h.app.editor.as_ref().map(|e| e.path.as_str()), Some("a.txt"), "double click edits");
+        assert!(!h.app.editor_full, "from the change list the diff column stays");
+    }
+
+    #[test]
     fn font_size_tracks_cell_height() {
         assert_eq!(font_size_for_cell(0, 2.0), 13.0);
         assert_eq!(font_size_for_cell(34, 2.0), 13.0);

@@ -82,7 +82,7 @@ Give the agent the control API by linking `skill/SKILL.md` into its skills direc
 - **Conflict resolver**: a three-way merge tool (ours | result | theirs) with per-conflict take-left / take-right / keep-both / drop buttons, accept-all, edit the result, apply and mark resolved. Conflicted files also get a banner with whole-file ours / theirs.
 - **Panes**: repository, files, commits, changes and diff on a pane grid. Drag a title bar to move a pane, drag the gaps to resize, maximize with the arrows or `1` .. `5`, hide with the x and bring it back from the footer. The commit list's columns resize from its header. The layout, hidden panes, collapsed sections, wrap and diff settings are saved per repository in `.git/gitgui.json` and restored on the next start (`GITGUI_NO_STATE=1` skips this).
 - **File tree**: its own pane with the whole working tree, folders listed on demand, ignored entries dimmed, changed files colored. Repository sections collapse from their arrow.
-- **Editor**: built-in, on iced's text editor with syntax colors for the common languages, undo, `Ctrl+S`. A file opened from the tree takes the whole area next to the sidebar. `Shift+E` opens the file in your own editor in a new split (GUI editors such as `code` open detached), `Shift+O` opens cmux's file preview.
+- **Editor**: built-in, on iced's text editor with syntax colors for the common languages, undo, `Ctrl+S`. Double-click a file in the change lists, press `e`, or click one in the file tree. A file opened from the tree takes the whole area next to the sidebar. `Shift+E` opens the file in your own editor in a new split (GUI editors such as `code` open detached), `Shift+O` opens cmux's file preview.
 - **Desktop window**: the same UI in a native window with `--window`, or on its own when the terminal has no kitty graphics (Terminal.app, iTerm2, VS Code's terminal, tmux). Keys, panes, the state file and the agent API work the same; the terminal split and cmux preview do not apply. `scripts/bundle-macos.sh` wraps it as `gitgui.app` with the logo as its icon.
 - **Open another repository**: `Ctrl+O`, the `Change folder` button in the footer, or the one on the not-a-repository screen. A folder dialog with the subfolders listed, git repositories marked, `..` to go up, or type a path.
 - **SHA-256 repositories**: `git init --object-format=sha256` repositories open, read and commit like any other.
@@ -100,7 +100,7 @@ Not planned: an interactive rebase editor, bisect, submodules, worktrees. Use th
 | Stage all, unstage all | `a` / `Shift+A` |
 | Discard file or lines, discard everything | `d` / `Shift+D` |
 | Ignore the selected untracked file | `i` |
-| Edit (built-in), open in your editor, preview in cmux | `e`, `Shift+E`, `Shift+O` |
+| Edit (built-in), open in your editor, preview in cmux | `e` or double-click, `Shift+E`, `Shift+O` |
 | Save, close the editor | `Ctrl+S`, `Escape` |
 | Undo, redo in any text field | `Ctrl+Z`, `Ctrl+Y` |
 | Copy the text selected in the diff (or in any field) | `Ctrl+C` |
@@ -141,7 +141,7 @@ Same trick as [terminal-browser](https://github.com/zenbu-labs/terminal-browser)
 Requires macOS or Linux. In-terminal rendering needs a kitty-graphics terminal (cmux, Ghostty, kitty, WezTerm); anywhere else gitgui opens a desktop window. The one-liner at the top downloads a release binary into `~/.local/bin`, or builds from source with `cargo` when there is no binary for your platform.
 
 ```bash
-GITGUI_VERSION=0.7.0 GITGUI_INSTALL_DIR=~/bin bash scripts/install.sh   # pin a version, other dir
+GITGUI_VERSION=0.7.1 GITGUI_INSTALL_DIR=~/bin bash scripts/install.sh   # pin a version, other dir
 cargo install --git https://github.com/antonellof/gitgui                 # from source (Rust 1.95+)
 gitgui --probe                                                           # does this terminal support kitty graphics?
 ```
