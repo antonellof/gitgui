@@ -309,8 +309,9 @@ Not planned for v0.x: an interactive rebase editor, bisect, submodules,
 worktrees, sparse checkout, patch export. Use the git CLI in the
 neighbouring pane.
 
-### Recently shipped (v0.1.1 to v0.7.5)
+### Recently shipped (v0.1.1 to v0.7.6)
 
+- v0.7.6: Ctrl+C in a focused field copies in the real terminal too (the runtime used to quit on it before the UI saw the key); three quick Ctrl+C force quit
 - v0.7.5: a toast confirms every clipboard copy (the terminal may still refuse OSC 52)
 - v0.7.4: the editor layout is derived from the main one when a file opens: the left column stays exactly as arranged, the rest becomes the editor; the editor layout is no longer saved
 - v0.7.3: the x on the editor's pane (or the last pane of the editor layout) closes the editor or merge tool and restores the previous layout

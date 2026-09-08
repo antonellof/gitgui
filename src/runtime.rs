@@ -406,6 +406,7 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
     let mut screenshot_reply: Option<mpsc::Sender<String>> = None;
     let mut pointer = "";
     let mut zoom_applied = app.zoom;
+    let mut ctrl_c_presses: Vec<Instant> = Vec::new();
 
     loop {
         if term::quit_requested() {
@@ -601,7 +602,19 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
                     mods,
                     pressed: true,
                     ..
-                } if mods.ctrl => quit = true,
+                } if mods.ctrl => {
+                    // Ctrl+C goes to the UI: a focused editor copies with it
+                    // and the app quits when nothing took it. Three presses
+                    // within 1.5 s quit no matter what.
+                    let now = Instant::now();
+                    ctrl_c_presses.retain(|t: &Instant| now.duration_since(*t) < Duration::from_millis(1500));
+                    ctrl_c_presses.push(now);
+                    if ctrl_c_presses.len() >= 3 {
+                        quit = true;
+                    } else {
+                        shell.push(ev);
+                    }
+                }
                 Event::Focus(f) => {
                     let _ = worker.tx.send(Command::Focus(*f));
                     shell.push(ev);

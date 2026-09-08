@@ -117,7 +117,7 @@ Not planned: an interactive rebase editor, bisect, submodules, worktrees. Use th
 | Zoom in, out, reset | `Ctrl+=`, `Ctrl+-`, `Ctrl+0` |
 | Cycle panes, maximize / restore a pane | `Tab`, `1` .. `5` |
 | Clear filter, search or selection; close dialog | `Escape` |
-| Help, quit | `?`, `q` or `Ctrl+C` |
+| Help, quit | `?`, `q` or `Ctrl+C` (in a text field `Ctrl+C` copies; three quick `Ctrl+C` always quit) |
 
 Right-click commits, branches, remotes, tags, stashes and files for everything else. gitgui never binds `Cmd+*` and leaves `Ctrl+Shift+*` to the terminal, except `Ctrl+Shift+Enter`.
 
@@ -141,7 +141,7 @@ Same trick as [terminal-browser](https://github.com/zenbu-labs/terminal-browser)
 Requires macOS or Linux. In-terminal rendering needs a kitty-graphics terminal (cmux, Ghostty, kitty, WezTerm); anywhere else gitgui opens a desktop window. The one-liner at the top downloads a release binary into `~/.local/bin`, or builds from source with `cargo` when there is no binary for your platform.
 
 ```bash
-GITGUI_VERSION=0.7.5 GITGUI_INSTALL_DIR=~/bin bash scripts/install.sh   # pin a version, other dir
+GITGUI_VERSION=0.7.6 GITGUI_INSTALL_DIR=~/bin bash scripts/install.sh   # pin a version, other dir
 cargo install --git https://github.com/antonellof/gitgui                 # from source (Rust 1.95+)
 gitgui --probe                                                           # does this terminal support kitty graphics?
 ```
