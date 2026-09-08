@@ -45,8 +45,6 @@ pub enum Pane {
 
 impl Pane {
     pub const ALL: &'static [Pane] = &[Pane::Sidebar, Pane::Files, Pane::Log, Pane::Changes, Pane::Detail];
-    /// Panes of the editor / merge layout.
-    pub const EDITOR: &'static [Pane] = &[Pane::Sidebar, Pane::Files, Pane::Detail];
 
     /// Stable name in the state file.
     pub fn id(self) -> &'static str {
@@ -880,6 +878,59 @@ impl App {
     /// Re-add a hidden pane where it usually sits: Files under Repository,
     /// Repository left of everything, Changes left of Diff, Diff right of
     /// Changes, Commits above Changes.
+    /// The editor layout, derived from the main one each time it is
+    /// entered: the left column (Repository, Files) stays exactly as
+    /// arranged, everything else becomes the editor's pane.
+    fn editor_layout_from_main(&self) -> Configuration<Pane> {
+        fn prune(state: &pane_grid::State<Pane>, node: &pane_grid::Node) -> Option<Configuration<Pane>> {
+            match node {
+                pane_grid::Node::Pane(p) => match state.get(*p) {
+                    Some(k @ (Pane::Sidebar | Pane::Files)) => Some(Configuration::Pane(*k)),
+                    _ => None,
+                },
+                pane_grid::Node::Split { axis, ratio, a, b, .. } => match (prune(state, a), prune(state, b)) {
+                    (Some(a), Some(b)) => Some(Configuration::Split {
+                        axis: *axis,
+                        ratio: *ratio,
+                        a: Box::new(a),
+                        b: Box::new(b),
+                    }),
+                    (Some(one), None) | (None, Some(one)) => Some(one),
+                    (None, None) => None,
+                },
+            }
+        }
+        let root = self.panes.layout();
+        let Some(left) = prune(&self.panes, root) else {
+            return Configuration::Pane(Pane::Detail);
+        };
+        // The column's share of the width: the root split's ratio when the
+        // left column is its first child, else a fifth.
+        let ratio = match root {
+            pane_grid::Node::Split {
+                axis: Axis::Vertical,
+                ratio,
+                a,
+                b,
+                ..
+            } if prune(&self.panes, a).is_some() && prune(&self.panes, b).is_none() => *ratio,
+            _ => 0.2,
+        };
+        Configuration::Split {
+            axis: Axis::Vertical,
+            ratio,
+            a: Box::new(left),
+            b: Box::new(Configuration::Pane(Pane::Detail)),
+        }
+    }
+
+    /// Enter the editor layout, rebuilt from the main layout.
+    fn enter_editor_layout(&mut self) {
+        if !self.in_editor_layout() {
+            self.editor_panes = pane_grid::State::with_configuration(self.editor_layout_from_main());
+        }
+    }
+
     /// The editor and the merge tool draw in the Diff pane. If that pane was
     /// hidden in the active layout (and saved that way), bring it back, or
     /// the layout switches and nothing shows the file.
@@ -2080,6 +2131,9 @@ impl App {
         let workdir = self.snapshot.path.clone();
         match Editor::open(&workdir, &path) {
             Ok(ed) => {
+                if full {
+                    self.enter_editor_layout();
+                }
                 self.editor = Some(ed);
                 self.editor_full = full;
                 self.ensure_detail_pane();
@@ -2103,6 +2157,7 @@ impl App {
         let workdir = self.snapshot.path.clone();
         match MergeState::open(&workdir, &path, &head) {
             Ok(m) => {
+                self.enter_editor_layout();
                 self.merge = Some(m);
                 self.editor = None;
                 self.selection = Selection::WorkingTree;

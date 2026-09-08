@@ -145,7 +145,8 @@ impl Persisted {
         Persisted {
             version: 1,
             panes: Some(layout_of(&app.panes)),
-            editor_panes: Some(layout_of(&app.editor_panes)),
+            // Derived from `panes` when the editor opens; not saved.
+            editor_panes: None,
             maximized: app.panes.maximized().and_then(|p| app.panes.get(p)).map(|k| k.id().to_owned()),
             collapsed,
             wrap: app.wrap,
@@ -168,9 +169,6 @@ impl Persisted {
                     app.panes.maximize(p);
                 }
             }
-        }
-        if let Some(cfg) = self.editor_panes.as_ref().and_then(|l| configuration(l, Pane::EDITOR)) {
-            app.editor_panes = pane_grid::State::with_configuration(cfg);
         }
         app.sidebar_collapsed = self
             .collapsed
@@ -211,7 +209,6 @@ mod tests {
         assert!(configuration(&layout(r#"{"axis":"v","ratio":0.5,"a":"files","b":"files"}"#), Pane::ALL).is_none());
         assert!(configuration(&layout(r#"{"axis":"v","ratio":1.5,"a":"files","b":"diff"}"#), Pane::ALL).is_none());
         assert!(configuration(&layout(r#"{"axis":"x","ratio":0.5,"a":"files","b":"diff"}"#), Pane::ALL).is_none());
-        assert!(configuration(&layout(r#""commits""#), Pane::EDITOR).is_none());
         assert!(configuration(&layout(r#""commits""#), Pane::ALL).is_some());
     }
 

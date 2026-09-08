@@ -309,8 +309,9 @@ Not planned for v0.x: an interactive rebase editor, bisect, submodules,
 worktrees, sparse checkout, patch export. Use the git CLI in the
 neighbouring pane.
 
-### Recently shipped (v0.1.1 to v0.7.3)
+### Recently shipped (v0.1.1 to v0.7.4)
 
+- v0.7.4: the editor layout is derived from the main one when a file opens: the left column stays exactly as arranged, the rest becomes the editor; the editor layout is no longer saved
 - v0.7.3: the x on the editor's pane (or the last pane of the editor layout) closes the editor or merge tool and restores the previous layout
 - v0.7.2: opening a file or the merge tool brings back a Diff pane hidden in the saved editor layout (the file had nowhere to show)
 - v0.7.1: double-click on a file row opens the editor again (lost in the iced port), Cmd variants of the custom bindings in the native window

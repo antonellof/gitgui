@@ -1423,6 +1423,42 @@ mod tests {
     }
 
     #[test]
+    fn the_editor_layout_keeps_the_left_column_as_arranged() {
+        use crate::ui::app::Message;
+        use iced_core::Size;
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        let mut h = Harness::new(&t.dir);
+        h.frame();
+        let size = Size::new(900.0, 700.0);
+        let regions = |state: &iced_widget::pane_grid::State<Pane>, kind: Pane| {
+            let p = state.iter().find(|(_, k)| **k == kind).map(|(p, _)| *p)?;
+            state.layout().pane_regions(4.0, 80.0, size).get(&p).copied()
+        };
+        // Widen the left column and hide the Repository pane in the main layout.
+        let root = *h.app.panes.layout().splits().next().expect("root split");
+        h.app.update(Message::PaneResized(iced_widget::pane_grid::ResizeEvent { split: root, ratio: 0.4 }));
+        let sidebar = h.app.pane_of(Pane::Sidebar).unwrap();
+        h.app.update(Message::PaneClose(sidebar));
+        h.frame();
+        let files_main = regions(&h.app.panes, Pane::Files).expect("files in main");
+        // Open a file: the editor layout has the same Files column.
+        h.app.update(Message::TreeOpen("a.txt".into()));
+        h.frame();
+        assert!(h.app.editor_full);
+        assert_eq!(h.app.editor_panes.len(), 2, "Files and the editor");
+        let files_editor = regions(&h.app.editor_panes, Pane::Files).expect("files in editor layout");
+        assert!((files_editor.width - files_main.width).abs() < 1.0, "{files_main:?} vs {files_editor:?}");
+        assert!((files_editor.x - files_main.x).abs() < 1.0);
+        let detail = regions(&h.app.editor_panes, Pane::Detail).unwrap();
+        assert!(detail.x > files_editor.x + files_editor.width - 1.0);
+        // Closing the editor returns to the untouched main layout.
+        h.app.update(Message::EditorClose);
+        h.frame();
+        assert_eq!(regions(&h.app.panes, Pane::Files), Some(files_main));
+    }
+
+    #[test]
     fn font_size_tracks_cell_height() {
         assert_eq!(font_size_for_cell(0, 2.0), 13.0);
         assert_eq!(font_size_for_cell(34, 2.0), 13.0);
