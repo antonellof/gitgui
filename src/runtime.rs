@@ -1493,6 +1493,32 @@ mod tests {
     }
 
     #[test]
+    fn paste_prefers_gitgui_copy_until_the_system_clipboard_changes() {
+        use std::sync::{Arc, Mutex};
+        let t = TempRepo::new();
+        t.commit_file("a.rs", "fn main() {}\n", "init");
+        let mut h = Harness::new(&t.dir);
+        let system = Arc::new(Mutex::new(Some("OLD SYSTEM TEXT".to_owned())));
+        let source = system.clone();
+        h.shell.clipboard.system_source = Arc::new(move || source.lock().unwrap().clone());
+        h.key(b"e");
+        // Copy the buffer; the terminal (simulated) does not apply OSC 52,
+        // so the system clipboard still says OLD. Paste must give ours.
+        h.key(b"\x1b[97;5u");
+        h.key(b"\x1b[99;5u");
+        h.key(b"\x1b[F");
+        h.key(b"\x1b[118;5u");
+        let text = h.app.editor.as_ref().unwrap().content.text();
+        assert_eq!(text.matches("fn main() {}").count(), 2, "{text:?}");
+        assert!(!text.contains("OLD SYSTEM TEXT"));
+        // Now something newer lands on the system clipboard: paste takes it.
+        *system.lock().unwrap() = Some("NEWER".to_owned());
+        h.key(b"\x1b[118;5u");
+        let text = h.app.editor.as_ref().unwrap().content.text();
+        assert!(text.contains("NEWER"), "{text:?}");
+    }
+
+    #[test]
     fn ctrl_v_pastes_what_gitgui_copied_last() {
         let t = TempRepo::new();
         t.commit_file("a.rs", "fn main() {}\n", "init");

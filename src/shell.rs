@@ -19,11 +19,28 @@ pub type Renderer = iced_renderer::Renderer;
 /// bracketed paste the terminal just delivered (its own Cmd+V), the system
 /// clipboard through the platform's paste command, and the last text copied
 /// inside gitgui.
-#[derive(Default)]
 pub struct Clipboard {
     pub copied: Vec<String>,
     pub paste: Option<String>,
     last_copied: Option<String>,
+    /// What the system clipboard held when gitgui last copied. While it
+    /// still holds that, the terminal did not apply our OSC 52 (or nothing
+    /// newer was copied), so the paste takes gitgui's own copy.
+    system_at_copy: Option<String>,
+    /// The system clipboard reader; tests swap in a fake.
+    pub system_source: std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>,
+}
+
+impl Default for Clipboard {
+    fn default() -> Self {
+        Clipboard {
+            copied: Vec::new(),
+            paste: None,
+            last_copied: None,
+            system_at_copy: None,
+            system_source: std::sync::Arc::new(system_clipboard),
+        }
+    }
 }
 
 impl clipboard::Clipboard for Clipboard {
@@ -31,10 +48,17 @@ impl clipboard::Clipboard for Clipboard {
         if let Some(p) = &self.paste {
             return Some(p.clone());
         }
-        system_clipboard().or_else(|| self.last_copied.clone())
+        let system = (self.system_source)();
+        match (&system, &self.last_copied) {
+            // Something newer than our copy sits on the system clipboard.
+            (Some(s), Some(_)) if self.system_at_copy.as_ref() != Some(s) => system,
+            (_, Some(ours)) => Some(ours.clone()),
+            (_, None) => system,
+        }
     }
 
     fn write(&mut self, _kind: clipboard::Kind, contents: String) {
+        self.system_at_copy = (self.system_source)();
         self.last_copied = Some(contents.clone());
         self.copied.push(contents);
     }
