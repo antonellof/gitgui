@@ -487,6 +487,8 @@ pub enum Message {
     Edit,
     EditorAction(text_editor::Action),
     EditorSave,
+    EditorUndo,
+    EditorRedo,
     EditorClose,
     EditorExternal,
     EditorPreview,
@@ -2438,6 +2440,20 @@ impl App {
             Message::EditorAction(action) => {
                 if let Some(ed) = self.editor.as_mut() {
                     ed.perform(action);
+                }
+            }
+            Message::EditorUndo => {
+                if let Some(ed) = self.editor.as_mut() {
+                    if !ed.undo() {
+                        self.toast("nothing to undo", false);
+                    }
+                }
+            }
+            Message::EditorRedo => {
+                if let Some(ed) = self.editor.as_mut() {
+                    if !ed.redo() {
+                        self.toast("nothing to redo", false);
+                    }
                 }
             }
             Message::EditorSave => self.save_editor(),

@@ -24,7 +24,21 @@ pub struct Editor {
     pub lang: Lang,
     crlf: bool,
     dirty: bool,
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
+    /// Last edit: when, and whether it was a typed character, so a run of
+    /// typing undoes as one step.
+    last_edit: Option<(std::time::Instant, bool)>,
 }
+
+/// The buffer before an edit, with the cursor to put back.
+struct Snapshot {
+    text: String,
+    cursor: text_editor::Cursor,
+}
+
+const UNDO_DEPTH: usize = 200;
+const TYPING_GROUP_MS: u128 = 800;
 
 impl Editor {
     /// Read `path` under `workdir`. Errors are user-facing strings.
@@ -52,15 +66,68 @@ impl Editor {
             saved: text,
             crlf,
             dirty: false,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            last_edit: None,
         })
     }
 
     pub fn perform(&mut self, action: text_editor::Action) {
         let edit = action.is_edit();
+        if edit {
+            let typed = matches!(action, text_editor::Action::Edit(text_editor::Edit::Insert(c)) if !c.is_whitespace());
+            let grouped = typed
+                && self
+                    .last_edit
+                    .is_some_and(|(at, was_typed)| was_typed && at.elapsed().as_millis() < TYPING_GROUP_MS);
+            if !grouped {
+                self.undo.push(self.snapshot());
+                if self.undo.len() > UNDO_DEPTH {
+                    self.undo.remove(0);
+                }
+            }
+            self.redo.clear();
+            self.last_edit = Some((std::time::Instant::now(), typed));
+        }
         self.content.perform(action);
         if edit {
-            self.dirty = self.content.text().trim_end_matches('\n') != self.saved.trim_end_matches('\n');
+            self.refresh_dirty();
         }
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            text: self.content.text(),
+            cursor: self.content.cursor(),
+        }
+    }
+
+    fn restore(&mut self, snap: Snapshot) {
+        self.content = text_editor::Content::with_text(&snap.text);
+        self.content.move_to(snap.cursor);
+        self.refresh_dirty();
+    }
+
+    fn refresh_dirty(&mut self) {
+        self.dirty = self.content.text().trim_end_matches('\n') != self.saved.trim_end_matches('\n');
+    }
+
+    /// Ctrl+Z. False when there is nothing to undo.
+    pub fn undo(&mut self) -> bool {
+        let Some(snap) = self.undo.pop() else { return false };
+        self.redo.push(self.snapshot());
+        self.restore(snap);
+        self.last_edit = None;
+        true
+    }
+
+    /// Ctrl+Y or Ctrl+Shift+Z.
+    pub fn redo(&mut self) -> bool {
+        let Some(snap) = self.redo.pop() else { return false };
+        self.undo.push(self.snapshot());
+        self.restore(snap);
+        self.last_edit = None;
+        true
     }
 
     pub fn dirty(&self) -> bool {
@@ -143,6 +210,14 @@ pub fn view(app: &App) -> Element<'_> {
             match &press.key {
                 keyboard::Key::Character(c) if mods.control() && c.as_str() == "s" => {
                     Some(Binding::Custom(Message::EditorSave))
+                }
+                keyboard::Key::Character(c) if mods.control() && c.as_str() == "z" => Some(Binding::Custom(if mods.shift() {
+                    Message::EditorRedo
+                } else {
+                    Message::EditorUndo
+                })),
+                keyboard::Key::Character(c) if mods.control() && c.as_str() == "y" => {
+                    Some(Binding::Custom(Message::EditorRedo))
                 }
                 keyboard::Key::Named(keyboard::key::Named::Escape) => Some(Binding::Custom(Message::EditorClose)),
                 keyboard::Key::Named(keyboard::key::Named::Tab) if !mods.control() => {

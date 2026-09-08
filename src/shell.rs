@@ -84,6 +84,16 @@ impl Shell {
         self.modifiers
     }
 
+    /// Track the modifier state and tell the widgets when it changes:
+    /// `text_input` keeps the modifiers it last saw in `ModifiersChanged`,
+    /// not the ones on a key press.
+    fn set_modifiers(&mut self, m: keyboard::Modifiers) {
+        if m != self.modifiers {
+            self.modifiers = m;
+            self.events.push(Event::Keyboard(keyboard::Event::ModifiersChanged(m)));
+        }
+    }
+
     /// Current pointer position in points, if known.
     pub fn cursor(&self) -> Option<Point> {
         self.cursor.position()
@@ -116,7 +126,7 @@ impl Shell {
                 y,
                 mods,
             } => {
-                self.modifiers = modifiers(*mods);
+                self.set_modifiers(modifiers(*mods));
                 self.move_to(*x, *y);
                 let b = match button {
                     MouseButton::Left => mouse::Button::Left,
@@ -130,7 +140,7 @@ impl Shell {
                 }));
             }
             TermEvent::Wheel { dx, dy, x, y, mods } => {
-                self.modifiers = modifiers(*mods);
+                self.set_modifiers(modifiers(*mods));
                 self.move_to(*x, *y);
                 self.events.push(Event::Mouse(mouse::Event::WheelScrolled {
                     delta: mouse::ScrollDelta::Lines {
@@ -146,7 +156,7 @@ impl Shell {
                 pressed,
                 repeat,
             } => {
-                self.modifiers = modifiers(*mods);
+                self.set_modifiers(modifiers(*mods));
                 let Some(k) = iced_key(*key, text.as_deref()) else { return };
                 let text = text
                     .as_deref()
@@ -336,13 +346,17 @@ fn merge_redraw(a: window::RedrawRequest, b: window::RedrawRequest) -> window::R
     }
 }
 
+/// Terminal modifiers as iced modifiers. iced binds copy, cut, paste, select
+/// all and friends to `Modifiers::COMMAND`, which is Cmd on macOS; a terminal
+/// only ever delivers Ctrl (Cmd belongs to the terminal), so Ctrl also sets
+/// the command bit there. `control()` stays true for our own bindings.
 fn modifiers(m: Mods) -> keyboard::Modifiers {
     let mut out = keyboard::Modifiers::empty();
     if m.shift {
         out |= keyboard::Modifiers::SHIFT;
     }
     if m.ctrl {
-        out |= keyboard::Modifiers::CTRL;
+        out |= keyboard::Modifiers::CTRL | keyboard::Modifiers::COMMAND;
     }
     if m.alt {
         out |= keyboard::Modifiers::ALT;

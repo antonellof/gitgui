@@ -1102,6 +1102,58 @@ mod tests {
     }
 
     #[test]
+    fn editor_undo_redo_select_all_copy_and_dialog_select_all() {
+        let t = TempRepo::new();
+        t.commit_file("a.rs", "fn main() {}\n", "init");
+        let mut h = Harness::new(&t.dir);
+        h.key(b"e");
+        let text = |h: &Harness| h.app.editor.as_ref().unwrap().content.text();
+        let original = text(&h);
+        // Typing groups into one undo step; Ctrl+Z (CSI u, ctrl) takes it back.
+        h.key(b"a");
+        h.key(b"b");
+        assert!(text(&h).starts_with("ab"));
+        assert!(h.app.editor.as_ref().unwrap().dirty());
+        h.key(b"\x1b[122;5u");
+        assert_eq!(text(&h), original);
+        assert!(!h.app.editor.as_ref().unwrap().dirty());
+        // Ctrl+Y brings it back, Ctrl+Shift+Z the same.
+        h.key(b"\x1b[121;5u");
+        assert!(text(&h).starts_with("ab"));
+        h.key(b"\x1b[122;5u");
+        h.key(b"\x1b[122;6u");
+        assert!(text(&h).starts_with("ab"));
+        // Ctrl+A then Ctrl+C copies the whole buffer to the terminal clipboard.
+        h.key(b"\x1b[97;5u");
+        let events: Vec<_> = h.parser.feed(b"\x1b[99;5u").into_iter().chain(h.parser.flush()).collect();
+        for ev in &events {
+            h.shell.push(ev);
+        }
+        let out = h.shell.frame(&mut h.app, &mut h.fb);
+        assert_eq!(out.copy.len(), 1, "Ctrl+C in the editor copies, it does not quit");
+        assert!(out.copy[0].starts_with("ab"));
+        assert!(!h.app.quit);
+        // Ctrl+X cuts the selection.
+        h.key(b"\x1b[97;5u");
+        h.key(b"\x1b[120;5u");
+        assert_eq!(text(&h).trim(), "");
+        h.key(b"\x1b[122;5u");
+        assert!(text(&h).starts_with("ab"));
+
+        // A dialog's text input: Ctrl+A selects all, typing replaces it.
+        h.key(b"\x1b");
+        h.key(b"\x1b");
+        h.app.update(crate::ui::app::Message::OpenFolderDialog);
+        h.frame();
+        h.key(b"\x1b[97;5u");
+        h.key(b"z");
+        match &h.app.modal {
+            Some(crate::ui::app::Modal::OpenFolder { path, .. }) => assert_eq!(path, "z"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn font_size_tracks_cell_height() {
         assert_eq!(font_size_for_cell(0, 2.0), 13.0);
         assert_eq!(font_size_for_cell(34, 2.0), 13.0);
