@@ -1370,24 +1370,56 @@ mod tests {
         let t = TempRepo::new();
         t.commit_file("a.txt", "one\n", "init");
         let mut h = Harness::new(&t.dir);
-        // Open a file from the tree, hide the Diff pane of the editor layout
-        // with its x, close the editor. The layout is remembered that way.
-        h.app.update(Message::TreeOpen("a.txt".into()));
-        h.frame();
-        assert!(h.app.editor_full);
-        let detail = h.app.pane_of(Pane::Detail).expect("diff pane in the editor layout");
-        h.app.update(Message::PaneClose(detail));
-        h.frame();
-        assert!(h.app.pane_of(Pane::Detail).is_none());
-        h.app.update(Message::EditorClose);
-        h.frame();
-        assert!(h.app.editor.is_none());
-        // Clicking a file again must show the editor, not an empty layout.
+        // A state file from before 0.7.2 could hold an editor layout that
+        // is only the Files pane.
+        h.app.editor_panes = iced_widget::pane_grid::State::new(Pane::Files).0;
+        // Clicking a file must show the editor, not an empty layout.
         h.app.update(Message::TreeOpen("a.txt".into()));
         h.frame();
         assert_eq!(h.app.editor.as_ref().map(|e| e.path.as_str()), Some("a.txt"));
         assert!(h.app.pane_of(Pane::Detail).is_some(), "the diff pane is back");
         assert_eq!(h.app.focus, Pane::Detail);
+    }
+
+    #[test]
+    fn closing_the_editor_pane_closes_the_editor_and_restores_the_layout() {
+        use crate::ui::app::Message;
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        let mut h = Harness::new(&t.dir);
+        let main_before = h.app.panes.len();
+        h.app.update(Message::TreeOpen("a.txt".into()));
+        h.frame();
+        assert!(h.app.editor_full);
+        // x on the editor's pane: editor closes, main layout is back intact.
+        let detail = h.app.pane_of(Pane::Detail).unwrap();
+        h.app.update(Message::PaneClose(detail));
+        h.frame();
+        assert!(h.app.editor.is_none());
+        assert!(!h.app.editor_full);
+        assert_eq!(h.app.panes.len(), main_before);
+        // Hide the sidebar in the editor layout, then x on the last pane
+        // (Files, after hiding the editor's neighbour) also leaves the editor.
+        h.app.update(Message::TreeOpen("a.txt".into()));
+        h.frame();
+        let sidebar = h.app.pane_of(Pane::Sidebar).unwrap();
+        h.app.update(Message::PaneClose(sidebar));
+        h.frame();
+        assert!(h.app.editor.is_some(), "hiding the sidebar keeps the editor");
+        let detail = h.app.pane_of(Pane::Detail).unwrap();
+        h.app.update(Message::PaneClose(detail));
+        h.frame();
+        assert!(h.app.editor.is_none());
+        assert_eq!(h.app.panes.len(), main_before);
+        // A dirty editor asks first.
+        h.app.update(Message::TreeOpen("a.txt".into()));
+        h.frame();
+        h.key(b"x");
+        let detail = h.app.pane_of(Pane::Detail).unwrap();
+        h.app.update(Message::PaneClose(detail));
+        h.frame();
+        assert!(matches!(h.app.modal, Some(crate::ui::app::Modal::CloseEditor)));
+        assert!(h.app.editor.is_some());
     }
 
     #[test]

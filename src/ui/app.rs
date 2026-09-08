@@ -848,6 +848,18 @@ impl App {
     }
 
     fn close_pane(&mut self, p: pane_grid::Pane) {
+        // In the editor layout the x on the editor's pane (or on the last
+        // pane left) closes the editor or merge tool and brings the
+        // previous layout back, rather than hiding a pane.
+        if self.in_editor_layout() && (self.active_panes().get(p) == Some(&Pane::Detail) || self.active_panes().len() <= 1) {
+            if self.merge.is_some() {
+                self.merge = None;
+                self.focus = Pane::Changes;
+            } else {
+                self.close_editor();
+            }
+            return;
+        }
         if self.active_panes().len() <= 1 {
             self.toast("the last pane stays", true);
             return;

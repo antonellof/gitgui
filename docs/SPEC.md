@@ -149,7 +149,7 @@ Unit test with a fixture DAG: linear history, one merge, one octopus, two indepe
 
 Layout, an iced `pane_grid` with five panes. Every title bar drags its pane (the bar tints and the pointer becomes a hand over it), the gaps resize, the arrows glyph maximizes or restores (also `1` .. `5`), the x hides the pane and the footer grows a `+ <pane>` button to bring it back next to its usual neighbour:
 
-`App::ensure_detail_pane` runs when the editor or the merge tool opens: both draw in the Diff pane, and a layout saved with that pane hidden would switch to the editor columns with nothing to show the file, so the pane is re-added first.
+In the editor layout the x on the Diff pane, or on the last pane left, closes the editor (asking when dirty) or the merge tool and returns to the main layout instead of hiding a pane (`App::close_pane`). `App::ensure_detail_pane` runs when the editor or the merge tool opens: both draw in the Diff pane, and a layout saved with that pane hidden would switch to the editor columns with nothing to show the file, so the pane is re-added first.
 
 Double-click on a file row (unstaged, staged, conflicted, a commit's files) opens the built-in editor: the rows are buttons, which capture the press before iced's `mouse_area` can count clicks, so `App` times two `SelectFile` messages for the same target within 400 ms (`last_file_click`) and sends `EditFile`. The custom key bindings accept `Modifiers::command()` as well as `control()`, so `Cmd+Z`, `Cmd+S`, `Cmd+Enter` work in the native window on macOS (a terminal delivers Ctrl with the command bit); plain `Ctrl+C` quits, `Cmd+C` in the window does not.
 
