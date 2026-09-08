@@ -1140,17 +1140,60 @@ mod tests {
         h.key(b"\x1b[122;5u");
         assert!(text(&h).starts_with("ab"));
 
-        // A dialog's text input: Ctrl+A selects all, typing replaces it.
+        // A dialog's text input: Ctrl+A selects all, typing replaces it,
+        // Ctrl+Z puts the old value back, Ctrl+Y the typed one.
         h.key(b"\x1b");
         h.key(b"\x1b");
         h.app.update(crate::ui::app::Message::OpenFolderDialog);
         h.frame();
+        let modal_path = |h: &Harness| match &h.app.modal {
+            Some(crate::ui::app::Modal::OpenFolder { path, .. }) => path.clone(),
+            other => panic!("{other:?}"),
+        };
+        let start = modal_path(&h);
         h.key(b"\x1b[97;5u");
         h.key(b"z");
-        match &h.app.modal {
-            Some(crate::ui::app::Modal::OpenFolder { path, .. }) => assert_eq!(path, "z"),
-            other => panic!("{other:?}"),
+        h.key(b"q");
+        assert_eq!(modal_path(&h), "zq");
+        // Replacing the selection is one step, the typing after it another.
+        h.key(b"\x1b[122;5u");
+        assert_eq!(modal_path(&h), "z");
+        h.key(b"\x1b[122;5u");
+        assert_eq!(modal_path(&h), start);
+        h.key(b"\x1b[121;5u");
+        h.key(b"\x1b[121;5u");
+        assert_eq!(modal_path(&h), "zq");
+        h.key(b"\x1b");
+        assert!(h.app.modal.is_none());
+
+        // The commit box: typing, Ctrl+Z, Ctrl+Y, and Ctrl+C copies rather than quits.
+        h.key(b"c");
+        h.key(b"o");
+        h.key(b"k");
+        assert_eq!(h.app.commit_msg.text().trim_end(), "ok");
+        h.key(b"\x1b[122;5u");
+        assert_eq!(h.app.commit_msg.text().trim_end(), "");
+        h.key(b"\x1b[121;5u");
+        assert_eq!(h.app.commit_msg.text().trim_end(), "ok");
+        h.key(b"\x1b[97;5u");
+        h.key(b"\x1b[99;5u");
+        assert!(!h.app.quit);
+        h.key(b"\x1b");
+
+        // The commit filter, a text input without a binding hook.
+        // (Escape above may have asked about the dirty editor: dismiss that.)
+        if h.app.modal.is_some() {
+            h.key(b"\x1b");
         }
+        assert!(h.app.modal.is_none());
+        h.key(b"/");
+        h.key(b"m");
+        h.key(b"a");
+        assert_eq!(h.app.filter, "ma");
+        h.key(b"\x1b[122;5u");
+        assert_eq!(h.app.filter, "");
+        h.key(b"\x1b[121;5u");
+        assert_eq!(h.app.filter, "ma");
     }
 
     #[test]

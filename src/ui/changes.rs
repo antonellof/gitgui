@@ -177,6 +177,14 @@ fn worktree(app: &App) -> Element<'_> {
                     Some(Binding::Custom(Message::Commit))
                 }
                 keyboard::Key::Named(keyboard::key::Named::Escape) => Some(Binding::Unfocus),
+                keyboard::Key::Character(c) if mods.control() && c.as_str() == "z" => Some(Binding::Custom(if mods.shift() {
+                    Message::CommitRedo
+                } else {
+                    Message::CommitUndo
+                })),
+                keyboard::Key::Character(c) if mods.control() && c.as_str() == "y" => {
+                    Some(Binding::Custom(Message::CommitRedo))
+                }
                 _ => Binding::from_key_press(press),
             }
         })

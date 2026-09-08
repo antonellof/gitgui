@@ -22,7 +22,7 @@ use crate::git::repo::{DiffOpts, DiffTarget, DirEntry, FileStatus, RepoSnapshot,
 use crate::ui::editor::Editor;
 use crate::ui::theme::Theme;
 use crate::ui::merge::{MergeState, Resolution};
-use crate::ui::{changes, diff, editor, footer, log, menu, merge, modal, sidebar, state, tree, widgets};
+use crate::ui::{changes, diff, editor, footer, log, menu, merge, modal, sidebar, state, tree, undo, widgets};
 
 pub type Renderer = crate::shell::Renderer;
 pub type Element<'a> = iced_core::Element<'a, Message, iced_core::Theme, Renderer>;
@@ -489,6 +489,12 @@ pub enum Message {
     EditorSave,
     EditorUndo,
     EditorRedo,
+    /// Undo / redo from the commit box's own key binding.
+    CommitUndo,
+    CommitRedo,
+    /// Undo / redo from the multiline dialog field's key binding.
+    ModalUndo,
+    ModalRedo,
     EditorClose,
     EditorExternal,
     EditorPreview,
@@ -574,6 +580,11 @@ pub struct App {
     pub zoom: f32,
     /// The last finished write (label, ok, message).
     pub last_result: Option<OpResult>,
+    commit_hist: undo::ContentHistory,
+    modal_multi_hist: undo::ContentHistory,
+    modal_hist: undo::TextHistory,
+    filter_hist: undo::TextHistory,
+    search_hist: undo::TextHistory,
     /// Commands in flight that answer with `Op` replies, worker order.
     queued_ops: VecDeque<QueuedOp>,
     /// Outcomes by agent id, so a retried write returns the first result.
@@ -686,6 +697,11 @@ impl App {
             log_columns: (110.0, 44.0),
             zoom: 1.0,
             last_result: None,
+            commit_hist: undo::ContentHistory::default(),
+            modal_multi_hist: undo::ContentHistory::default(),
+            modal_hist: undo::TextHistory::default(),
+            filter_hist: undo::TextHistory::default(),
+            search_hist: undo::TextHistory::default(),
             queued_ops: VecDeque::new(),
             agent_results: HashMap::new(),
             agent_order: VecDeque::new(),
@@ -863,6 +879,48 @@ impl App {
 
     fn set_commit_message(&mut self, text: &str) {
         self.commit_msg = text_editor::Content::with_text(text);
+        self.commit_hist.clear();
+    }
+
+    /// The text of the open dialog's single-line field.
+    fn modal_text_value(&self) -> Option<String> {
+        match self.modal.as_ref()? {
+            Modal::Input { value, .. } => Some(value.clone()),
+            Modal::NewBranch { name, .. } => Some(name.clone()),
+            Modal::BranchPicker { filter } => Some(filter.clone()),
+            Modal::PublishGithub { name, .. } => Some(name.clone()),
+            Modal::StashOpts { message, .. } => Some(message.clone()),
+            Modal::OpenFolder { path, .. } => Some(path.clone()),
+            _ => None,
+        }
+    }
+
+    /// Ctrl+Z / Ctrl+Y for the text inputs, which have no key binding hook:
+    /// the open dialog's field, else the diff search, else the commit filter.
+    fn field_undo(&mut self, redo: bool) {
+        if self.modal.is_some() {
+            if let Some(cur) = self.modal_text_value() {
+                let next = if redo { self.modal_hist.redo(&cur) } else { self.modal_hist.undo(&cur) };
+                if let Some(v) = next {
+                    self.modal_value_silent(v);
+                }
+            }
+        } else if self.diff_search_active {
+            let cur = self.diff_search.clone();
+            let next = if redo { self.search_hist.redo(&cur) } else { self.search_hist.undo(&cur) };
+            if let Some(v) = next {
+                self.diff_search = v;
+                self.diff_match = 0;
+                self.diff_jump.set(true);
+            }
+        } else if self.filter_active {
+            let cur = self.filter.clone();
+            let next = if redo { self.filter_hist.redo(&cur) } else { self.filter_hist.undo(&cur) };
+            if let Some(v) = next {
+                self.filter = v;
+                self.rebuild_filter();
+            }
+        }
     }
 
     pub fn pane_of(&self, kind: Pane) -> Option<pane_grid::Pane> {
@@ -2020,6 +2078,8 @@ impl App {
         self.update_inner(msg);
         self.track_state();
         if !had_modal && self.modal.is_some() {
+            self.modal_hist.clear();
+            self.modal_multi_hist.clear();
             // A dialog owns the keyboard: drop focus from the editors and
             // inputs underneath before the dialog's own field takes it.
             self.ops.insert(0, Box::new(iced_core::widget::operation::focusable::unfocus()));
@@ -2073,6 +2133,7 @@ impl App {
                 }
             }
             Message::FilterChanged(s) => {
+                self.filter_hist.record(&self.filter, &s);
                 self.filter = s;
                 self.filter_active = true;
                 self.rebuild_filter();
@@ -2112,7 +2173,22 @@ impl App {
             Message::Resolve(path, side) => self.run(Command::Resolve { path, side }),
             Message::Commit => self.commit_now(false),
             Message::CommitAndPush => self.commit_now(true),
-            Message::CommitMsg(action) => self.commit_msg.perform(action),
+            Message::CommitMsg(action) => {
+                self.commit_hist.before(&self.commit_msg, &action);
+                self.commit_msg.perform(action);
+            }
+            Message::CommitUndo => {
+                self.commit_hist.undo(&mut self.commit_msg);
+            }
+            Message::CommitRedo => {
+                self.commit_hist.redo(&mut self.commit_msg);
+            }
+            Message::ModalUndo => {
+                self.modal_multi_hist.undo(&mut self.modal_multiline);
+            }
+            Message::ModalRedo => {
+                self.modal_multi_hist.redo(&mut self.modal_multiline);
+            }
             Message::ToggleAmend(on) => {
                 self.amend = on;
                 if on && !self.amend_loaded {
@@ -2127,6 +2203,7 @@ impl App {
             Message::CommitAction(idx, action) => self.commit_action(idx, action),
             Message::StateAction(a) => self.state_action(a),
             Message::DiffSearch(s) => {
+                self.search_hist.record(&self.diff_search, &s);
                 self.diff_search = s;
                 self.diff_match = 0;
                 self.diff_jump.set(true);
@@ -2228,7 +2305,10 @@ impl App {
                 Some(Modal::PublishGithub { description, .. }) => *description = v,
                 _ => {}
             },
-            Message::ModalMultiline(action) => self.modal_multiline.perform(action),
+            Message::ModalMultiline(action) => {
+                self.modal_multi_hist.before(&self.modal_multiline, &action);
+                self.modal_multiline.perform(action);
+            }
             Message::ModalCheckbox(on) => match &mut self.modal {
                 Some(Modal::NewBranch { checkout, .. }) => *checkout = on,
                 Some(Modal::StashOpts { keep_index, .. }) => *keep_index = on,
@@ -2472,6 +2552,14 @@ impl App {
     }
 
     fn modal_value(&mut self, v: String) {
+        if let Some(old) = self.modal_text_value() {
+            self.modal_hist.record(&old, &v);
+        }
+        self.modal_value_silent(v);
+    }
+
+    /// `modal_value` without touching the history (used by undo itself).
+    fn modal_value_silent(&mut self, v: String) {
         match &mut self.modal {
             Some(Modal::Input { value, .. }) => *value = v,
             Some(Modal::NewBranch { name, .. }) => *name = v,
@@ -2607,6 +2695,8 @@ impl App {
             match named {
                 Some(Named::Escape) => self.modal = None,
                 Some(Named::Enter) => self.modal_confirm(),
+                _ if ctrl && ch == "z" => self.field_undo(shift),
+                _ if ctrl && ch == "y" => self.field_undo(true),
                 _ => {}
             }
             return;
@@ -2636,6 +2726,8 @@ impl App {
                 "c" => self.quit = true,
                 "f" => self.update(Message::DiffSearchOpen),
                 "o" => self.open_folder_dialog(),
+                "z" => self.field_undo(shift),
+                "y" => self.field_undo(true),
                 "-" | "_" => self.set_zoom(self.zoom - 0.1),
                 "=" | "+" => self.set_zoom(self.zoom + 0.1),
                 "0" => self.set_zoom(1.0),

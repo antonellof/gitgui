@@ -11,6 +11,7 @@ use iced_widget::{column, row, text, Space};
 
 use crate::ui::app::{App, Element, Message, Renderer};
 use crate::ui::highlight::{self, Lang};
+use crate::ui::undo::ContentHistory;
 use crate::ui::widgets::{self, small_button};
 
 pub const MAX_EDIT_BYTES: u64 = 1024 * 1024;
@@ -24,21 +25,8 @@ pub struct Editor {
     pub lang: Lang,
     crlf: bool,
     dirty: bool,
-    undo: Vec<Snapshot>,
-    redo: Vec<Snapshot>,
-    /// Last edit: when, and whether it was a typed character, so a run of
-    /// typing undoes as one step.
-    last_edit: Option<(std::time::Instant, bool)>,
+    history: ContentHistory,
 }
-
-/// The buffer before an edit, with the cursor to put back.
-struct Snapshot {
-    text: String,
-    cursor: text_editor::Cursor,
-}
-
-const UNDO_DEPTH: usize = 200;
-const TYPING_GROUP_MS: u128 = 800;
 
 impl Editor {
     /// Read `path` under `workdir`. Errors are user-facing strings.
@@ -66,46 +54,17 @@ impl Editor {
             saved: text,
             crlf,
             dirty: false,
-            undo: Vec::new(),
-            redo: Vec::new(),
-            last_edit: None,
+            history: ContentHistory::default(),
         })
     }
 
     pub fn perform(&mut self, action: text_editor::Action) {
         let edit = action.is_edit();
-        if edit {
-            let typed = matches!(action, text_editor::Action::Edit(text_editor::Edit::Insert(c)) if !c.is_whitespace());
-            let grouped = typed
-                && self
-                    .last_edit
-                    .is_some_and(|(at, was_typed)| was_typed && at.elapsed().as_millis() < TYPING_GROUP_MS);
-            if !grouped {
-                self.undo.push(self.snapshot());
-                if self.undo.len() > UNDO_DEPTH {
-                    self.undo.remove(0);
-                }
-            }
-            self.redo.clear();
-            self.last_edit = Some((std::time::Instant::now(), typed));
-        }
+        self.history.before(&self.content, &action);
         self.content.perform(action);
         if edit {
             self.refresh_dirty();
         }
-    }
-
-    fn snapshot(&self) -> Snapshot {
-        Snapshot {
-            text: self.content.text(),
-            cursor: self.content.cursor(),
-        }
-    }
-
-    fn restore(&mut self, snap: Snapshot) {
-        self.content = text_editor::Content::with_text(&snap.text);
-        self.content.move_to(snap.cursor);
-        self.refresh_dirty();
     }
 
     fn refresh_dirty(&mut self) {
@@ -114,20 +73,16 @@ impl Editor {
 
     /// Ctrl+Z. False when there is nothing to undo.
     pub fn undo(&mut self) -> bool {
-        let Some(snap) = self.undo.pop() else { return false };
-        self.redo.push(self.snapshot());
-        self.restore(snap);
-        self.last_edit = None;
-        true
+        let done = self.history.undo(&mut self.content);
+        self.refresh_dirty();
+        done
     }
 
     /// Ctrl+Y or Ctrl+Shift+Z.
     pub fn redo(&mut self) -> bool {
-        let Some(snap) = self.redo.pop() else { return false };
-        self.undo.push(self.snapshot());
-        self.restore(snap);
-        self.last_edit = None;
-        true
+        let done = self.history.redo(&mut self.content);
+        self.refresh_dirty();
+        done
     }
 
     pub fn dirty(&self) -> bool {

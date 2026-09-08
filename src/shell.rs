@@ -236,10 +236,24 @@ impl Shell {
             app.cursor = p;
         }
         let mut events = std::mem::take(&mut self.events);
+        let mut messages: Vec<Message> = Vec::new();
+        if app.modal.is_some() {
+            // Escape closes the dialog on the first press. A focused
+            // text_input would otherwise swallow it just to drop focus.
+            events.retain(|ev| match ev {
+                Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
+                    if *key == keyboard::Key::Named(key::Named::Escape) =>
+                {
+                    messages.push(Message::Key(key.clone(), *modifiers));
+                    false
+                }
+                Event::Keyboard(keyboard::Event::KeyReleased { key, .. }) => *key != keyboard::Key::Named(key::Named::Escape),
+                _ => true,
+            });
+        }
         events.push(Event::Window(window::Event::RedrawRequested(Instant::now())));
         let mut redraw = window::RedrawRequest::Wait;
         let mut interaction = mouse::Interaction::None;
-        let mut messages: Vec<Message> = Vec::new();
         let mut ops: Vec<Box<dyn iced_core::widget::Operation>> = std::mem::take(&mut app.ops);
 
         // Build, deliver events, apply messages, rebuild; the UI that saw no

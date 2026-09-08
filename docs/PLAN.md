@@ -309,8 +309,9 @@ Not planned for v0.x: an interactive rebase editor, bisect, submodules,
 worktrees, sparse checkout, patch export. Use the git CLI in the
 neighbouring pane.
 
-### Recently shipped (v0.1.1 to v0.6.3)
+### Recently shipped (v0.1.1 to v0.6.4)
 
+- v0.6.4: undo / redo in every text field (`ui/undo.rs`: commit box, dialog fields, reword editor, commit filter, diff search), typing grouped per word, Escape closes a dialog on the first press even with a focused field
 - v0.6.3: Ctrl+A / C / X / V in every field on macOS (Ctrl carries the command bit, ModifiersChanged emitted), editor undo / redo with Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z (iced has none), Ctrl+C in a focused editor copies instead of quitting
 - v0.6.2: paste works on macOS again (bracketed paste is delivered as Cmd+V with a ModifiersChanged pair, since iced binds paste to Modifiers::COMMAND and text_input tracks modifiers separately)
 - v0.6.1: agent writes take an `id` and a retry returns the first outcome; `status` has `head` and `last_op`; `{"cmd":"result"}`; `Repo::commit` refuses an index equal to HEAD

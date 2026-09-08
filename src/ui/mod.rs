@@ -16,4 +16,5 @@ pub mod sidebar;
 pub mod state;
 pub mod theme;
 pub mod tree;
+pub mod undo;
 pub mod widgets;

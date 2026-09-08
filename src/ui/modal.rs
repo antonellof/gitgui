@@ -222,6 +222,23 @@ pub fn view<'a>(app: &'a App, modal: &'a Modal) -> Element<'a> {
                     iced_widget::TextEditor::new(&app.modal_multiline)
                         .id(widgets::MODAL_INPUT_ID.clone())
                         .on_action(Message::ModalMultiline)
+                        .key_binding(|press| {
+                            use iced_core::keyboard::Key;
+                            use iced_widget::text_editor::{Binding, Status};
+                            if !matches!(press.status, Status::Focused { .. }) {
+                                return None;
+                            }
+                            let mods = press.modifiers;
+                            match &press.key {
+                                Key::Character(c) if mods.control() && c.as_str() == "z" => Some(Binding::Custom(if mods.shift() {
+                                    Message::ModalRedo
+                                } else {
+                                    Message::ModalUndo
+                                })),
+                                Key::Character(c) if mods.control() && c.as_str() == "y" => Some(Binding::Custom(Message::ModalRedo)),
+                                _ => Binding::from_key_press(press),
+                            }
+                        })
                         .size(13)
                         .padding(6)
                         .height(Length::Fixed(120.0))
