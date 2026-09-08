@@ -309,8 +309,9 @@ Not planned for v0.x: an interactive rebase editor, bisect, submodules,
 worktrees, sparse checkout, patch export. Use the git CLI in the
 neighbouring pane.
 
-### Recently shipped (v0.1.1 to v0.6.1)
+### Recently shipped (v0.1.1 to v0.6.2)
 
+- v0.6.2: paste works on macOS again (bracketed paste is delivered as Cmd+V with a ModifiersChanged pair, since iced binds paste to Modifiers::COMMAND and text_input tracks modifiers separately)
 - v0.6.1: agent writes take an `id` and a retry returns the first outcome; `status` has `head` and `last_op`; `{"cmd":"result"}`; `Repo::commit` refuses an index equal to HEAD
 - v0.6.0: `window.rs`, the same App in a native window through the iced umbrella crate, `--window` or automatic without kitty graphics; open another repository from a folder dialog (`Ctrl+O`, footer `Change folder`, no-repository screen), `Command::Open`; logo on the no-repository screen and as the app icon; zoom keys; SHA-256 repositories through git2's `unstable-sha256`
 - v0.5.1: layout and settings saved per repository in `.git/gitgui.json` (`ui/state.rs`)

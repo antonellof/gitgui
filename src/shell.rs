@@ -175,11 +175,15 @@ impl Shell {
             }
             TermEvent::Paste(s) => {
                 // Bracketed paste: hand the text to the focused editor through
-                // its own Ctrl+V path, which reads our clipboard.
+                // its own paste key, which reads our clipboard. iced binds
+                // paste to `Modifiers::COMMAND`: Cmd on macOS, Ctrl elsewhere.
                 self.clipboard.paste = Some(s.clone());
                 let k = keyboard::Key::Character(iced_core::SmolStr::new("v"));
                 let phys = key::Physical::Unidentified(key::NativeCode::Unidentified);
-                let mods = keyboard::Modifiers::CTRL;
+                let mods = keyboard::Modifiers::COMMAND;
+                // text_input reads the modifiers it saw in ModifiersChanged,
+                // text_editor the ones on the key press: send both.
+                self.events.push(Event::Keyboard(keyboard::Event::ModifiersChanged(mods)));
                 self.events.push(Event::Keyboard(keyboard::Event::KeyPressed {
                     key: k.clone(),
                     modified_key: k.clone(),
@@ -196,6 +200,7 @@ impl Shell {
                     location: keyboard::Location::Standard,
                     modifiers: mods,
                 }));
+                self.events.push(Event::Keyboard(keyboard::Event::ModifiersChanged(self.modifiers)));
             }
             TermEvent::Focus(f) => {
                 self.events.push(Event::Window(if *f {

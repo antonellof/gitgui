@@ -1080,6 +1080,28 @@ mod tests {
     }
 
     #[test]
+    fn bracketed_paste_lands_in_the_focused_field() {
+        use crate::ui::app::Message;
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        t.write("a.txt", "two\n");
+        let mut h = Harness::new(&t.dir);
+        // `c` focuses the commit message; a bracketed paste then types into it.
+        h.key(b"c");
+        h.key(b"\x1b[200~fix: pasted message\x1b[201~");
+        assert_eq!(h.app.commit_msg.text().trim_end(), "fix: pasted message");
+        // A dialog's text input takes a paste the same way.
+        h.app.update(Message::OpenFolderDialog);
+        h.frame();
+        h.key(b"\x1b[200~/tmp/somewhere\x1b[201~");
+        let path = match &h.app.modal {
+            Some(crate::ui::app::Modal::OpenFolder { path, .. }) => path.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(path.ends_with("/tmp/somewhere"), "{path}");
+    }
+
+    #[test]
     fn font_size_tracks_cell_height() {
         assert_eq!(font_size_for_cell(0, 2.0), 13.0);
         assert_eq!(font_size_for_cell(34, 2.0), 13.0);
