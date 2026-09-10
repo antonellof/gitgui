@@ -8,17 +8,17 @@ this file tracks where we are, what was decided, and what is open.
 
 | Phase | State | Commit | Notes |
 |---|---|---|---|
-| 0 terminal plumbing | done | 22bef03 | probe, raw mode, kitty graphics shm + direct, restore on exit and panic |
-| 1 rendering | done | 475c593 | rasterizer, framebuffer, egui demo, headless PNG |
-| 2 input | done | eecddce | parser with byte tests, stdin thread, egui mapping, `--dump-input` |
-| 3 read-only git | done | 9b7de3d | git2 0.21.0, snapshot + graph + diff, worker thread, real UI |
-| 4 writes | done | b4de578 | stage/unstage files and hunks, commit, amend, checkout, branches, stash, discard, fetch/pull/push via git CLI |
-| 5 integration | done | b394bdc | split.rs, agent.rs, skill/SKILL.md, install script, release workflow |
-| post-v0.1 polish | done | ccdf818 | v0.1.1 to v0.1.4: keyboard shortcuts, agent network ops, auto refresh, footer toolbar, branch picker, GitHub publish |
-| review pass | done | f38d9a3 | 2026-09-04 audit: layout fixes for short and narrow panes, socket permissions, bounds checks; see "Review 2026-09-04" |
-| feature parity pass | done | a2c3498 | 2026-09-05: line staging, diff search / context / whitespace, commit menu, history rewriting, merge / rebase state and conflicts, branch / remote / tag / stash operations, help; see "Feature audit 2026-09-05" |
+| 0 terminal plumbing | done | 1b2ceb2 | probe, raw mode, kitty graphics shm + direct, restore on exit and panic |
+| 1 rendering | done | 90fe663 | rasterizer, framebuffer, egui demo, headless PNG |
+| 2 input | done | 56f7a56 | parser with byte tests, stdin thread, egui mapping, `--dump-input` |
+| 3 read-only git | done | bdad0e2 | git2 0.21.0, snapshot + graph + diff, worker thread, real UI |
+| 4 writes | done | de672e1 | stage/unstage files and hunks, commit, amend, checkout, branches, stash, discard, fetch/pull/push via git CLI |
+| 5 integration | done | c3694d3 | split.rs, agent.rs, skill/SKILL.md, install script, release workflow |
+| post-v0.1 polish | done | 77e92c1 | v0.1.1 to v0.1.4: keyboard shortcuts, agent network ops, auto refresh, footer toolbar, branch picker, GitHub publish |
+| review pass | done | 5d00e5f | 2026-09-04 audit: layout fixes for short and narrow panes, socket permissions, bounds checks; see "Review 2026-09-04" |
+| feature parity pass | done | 9eb454f | 2026-09-05: line staging, diff search / context / whitespace, commit menu, history rewriting, merge / rebase state and conflicts, branch / remote / tag / stash operations, help; see "Feature audit 2026-09-05" |
 | iced port | done | v0.4.0 | 2026-09-06: egui replaced by iced 0.14 on tiny-skia, pane grid, three-way conflict resolver, collapsible sidebar; see "iced branch" |
-| editor and file tree | done | e32e27d | 2026-09-05: built-in editor with syntax colors (`ui/editor.rs`, `ui/highlight.rs`), `Shift+E` external editor in a split with `--editor` / `gitgui.editor`, `Shift+O` cmux file preview, sidebar file tree (`ui/tree.rs`, lazy `Command::ListDir`), `--open` |
+| editor and file tree | done | b968197 | 2026-09-05: built-in editor with syntax colors (`ui/editor.rs`, `ui/highlight.rs`), `Shift+E` external editor in a split with `--editor` / `gitgui.editor`, `Shift+O` cmux file preview, sidebar file tree (`ui/tree.rs`, lazy `Command::ListDir`), `--open` |
 
 ## Measurements
 
