@@ -21,10 +21,15 @@ pub const USAGE: &str = "usage: gitgui [options] [path]
   --no-shm                   force the direct (base64 + zlib) transport
   --window                   open a desktop window instead of drawing into the
                              terminal (automatic when there is no kitty graphics)
+  --check-update             print whether a newer release exists and exit
+  --no-update-check          do not check GitHub for a newer release
+                             (same as GITGUI_NO_UPDATE_CHECK=1)
   -h, --help                 show this help";
 
 pub enum Mode {
     Run,
+    /// Print whether a newer release exists on GitHub, then exit.
+    CheckUpdate,
     List,
     Action { json: String, pid: Option<u32> },
     /// Hidden: `GIT_SEQUENCE_EDITOR` for the rebase todo (git/rebase.rs).
@@ -40,6 +45,8 @@ pub struct Cli {
     pub no_shm: bool,
     /// Open a native desktop window instead of drawing into the terminal.
     pub window: bool,
+    /// Look for a newer release on GitHub in the background.
+    pub update_check: bool,
     pub crash: bool,
     pub headless: Option<PathBuf>,
     pub size: (u32, u32),
@@ -62,7 +69,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
             probe: false,
             dump_input: false,
             no_shm: false,
-        window: false,
+            window: false,
+            update_check: true,
             crash: false,
             headless: None,
             size: (1600, 1000),
@@ -99,7 +107,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
             probe: false,
             dump_input: false,
             no_shm: false,
-        window: false,
+            window: false,
+            update_check: true,
             crash: false,
             headless: None,
             size: (1600, 1000),
@@ -125,7 +134,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                 probe: false,
                 dump_input: false,
                 no_shm: false,
-        window: false,
+            window: false,
+            update_check: true,
                 crash: false,
                 headless: None,
                 size: (1600, 1000),
@@ -146,6 +156,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
         dump_input: false,
         no_shm: false,
         window: false,
+        update_check: true,
         crash: false,
         headless: None,
         size: (1600, 1000),
@@ -168,6 +179,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
             "--dump-input" => cli.dump_input = true,
             "--no-shm" => cli.no_shm = true,
             "--window" => cli.window = true,
+            "--no-update-check" => cli.update_check = false,
+            "--check-update" => cli.mode = Mode::CheckUpdate,
             // Hidden: panic one second into the session to verify restoration.
             "--crash" => cli.crash = true,
             "--headless-frame" => cli.headless = Some(PathBuf::from(value("--headless-frame")?)),
@@ -275,6 +288,14 @@ mod tests {
         let c = p(&["--commit-editor", "/tmp/msg"]).unwrap();
         assert!(matches!(c.mode, Mode::CommitEditor(_)));
         assert!(p(&["--sequence-editor"]).is_err());
+    }
+
+    #[test]
+    fn parses_update_flags() {
+        let c = p(&["--check-update"]).unwrap();
+        assert!(matches!(c.mode, Mode::CheckUpdate));
+        assert!(p(&[]).unwrap().update_check);
+        assert!(!p(&["--no-update-check"]).unwrap().update_check);
     }
 
     #[test]

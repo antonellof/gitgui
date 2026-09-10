@@ -12,6 +12,7 @@ mod shell;
 mod split;
 mod term;
 mod ui;
+mod update;
 mod window;
 
 use std::env;
@@ -68,6 +69,15 @@ fn main() -> ExitCode {
                 }
             }
         }
+        cli::Mode::CheckUpdate => {
+            return match update::run_check() {
+                Ok(code) => ExitCode::from(code as u8),
+                Err(e) => {
+                    eprintln!("gitgui: {e:#}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         cli::Mode::Run => {}
     }
     let repo = cli
@@ -99,6 +109,7 @@ fn main() -> ExitCode {
         font_size: cli.font_size,
         editor: cli.editor.clone(),
         open: cli.open.clone(),
+        update_check: cli.update_check,
         path: repo,
     };
     let result = if cli.probe {

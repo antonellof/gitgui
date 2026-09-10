@@ -54,6 +54,7 @@ gitgui --editor "code -w" editor for Shift+E (or: git config gitgui.editor nano)
 gitgui ls                 list running gitgui instances
 gitgui action '{"cmd":"status"}'   control a running instance (see skill/SKILL.md)
 gitgui --scale 2 --font-size 14    override pixels per point and font size (Ctrl+= / Ctrl+- zoom at runtime)
+gitgui --check-update     is a newer release out? (the footer says so too)
 gitgui --probe | --dump-input | --no-shm | --help
 ```
 
@@ -142,12 +143,14 @@ Same trick as [terminal-browser](https://github.com/zenbu-labs/terminal-browser)
 Requires macOS or Linux. In-terminal rendering needs a kitty-graphics terminal (cmux, Ghostty, kitty, WezTerm); anywhere else gitgui opens a desktop window. The one-liner at the top downloads a release binary into `~/.local/bin`, or builds from source with `cargo` when there is no binary for your platform.
 
 ```bash
-GITGUI_VERSION=0.7.8 GITGUI_INSTALL_DIR=~/bin bash scripts/install.sh   # pin a version, other dir
+GITGUI_VERSION=0.8.0 GITGUI_INSTALL_DIR=~/bin bash scripts/install.sh   # pin a version, other dir
 cargo install --git https://github.com/antonellof/gitgui                 # from source (Rust 1.95+)
 gitgui --probe                                                           # does this terminal support kitty graphics?
 ```
 
 If `gitgui` is not found afterwards, add `~/.local/bin` to your `PATH`.
+
+gitgui checks the repository's tags once a day (`git ls-remote`, cached in `~/.cache/gitgui/update`) and puts a `v<version> available` chip in the footer, and a line on your terminal when you quit, when a newer release is out. Click the chip for the release page. `--no-update-check` or `GITGUI_NO_UPDATE_CHECK=1` turns it off; `gitgui --check-update` asks once, right now.
 
 ## Development
 

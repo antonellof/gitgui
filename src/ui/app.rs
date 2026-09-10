@@ -504,6 +504,8 @@ pub enum Message {
     Confirm(&'static str, String, &'static str, Command),
     Modal(Modal),
     Copy(String),
+    /// Open the GitHub releases page (the footer's update notice).
+    OpenReleases,
     PullRequest(String),
     // Tree
     TreeToggle(String),
@@ -583,6 +585,8 @@ pub struct App {
     pub quit: bool,
     pub no_repo: bool,
     pub repo_path: PathBuf,
+    /// Background check for a newer release on GitHub, shown in the footer.
+    pub update: crate::update::Check,
     pub diff_opts: DiffOpts,
     pub diff_search: String,
     pub diff_search_active: bool,
@@ -716,6 +720,7 @@ impl App {
             busy: 0,
             quit: false,
             no_repo: false,
+            update: crate::update::Check::default(),
             repo_path,
             diff_opts: DiffOpts::default(),
             diff_search: String::new(),
@@ -2606,6 +2611,7 @@ impl App {
                     }
                 }
             }
+            Message::OpenReleases => self.open_url(crate::update::RELEASES_URL),
             Message::Copy(s) => {
                 self.copy(s);
                 self.toast("copied", false);

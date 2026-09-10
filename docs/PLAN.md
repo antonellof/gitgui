@@ -309,8 +309,9 @@ Not planned for v0.x: an interactive rebase editor, bisect, submodules,
 worktrees, sparse checkout, patch export. Use the git CLI in the
 neighbouring pane.
 
-### Recently shipped (v0.1.1 to v0.7.8)
+### Recently shipped (v0.1.1 to v0.8.0)
 
+- v0.8.0: gitgui tells you when a newer release is out: a footer chip that opens the release page, a line on the terminal when you quit, `--check-update` on its own; the check is `git ls-remote` on the public repository, cached for a day, off with `--no-update-check`. `scripts/stats.sh` prints download, star and traffic counts for the repository
 - v0.7.8: a paste prefers gitgui's own last copy until the system clipboard changes, so copy then paste inside the editor round-trips even when the terminal ignores OSC 52
 - v0.7.7: Ctrl+V in a terminal pastes the system clipboard (pbpaste / wl-paste / xclip) or the last text gitgui copied; before it only worked through the terminal's own paste
 - v0.7.6: Ctrl+C in a focused field copies in the real terminal too (the runtime used to quit on it before the UI saw the key); three quick Ctrl+C force quit

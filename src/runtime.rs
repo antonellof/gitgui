@@ -29,6 +29,8 @@ pub struct Options {
     pub font_size: Option<f32>,
     pub editor: Option<String>,
     pub open: Option<String>,
+    /// Look for a newer release on GitHub in the background.
+    pub update_check: bool,
     pub path: PathBuf,
 }
 
@@ -129,6 +131,8 @@ pub fn run_headless(path: &Path, size: (u32, u32), opts: &Options) -> anyhow::Re
             "reset" => app.update(Message::CommitAction(0, crate::ui::app::CommitAction::Reset)),
             "hover" => app.cursor = iced_core::Point::new(300.0, 14.0),
             "folder" => app.update(Message::OpenFolderDialog),
+            // Needs GITGUI_UPDATE_LATEST=<version> to have something to show.
+            "update" => app.update.start(),
             "zoom" => app.set_zoom(1.4),
             "difftext" => {
                 use crate::ui::app::DiffPos;
@@ -389,6 +393,9 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
         .unwrap_or_else(|| font_size_for_cell(caps.cell_h, ppp));
     let mut shell = Shell::new(font_size, ppp, w, h, theme.iced());
     let mut app = App::new(theme, transport_name, ppp, opts.path.clone());
+    if opts.update_check {
+        app.update.start();
+    }
     app.editor_cmd = opts.editor.clone();
     app.open_on_start = opts.open.clone();
     let mut fb = Framebuffer::new(w, h);
@@ -641,6 +648,15 @@ pub fn run_interactive(opts: &Options) -> anyhow::Result<i32> {
     }
     let _ = worker.tx.send(Command::Quit);
     drop(session);
+    // The alt screen is gone here, so the notice stays on the user's scrollback.
+    if let Some(a) = app.update.available() {
+        eprintln!(
+            "gitgui {}: {} is available at {}",
+            crate::update::CURRENT,
+            a.latest,
+            crate::update::RELEASES_URL
+        );
+    }
     Ok(0)
 }
 

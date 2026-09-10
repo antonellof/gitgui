@@ -25,6 +25,25 @@ pub fn view(app: &App) -> Element<'_> {
         .spacing(4)
         .align_y(Alignment::Center),
     );
+    if let Some(a) = app.update.available() {
+        // A newer release exists: click opens the GitHub releases page.
+        let bg = crate::ui::theme::alpha(t.accent, 0.35);
+        let notice = mouse_area(
+            container(text(a.label()).size(11).color(t.strong))
+                .padding([1, 6])
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(bg)),
+                    border: Border {
+                        radius: 5.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+        )
+        .interaction(iced_core::mouse::Interaction::Pointer)
+        .on_press(Message::OpenReleases);
+        r = r.push(notice);
+    }
     r = r.push(text("|").size(12).color(t.border));
 
     if !app.no_repo {

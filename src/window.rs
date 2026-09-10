@@ -88,6 +88,9 @@ fn boot(opts: &Options) -> (Desktop, Task<Message>) {
         })
         .expect("spawn agent bridge");
     let mut app = App::new(Theme::dark(), "window", 1.0, opts.path.clone());
+    if opts.update_check {
+        app.update.start();
+    }
     app.editor_cmd = opts.editor.clone();
     app.open_on_start = opts.open.clone();
     app.window = WINDOW;
