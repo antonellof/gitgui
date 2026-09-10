@@ -83,13 +83,24 @@ pub fn enabled() -> bool {
 /// The cached answer when it is fresh, otherwise the network.
 fn look_up() -> Option<Available> {
     if let Some((stamp, latest)) = read_cache() {
-        if now().saturating_sub(stamp) < CACHE_TTL.as_secs() {
+        if cache_is_fresh(stamp, &latest, CURRENT, now()) {
             return newer(&latest, CURRENT);
         }
     }
     let latest = fetch_latest()?;
     write_cache(&latest);
     newer(&latest, CURRENT)
+}
+
+/// Is a cached answer still worth using? Not once it is a day old, and not
+/// when it names a version below the running one: such an answer is left
+/// over from before an update, and sitting on it hides a release that came
+/// out in between.
+fn cache_is_fresh(stamp: u64, latest: &str, current: &str, now: u64) -> bool {
+    if parse(latest).zip(parse(current)).is_some_and(|(l, c)| l < c) {
+        return false;
+    }
+    now.saturating_sub(stamp) < CACHE_TTL.as_secs()
 }
 
 /// Blocking: run `git ls-remote` and return the newest tag's version.
@@ -185,9 +196,15 @@ fn write_cache(latest: &str) {
 }
 
 /// `--check-update`: print the running and the released version, no UI.
+///
+/// It goes to the network even when the cache is fresh, and writes what it
+/// found back: a check run right after a release is how the user tells
+/// gitgui to forget yesterday's answer, so the next start shows the notice
+/// instead of waiting out the day.
 pub fn run_check() -> anyhow::Result<i32> {
     match fetch_latest() {
         Some(latest) => {
+            write_cache(&latest);
             match newer(&latest, CURRENT) {
                 Some(_) => println!(
                     "gitgui {CURRENT}: {latest} is available\n  {RELEASES_URL}"
@@ -206,6 +223,18 @@ pub fn run_check() -> anyhow::Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cached_answer_older_than_the_binary_is_not_used() {
+        let day = CACHE_TTL.as_secs();
+        // Fresh and about the running version: keep it.
+        assert!(cache_is_fresh(1000, "0.8.1", "0.8.1", 1000 + day / 2));
+        assert!(cache_is_fresh(1000, "0.9.0", "0.8.1", 1000 + day / 2));
+        // A day old: ask again.
+        assert!(!cache_is_fresh(1000, "0.8.1", "0.8.1", 1000 + day));
+        // Written before the user updated: ask again, whatever its age.
+        assert!(!cache_is_fresh(1000, "0.8.0", "0.8.1", 1000 + 1));
+    }
 
     #[test]
     fn picks_the_highest_tag() {
