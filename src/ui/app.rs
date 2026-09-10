@@ -22,10 +22,21 @@ use crate::git::repo::{DiffOpts, DiffTarget, DirEntry, FileStatus, RepoSnapshot,
 use crate::ui::editor::Editor;
 use crate::ui::theme::Theme;
 use crate::ui::merge::{MergeState, Resolution};
-use crate::ui::{changes, diff, editor, footer, log, menu, merge, modal, sidebar, state, tree, undo, widgets};
+use crate::ui::{changes, diff, editor, footer, log, menu, merge, modal, sidebar, state, tree, undo, vsplit, widgets};
 
 pub type Renderer = crate::shell::Renderer;
 pub type Element<'a> = iced_core::Element<'a, Message, iced_core::Theme, Renderer>;
+
+/// Unstaged list, staged list, commit box: the shares of the changes pane a
+/// fresh repository starts with, roughly what the fixed layout used to give.
+pub const DEFAULT_CHANGES_SPLIT: [f32; 3] = [0.38, 0.33, 0.29];
+
+/// Fractions that are finite, positive and add up to 1, whatever came out of
+/// a drag or a hand-edited state file.
+pub fn normalize_changes_split(r: &[f32]) -> [f32; 3] {
+    let v = vsplit::normalize(r, 3);
+    [v[0], v[1], v[2]]
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selection {
@@ -444,6 +455,9 @@ pub enum Message {
     DiffWhitespace,
     /// Commit list column widths after a header drag: (author, date).
     LogColumns(f32, f32),
+    /// Heights of the unstaged, staged and commit sections of the changes
+    /// pane as fractions, after a drag of one of the bars between them.
+    ChangesSplit([f32; 3]),
     /// The open-repository dialog.
     OpenFolderDialog,
     /// Descend into a subfolder of the dialog's path.
@@ -614,6 +628,9 @@ pub struct App {
     pub editor_full: bool,
     /// Commit list column widths (author, date), dragged from the header.
     pub log_columns: (f32, f32),
+    /// Fractions of the changes pane taken by the unstaged list, the staged
+    /// list and the commit box, dragged from the bars between them.
+    pub changes_split: [f32; 3],
     /// UI zoom, Ctrl+= / Ctrl+- / Ctrl+0. The runtime scales points by it.
     pub zoom: f32,
     /// The last finished write (label, ok, message).
@@ -743,6 +760,7 @@ impl App {
             editor_panes,
             editor_full: false,
             log_columns: (110.0, 44.0),
+            changes_split: DEFAULT_CHANGES_SPLIT,
             zoom: 1.0,
             last_result: None,
             diff_text_sel: None,
@@ -2391,6 +2409,7 @@ impl App {
             Message::DiffNext(dir) => self.diff_next_match(dir),
             Message::DiffContext(d) => self.change_diff_context(d),
             Message::LogColumns(author, age) => self.log_columns = (author, age),
+            Message::ChangesSplit(r) => self.changes_split = normalize_changes_split(&r),
             Message::OpenFolderDialog => self.open_folder_dialog(),
             Message::OpenFolderEnter(name) => {
                 if let Some(Modal::OpenFolder { path, .. }) = &self.modal {

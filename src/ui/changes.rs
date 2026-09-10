@@ -9,6 +9,7 @@ use iced_widget::{checkbox, column, container, mouse_area, row, scrollable, text
 use crate::git::ops::Command;
 use crate::git::repo::{DiffTarget, FileKind, FileStatus};
 use crate::ui::app::{App, Element, Message, MenuKind, Pane, Selection};
+use crate::ui::vsplit;
 use crate::ui::widgets::{self, primary_button, row_button, small_button};
 
 pub fn view(app: &App) -> Element<'_> {
@@ -89,13 +90,19 @@ fn conflict_row<'a>(app: &'a App, f: &'a FileStatus) -> Element<'a> {
         .into()
 }
 
+/// Smallest height of the unstaged, staged and commit sections, in points:
+/// a header and one row for the lists; for the commit section the author
+/// line, the buttons and two lines of message.
+pub const MINS: [f32; 3] = [46.0, 46.0, 112.0];
+
 fn worktree(app: &App) -> Element<'_> {
     let t = &app.theme;
     let s = &app.snapshot;
     let busy = app.busy > 0;
     let mut col = column![].spacing(2).width(Length::Fill).height(Length::Fill);
 
-    // Conflicts first: they block the merge.
+    // Conflicts first: they block the merge. Outside the splitter, since the
+    // section only exists during a merge.
     if !s.conflicted.is_empty() {
         col = col.push(
             row![
@@ -116,17 +123,15 @@ fn worktree(app: &App) -> Element<'_> {
 
     // Unstaged.
     let unstaged_n = s.unstaged.len();
-    col = col.push(
-        row![
-            text(format!("Unstaged ({unstaged_n})")).size(13).color(t.strong),
-            Space::new().width(Length::Fill),
-            small_button("stage all", (!busy && !s.unstaged.is_empty()).then_some(Message::Run(Command::StageAll))),
-            small_button("discard all", (!busy && s.is_dirty()).then_some(Message::DiscardAll)),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center)
-        .padding([4, 6]),
-    );
+    let unstaged_head = row![
+        text(format!("Unstaged ({unstaged_n})")).size(13).color(t.strong),
+        Space::new().width(Length::Fill),
+        small_button("stage all", (!busy && !s.unstaged.is_empty()).then_some(Message::Run(Command::StageAll))),
+        small_button("discard all", (!busy && s.is_dirty()).then_some(Message::DiscardAll)),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center)
+    .padding([4, 6]);
     let mut list = column![].spacing(1);
     for f in s.unstaged.iter() {
         list = list.push(file_row(app, f, DiffTarget::WorkdirUnstaged(f.path.clone()), false));
@@ -134,19 +139,20 @@ fn worktree(app: &App) -> Element<'_> {
     if unstaged_n == 0 {
         list = list.push(container(text("nothing to stage").size(12).color(t.weak)).padding([2, 12]));
     }
-    col = col.push(scrollable(list.padding([0, 4])).spacing(6).height(Length::FillPortion(1)));
+    let unstaged: Element<'_> = column![unstaged_head, scrollable(list.padding([0, 4])).spacing(6).height(Length::Fill)]
+        .spacing(2)
+        .height(Length::Fill)
+        .into();
 
     // Staged.
-    col = col.push(
-        row![
-            text(format!("Staged ({})", s.staged.len())).size(13).color(t.strong),
-            Space::new().width(Length::Fill),
-            small_button("unstage all", (!busy && !s.staged.is_empty()).then_some(Message::Run(Command::UnstageAll))),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center)
-        .padding([4, 6]),
-    );
+    let staged_head = row![
+        text(format!("Staged ({})", s.staged.len())).size(13).color(t.strong),
+        Space::new().width(Length::Fill),
+        small_button("unstage all", (!busy && !s.staged.is_empty()).then_some(Message::Run(Command::UnstageAll))),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center)
+    .padding([4, 6]);
     let mut list = column![].spacing(1);
     for f in &s.staged {
         list = list.push(file_row(app, f, DiffTarget::Staged(f.path.clone()), true));
@@ -154,7 +160,10 @@ fn worktree(app: &App) -> Element<'_> {
     if s.staged.is_empty() {
         list = list.push(container(text("nothing staged").size(12).color(t.weak)).padding([2, 12]));
     }
-    col = col.push(scrollable(list.padding([0, 4])).spacing(6).height(Length::FillPortion(1)));
+    let staged: Element<'_> = column![staged_head, scrollable(list.padding([0, 4])).spacing(6).height(Length::Fill)]
+        .spacing(2)
+        .height(Length::Fill)
+        .into();
 
     // Commit box.
     let editor = iced_widget::TextEditor::new(&app.commit_msg)
@@ -163,7 +172,9 @@ fn worktree(app: &App) -> Element<'_> {
         .on_action(Message::CommitMsg)
         .size(13)
         .padding(6)
-        .height(Length::Fixed(56.0))
+        // Fills whatever the splitter gives the section, so dragging the bar
+        // above it grows the message box.
+        .height(Length::Fill)
         .key_binding(|press| {
             if !matches!(press.status, iced_widget::text_editor::Status::Focused { .. }) {
                 return None;
@@ -210,7 +221,20 @@ fn worktree(app: &App) -> Element<'_> {
     ]
     .spacing(8)
     .align_y(Alignment::Center);
-    col = col.push(column![editor, meta, buttons].spacing(6).padding(6));
+    let commit_box: Element<'_> = column![editor, meta, buttons]
+        .spacing(6)
+        .padding(6)
+        .height(Length::Fill)
+        .into();
+
+    col = col.push(vsplit::vsplit(
+        vec![unstaged, staged, commit_box],
+        app.changes_split.to_vec(),
+        MINS.to_vec(),
+        t.border,
+        t.accent,
+        |r| Message::ChangesSplit([r[0], r[1], r[2]]),
+    ));
     col.into()
 }
 

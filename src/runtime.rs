@@ -1277,10 +1277,10 @@ mod tests {
         h.key(b"\x1b[97;5u");
         h.key(b"\x1b[D");
         assert!(h.app.commit_msg.selection().is_none());
-        h.key(b"\x1b[<0;200;568M");
-        h.key(b"\x1b[<32;260;568M");
-        h.key(b"\x1b[<32;300;568M");
-        h.key(b"\x1b[<0;300;568m");
+        h.key(b"\x1b[<0;200;576M");
+        h.key(b"\x1b[<32;260;576M");
+        h.key(b"\x1b[<32;300;576M");
+        h.key(b"\x1b[<0;300;576m");
         let dragged = h.app.commit_msg.selection();
         assert!(dragged.as_deref().is_some_and(|s| s.len() > 3), "{dragged:?}");
     }
@@ -1393,6 +1393,51 @@ mod tests {
         h.key(seq.as_bytes());
         assert_eq!(h.app.editor.as_ref().map(|e| e.path.as_str()), Some("a.txt"), "double click edits");
         assert!(!h.app.editor_full, "from the change list the diff column stays");
+    }
+
+    #[test]
+    fn dragging_the_bar_in_the_changes_pane_resizes_the_sections() {
+        use crate::ui::app::DEFAULT_CHANGES_SPLIT;
+        use crate::ui::{changes, vsplit, widgets};
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "init");
+        t.write("a.txt", "two\n");
+        let mut h = Harness::new(&t.dir);
+        h.frame();
+        assert_eq!(h.app.changes_split, DEFAULT_CHANGES_SPLIT);
+        let grid = h.app.grid_bounds.get();
+        let (_, region) = h
+            .app
+            .panes
+            .layout()
+            .pane_regions(widgets::PANE_SPACING, widgets::PANE_MIN, grid.size())
+            .into_iter()
+            .find(|(p, _)| h.app.panes.get(*p) == Some(&Pane::Changes))
+            .expect("changes pane");
+        // The splitter fills the pane below its title bar.
+        let top = grid.y + region.y + widgets::TITLE_H;
+        let height = region.height - widgets::TITLE_H;
+        let avail = height - 2.0 * vsplit::HANDLE_H;
+        let before = vsplit::heights(&DEFAULT_CHANGES_SPLIT, &changes::MINS, avail);
+        let x = (grid.x + region.x + region.width / 2.0) as i32;
+        let bar_y = (top + before[0] + vsplit::HANDLE_H / 2.0) as i32;
+        let dy = 24;
+        h.key(format!("\x1b[<0;{x};{bar_y}M").as_bytes());
+        h.key(format!("\x1b[<32;{x};{}M", bar_y + dy).as_bytes());
+        h.key(format!("\x1b[<0;{x};{}m", bar_y + dy).as_bytes());
+        let split = h.app.changes_split;
+        assert!((split.iter().sum::<f32>() - 1.0).abs() < 0.001, "{split:?}");
+        let after = vsplit::heights(&split, &changes::MINS, avail);
+        assert!((after[0] - before[0] - dy as f32).abs() < 3.0, "unstaged follows the pointer: {after:?}");
+        assert!((after[1] - before[1] + dy as f32).abs() < 3.0, "staged gives way: {after:?}");
+        assert!((after[2] - before[2]).abs() < 1.0, "the commit box keeps its height: {after:?}");
+        // The bar cannot push a section below its minimum.
+        h.key(format!("\x1b[<0;{x};{}M", bar_y + dy).as_bytes());
+        h.key(format!("\x1b[<32;{x};{}M", bar_y + dy + 4000).as_bytes());
+        h.key(format!("\x1b[<0;{x};{}m", bar_y + dy + 4000).as_bytes());
+        let split = h.app.changes_split;
+        let after = vsplit::heights(&split, &changes::MINS, avail);
+        assert!(after[1] >= changes::MINS[1] - 1.0, "staged keeps its minimum: {after:?}");
     }
 
     #[test]

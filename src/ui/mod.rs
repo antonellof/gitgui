@@ -17,4 +17,5 @@ pub mod state;
 pub mod theme;
 pub mod tree;
 pub mod undo;
+pub mod vsplit;
 pub mod widgets;

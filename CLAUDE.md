@@ -56,6 +56,7 @@ src/
     help.rs          keyboard reference table and the `?` dialog
     widgets.rs       buttons, rows, sections, pane chrome, toasts, Layered, widget ids
     undo.rs          undo / redo histories for text_editor contents and text_input values (iced has none)
+    vsplit.rs        vertical splitter: draggable bars between the changes pane sections
     logo.rs          assets/logo.png compiled in: image handle for the no-repository screen, RGBA for the window icon
     state.rs         per-repository UI state (layouts, hidden panes, sections, wrap, columns) in <gitdir>/gitgui.json
     theme.rs         colors derived from terminal palette (OSC 10/11 query, fallback dark), iced Theme

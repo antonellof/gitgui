@@ -1,7 +1,8 @@
 //! Per-repository UI state that survives a restart: the pane layouts (which
 //! panes are open, where, and their sizes), the maximized pane, collapsed
 //! sidebar sections, the wrap toggles, the open folders of the file tree, the
-//! diff options and the commit list's column widths.
+//! diff options, the commit list's column widths and the changes pane's
+//! section heights.
 //!
 //! Stored as JSON in `.git/gitgui.json` of the repository, so it follows the
 //! repository without ever showing up as an untracked file.
@@ -44,6 +45,8 @@ pub struct Persisted {
     pub ignore_whitespace: bool,
     pub author_width: f32,
     pub age_width: f32,
+    /// Unstaged, staged and commit box shares of the changes pane.
+    pub changes_split: [f32; 3],
     pub zoom: f32,
 }
 
@@ -62,6 +65,7 @@ impl Default for Persisted {
             ignore_whitespace: false,
             author_width: 110.0,
             age_width: 44.0,
+            changes_split: crate::ui::app::DEFAULT_CHANGES_SPLIT,
             zoom: 1.0,
         }
     }
@@ -156,6 +160,7 @@ impl Persisted {
             ignore_whitespace: app.diff_opts.ignore_whitespace,
             author_width: app.log_columns.0,
             age_width: app.log_columns.1,
+            changes_split: app.changes_split,
             zoom: app.zoom,
         }
     }
@@ -181,6 +186,7 @@ impl Persisted {
         app.diff_opts.context = self.diff_context.min(100);
         app.diff_opts.ignore_whitespace = self.ignore_whitespace;
         app.log_columns = (self.author_width.clamp(50.0, 400.0), self.age_width.clamp(36.0, 140.0));
+        app.changes_split = crate::ui::app::normalize_changes_split(&self.changes_split);
         app.zoom = if self.zoom.is_finite() { self.zoom.clamp(0.5, 3.0) } else { 1.0 };
     }
 }
