@@ -5,28 +5,28 @@
 class Gitgui < Formula
   desc "Pixel-rendered git GUI for kitty-graphics terminals"
   homepage "https://github.com/antonellof/gitgui"
-  version "0.8.1"
+  version "0.8.2"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/antonellof/gitgui/releases/download/v0.8.1/gitgui-0.8.1-macos-arm64.tar.gz"
-      sha256 "6ae3ffd4be1e2be8101a3123ce94d514007151b5fed76fd6ac72e33e860ce384"
+      url "https://github.com/antonellof/gitgui/releases/download/v0.8.2/gitgui-0.8.2-macos-arm64.tar.gz"
+      sha256 "62e3b4e664b5ce9459bbcd2d8f4e4857779e2d8e0554a7b029ab9dff89fe7b3e"
     end
     on_intel do
-      url "https://github.com/antonellof/gitgui/releases/download/v0.8.1/gitgui-0.8.1-macos-x86_64.tar.gz"
-      sha256 "8be450cb33be10ec7355740fa98554fa036b319a011f302750b76a213efabca7"
+      url "https://github.com/antonellof/gitgui/releases/download/v0.8.2/gitgui-0.8.2-macos-x86_64.tar.gz"
+      sha256 "1d9b7e996be31828ecaad683370a0c399ce97f76fd017f1a2676e05e328d2675"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/antonellof/gitgui/releases/download/v0.8.1/gitgui-0.8.1-linux-arm64.tar.gz"
-      sha256 "4e355f3a671fd8b7b71595e8086210aaadb09c7eb0946a13b7c63a4de4eaa205"
+      url "https://github.com/antonellof/gitgui/releases/download/v0.8.2/gitgui-0.8.2-linux-arm64.tar.gz"
+      sha256 "0b2247b017504ac425c4df4819b7fb1de1ef97e0a8c8da380b32859afb505635"
     end
     on_intel do
-      url "https://github.com/antonellof/gitgui/releases/download/v0.8.1/gitgui-0.8.1-linux-x86_64.tar.gz"
-      sha256 "5537f5b188a16296f59598a275f8b8a09a15efbbbb644945d600256ef4285714"
+      url "https://github.com/antonellof/gitgui/releases/download/v0.8.2/gitgui-0.8.2-linux-x86_64.tar.gz"
+      sha256 "239f7ec7532a9296d8a82f533e98055e8467ace0b90d47cf7e6a02be458df59b"
     end
   end
 
