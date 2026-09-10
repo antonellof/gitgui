@@ -48,15 +48,21 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
+      # Every release opens with how to install and update it; the generated
+      # notes (commits, contributors) are appended after this body.
+      - name: release body
+        run: sed "s/VERSION/${GITHUB_REF_NAME#v}/g" .github/release-body.md > body.md
       - name: publish
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*
           generate_release_notes: true
+          body_path: body.md
 
   # After the assets exist, regenerate the Homebrew formula on main from their
   # sha256 digests, so `brew upgrade` picks the release up.
