@@ -4,6 +4,7 @@ Developer helpers for manual checks. Not part of the binary.
 
 - `install.sh`: downloads a release binary from GitHub into `~/.local/bin`, or builds from source when no release exists (private repos, first install). Use `gh repo clone` + `bash scripts/install.sh` for private repos; the raw `curl | bash` one-liner only works on public repos.
 - `stats.sh`: release download counts, stars, forks and the 14-day clone / view traffic through the `gh` CLI. `--per-release` breaks the downloads down by tag. Traffic needs push access to the repository.
+- `formula.py`: rewrites `Formula/gitgui.rb` from a published release's assets, taking each sha256 from the GitHub API instead of downloading. `python3 scripts/formula.py [version]`; the release workflow runs it on main after every tag.
 - `smoke.sh`: runs `--probe`, `--headless-frame`, and `gitgui ls` against a fixture repo.
 - `click.swift`: posts real mouse events with CoreGraphics so a running gitgui
   can be clicked, dragged and scrolled from a script. Build with

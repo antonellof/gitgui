@@ -57,3 +57,33 @@ jobs:
         with:
           files: artifacts/**/*
           generate_release_notes: true
+
+  # After the assets exist, regenerate the Homebrew formula on main from their
+  # sha256 digests, so `brew upgrade` picks the release up.
+  formula:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: bump the formula
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # The digests appear a moment after the upload, so retry a few times.
+          for attempt in 1 2 3 4 5; do
+            python3 scripts/formula.py "$version" && break
+            if [ "$attempt" = 5 ]; then exit 1; fi
+            sleep 15
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/gitgui.rb
+          if git diff --cached --quiet; then
+            echo "formula already up to date"
+            exit 0
+          fi
+          git commit -m "brew: gitgui $version [skip ci]"
+          git push origin main

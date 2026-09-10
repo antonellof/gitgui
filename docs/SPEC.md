@@ -264,6 +264,8 @@ gitgui [path]                     open repo at path (default: discover from cwd)
   --no-update-check                     do not look for a newer release
 ```
 
+Distribution: release tags build four tarballs (macOS and Linux, arm64 and x86_64) in `.github/workflows/release.yml`; `scripts/install.sh` downloads one, and the same assets feed the Homebrew formula. The repository is its own tap: `brew tap antonellof/gitgui https://github.com/antonellof/gitgui` then `brew install antonellof/gitgui/gitgui`. `Formula/gitgui.rb` is generated, never hand-edited: after a release publishes, the workflow runs `scripts/formula.py`, which reads the assets' sha256 from the GitHub API and commits the new formula to main. homebrew-core needs 75 stars (or 30 forks or watchers), so it stays out of reach for now.
+
 Exit codes: 0 ok, 2 not a git repository, 3 terminal lacks kitty graphics (print which terminals are supported), 4 inside tmux/zellij without passthrough.
 
 ## 6. Split integration (split.rs)
