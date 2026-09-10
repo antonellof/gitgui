@@ -105,6 +105,7 @@ cargo run --release -- --window                             # desktop window (al
 9. Do not add dependencies beyond the stack above without stating why in the commit message. In particular no `crossterm`, no `ratatui`, no `tokio`.
 10. Do not use the em dash character anywhere in code, comments, docs, or commit messages. Use a comma, a colon, or a period.
 11. Refresh the cached index (`Repo::index()`) before any write. libgit2 caches the index per repository and another process (the git CLI, an editor, the agent next door) may have written it since.
+12. Never add Co-Authored-By, Claude-Session, or Generated with Claude Code lines to commit messages or PR bodies.
 
 ## Conventions
 
@@ -117,3 +118,4 @@ cargo run --release -- --window                             # desktop window (al
 ## Definition of done per phase
 
 A phase is done when: `cargo test` is green, `cargo clippy -- -D warnings` is clean, the headless PNG for that phase looks right, and the manual check listed in the SPEC for that phase has been performed in a real Ghostty or cmux pane.
+
