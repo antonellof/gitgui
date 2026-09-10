@@ -2,6 +2,7 @@
 name = "gitgui"
 version = "0.8.0"
 edition = "2021"
+license = "MIT"
 
 [features]
 default = ["sha256"]

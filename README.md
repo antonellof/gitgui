@@ -173,4 +173,4 @@ bash scripts/smoke.sh                   headless smoke test
 
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE).
