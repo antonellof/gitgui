@@ -217,7 +217,7 @@ fn worktree(app: &App) -> Element<'_> {
     ]
     .spacing(8)
     .align_y(Alignment::Center);
-    let can_suggest = !app.ai_running && (!s.staged.is_empty() || app.amend);
+    let can_suggest = !app.ai_running && !busy;
     let buttons = row![
         small_button(
             if app.ai_running { "thinking..." } else { "AI suggest" },

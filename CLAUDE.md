@@ -6,6 +6,7 @@ Reference projects for the idea (not the implementation): zenbu-labs/terminal-br
 
 Read `docs/SPEC.md` (architecture, UI, git layer, milestones) and `docs/PROTOCOLS.md` (exact escape sequences) before writing code. They are the source of truth. If the spec and this file disagree, the spec wins.
 
+
 ## Stack
 
 - Rust, latest stable, edition 2021
