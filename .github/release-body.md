@@ -29,6 +29,15 @@ curl -fsSL https://raw.githubusercontent.com/antonellof/gitgui/main/scripts/inst
 
 gitgui says so itself when a newer release is out: a chip in the footer, and a line on the terminal when you quit. `gitgui --check-update` asks right now, `--no-update-check` turns it off.
 
+## AI commit messages
+
+`AI suggest` in the commit box (or `Ctrl+G`) writes a message for the staged changes through the AI CLI you already have: `claude`, `codex`, `gemini`, `ollama` or `llm`, whichever is installed, or any command that reads a prompt on stdin. No keys or servers in gitgui.
+
+```bash
+git config --global gitgui.ai-command "ollama run qwen2.5-coder"   # pick the tool (or $GITGUI_AI_COMMAND)
+gitgui --probe | grep "AI command"                                   # see which one is used
+```
+
 In-terminal rendering needs cmux, Ghostty, kitty or WezTerm; anywhere else the same binary opens a desktop window. `gitgui --probe` says which one you have.
 
 ---

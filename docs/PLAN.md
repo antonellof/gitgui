@@ -309,8 +309,9 @@ Not planned for v0.x: an interactive rebase editor, bisect, submodules,
 worktrees, sparse checkout, patch export. Use the git CLI in the
 neighbouring pane.
 
-### Recently shipped (v0.1.1 to v0.8.2)
+### Recently shipped (v0.1.1 to v0.9.0)
 
+- v0.9.0: AI commit messages: `AI suggest` or `Ctrl+G` pipes the staged patch into the AI CLI on the machine (`claude`, `codex`, `gemini`, `ollama`, `llm`, or `git config gitgui.ai-command`), the answer fills the commit box as one undo step; prompt template overridable with `gitgui.ai-prompt`, `--probe` names the tool (`git/ai.rs`)
 - v0.8.2: the update notice no longer hides a release for a day: `--check-update` writes what it found to the cache, and a cached answer naming a version older than the running binary is asked again instead of being trusted for the rest of the day
 - v0.8.1: the changes pane is fluid: drag the bars between the unstaged list, the staged list and the commit box to resize them (`ui/vsplit.rs`), each section keeps a minimum, the heights are fractions of the pane so they survive a resize and are saved per repository
 - v0.8.0: gitgui tells you when a newer release is out: a footer chip that opens the release page, a line on the terminal when you quit, `--check-update` on its own; the check is `git ls-remote` on the public repository, cached for a day, off with `--no-update-check`. `scripts/stats.sh` prints download, star and traffic counts for the repository
