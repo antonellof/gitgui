@@ -37,6 +37,7 @@ src/
   git/
     repo.rs          Repository wrapper: status, branches, log, diffs, stage/unstage, commit
     actions.rs       cherry-pick, revert, merge, reset, tags, remotes, upstreams, conflicts, line-level patches
+    ai.rs            commit message suggestions: prompt from the staged patch, piped into an external AI CLI (claude, codex, gemini, ollama, llm or gitgui.ai-command)
     rebase.rs        rebase todo rewriting; gitgui is its own GIT_SEQUENCE_EDITOR / GIT_EDITOR
     graph.rs         commit graph lane assignment
     ops.rs           worker thread: Command enum, git2 writes, git CLI for network and rebase

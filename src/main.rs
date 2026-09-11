@@ -25,6 +25,13 @@ fn run_probe(no_shm: bool) -> anyhow::Result<i32> {
         term::probe::probe(!no_shm, Duration::from_millis(1000))?
     };
     print!("{caps}");
+    let config = git2::Config::open_default()
+        .ok()
+        .and_then(|c| c.get_string(git::ai::CONFIG_COMMAND).ok());
+    match git::ai::resolve(std::env::var(git::ai::ENV_COMMAND).ok().as_deref(), config.as_deref()) {
+        Some(t) => println!("AI command     : {} ({})", t.command, t.source),
+        None => println!("AI command     : none (set git config {} or ${})", git::ai::CONFIG_COMMAND, git::ai::ENV_COMMAND),
+    }
     Ok(0)
 }
 

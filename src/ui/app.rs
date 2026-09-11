@@ -542,6 +542,8 @@ pub enum Message {
     /// Undo / redo from the commit box's own key binding.
     CommitUndo,
     CommitRedo,
+    /// Ask the AI tool for a commit message of the staged changes.
+    SuggestCommit,
     /// Undo / redo from the multiline dialog field's key binding.
     ModalUndo,
     ModalRedo,
@@ -595,6 +597,8 @@ pub struct App {
     pub pending_copy: Vec<String>,
     pub net: NetLog,
     pub amend_loaded: bool,
+    /// An AI suggestion for the commit message is being generated.
+    pub ai_running: bool,
     pub busy: usize,
     pub quit: bool,
     pub no_repo: bool,
@@ -734,6 +738,7 @@ impl App {
                 open: false,
             },
             amend_loaded: false,
+            ai_running: false,
             busy: 0,
             quit: false,
             no_repo: false,
@@ -1219,7 +1224,39 @@ impl App {
                 }
             }
             Reply::Error(e) => self.toast(e, true),
+            Reply::Suggestion(result) => {
+                self.ai_running = false;
+                match result {
+                    Ok(msg) => {
+                        // One undo step, so Ctrl+Z brings back what was typed.
+                        self.commit_hist.before(
+                            &self.commit_msg,
+                            &text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new(String::new()))),
+                        );
+                        self.commit_msg = text_editor::Content::with_text(&msg);
+                        self.ops.push(Box::new(iced_core::widget::operation::focusable::focus(
+                            widgets::COMMIT_BOX_ID.clone(),
+                        )));
+                        self.toast("commit message suggested (Ctrl+Z restores yours)", false);
+                    }
+                    Err(e) => self.toast(format!("suggest failed: {e}"), true),
+                }
+            }
         }
+    }
+
+    /// Queue an AI suggestion for the commit box. Nothing to suggest without
+    /// staged changes (or an amend).
+    pub fn suggest_message(&mut self) {
+        if self.ai_running || self.no_repo {
+            return;
+        }
+        if self.snapshot.staged.is_empty() && !self.amend {
+            self.toast("stage something first", true);
+            return;
+        }
+        self.ai_running = true;
+        self.pending.push(Command::SuggestMessage { amend: self.amend });
     }
 
     /// Queue a write or network command.
@@ -2369,6 +2406,7 @@ impl App {
             Message::CommitRedo => {
                 self.commit_hist.redo(&mut self.commit_msg);
             }
+            Message::SuggestCommit => self.suggest_message(),
             Message::ModalUndo => {
                 self.modal_multi_hist.undo(&mut self.modal_multiline);
             }
@@ -2949,6 +2987,7 @@ impl App {
                 "w" => self.toggle_whitespace(),
                 "d" => self.show_debug = !self.show_debug,
                 "s" => self.save_editor(),
+                "g" => self.suggest_message(),
                 _ => {}
             }
             if named == Some(Named::Enter) {

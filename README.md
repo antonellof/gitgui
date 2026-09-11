@@ -51,6 +51,7 @@ gitgui --split right      open in a new terminal split next to your agent (cmux,
 gitgui --window           open a desktop window instead (automatic in terminals without kitty graphics)
 gitgui --open src/main.rs open a file in the built-in editor at startup
 gitgui --editor "code -w" editor for Shift+E (or: git config gitgui.editor nano)
+git config --global gitgui.ai-command "ollama run qwen2.5-coder"   AI tool for commit messages (default: claude, codex, gemini, ollama or llm, whichever is installed)
 gitgui ls                 list running gitgui instances
 gitgui action '{"cmd":"status"}'   control a running instance (see skill/SKILL.md)
 gitgui --scale 2 --font-size 14    override pixels per point and font size (Ctrl+= / Ctrl+- zoom at runtime)
@@ -75,6 +76,7 @@ Give the agent the control API by linking `skill/SKILL.md` into its skills direc
 
 - **History**: commit graph with branch lanes, filter by summary / author / hash, full message body, files per commit.
 - **Staging**: files, hunks and single lines; discard by file, hunk or line; commit, amend, commit and push; stash with keep-index / untracked options.
+- **AI commit messages**: `AI suggest` or `Ctrl+G` writes a message for the staged changes through the AI CLI you already have (`claude`, `codex`, `gemini`, `ollama`, `llm`, or any command that reads a prompt on stdin: `git config gitgui.ai-command`, `$GITGUI_AI_COMMAND`). No keys or servers in gitgui; `Ctrl+Z` brings your own text back. The prompt is yours to change with `gitgui.ai-prompt` (`{diff}`, `{branch}`, `{recent}`).
 - **Commit menu**: cherry-pick, revert, tag, branch here, checkout detached, reset soft / mixed / hard, copy hash, open in browser.
 - **History rewriting**: reword, squash, fixup, drop, move up / down, edit, autosquash. gitgui runs `git rebase` for you, no editor pops up.
 - **Branches and remotes**: checkout, create, rename, delete, merge, rebase onto, fast-forward, upstream, delete on remote, open pull request; add / rename / edit / remove remotes; annotated and light tags; fetch, pull, pull with rebase, push, force push with lease through your `git` CLI so credential helpers and SSH agents keep working.
@@ -107,6 +109,7 @@ Not planned: an interactive rebase editor, bisect, submodules, worktrees. Use th
 | Copy, paste in any text field | `Ctrl+C`, `Ctrl+V` (the terminal's own paste works too) |
 | Copy the text selected in the diff (or in any field) | `Ctrl+C` |
 | Commit, commit and push, focus the message | `Ctrl+Enter`, `Ctrl+Shift+Enter`, `c` |
+| Suggest a commit message with the AI tool | `Ctrl+G` |
 | Stash | `Shift+S` |
 | Filter commits, search the diff, next / previous match | `/`, `Ctrl+F`, `n` / `Shift+N` |
 | Diff context, whitespace | `{` / `}`, `Ctrl+W` |

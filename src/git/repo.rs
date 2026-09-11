@@ -1138,6 +1138,62 @@ impl Repo {
         Ok(self.repo.head()?.peel_to_commit()?.id())
     }
 
+    /// A git config value, when set and not blank.
+    pub fn config_string(&self, key: &str) -> Option<String> {
+        self.repo
+            .config()
+            .ok()?
+            .get_string(key)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+    }
+
+    /// The staged changes as a unified diff, what a commit would record.
+    /// With `amend` the base is HEAD's parent, so the diff covers the
+    /// amended commit too.
+    pub fn staged_patch(&self, amend: bool) -> Result<String> {
+        let head = self.repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+        let base = match (&head, amend) {
+            (Some(c), true) => c.parent(0).ok().and_then(|p| p.tree().ok()),
+            (Some(c), false) => c.tree().ok(),
+            (None, _) => None,
+        };
+        let index = self.index()?;
+        let mut opts = git2::DiffOptions::new();
+        opts.context_lines(3);
+        let diff = self
+            .repo
+            .diff_tree_to_index(base.as_ref(), Some(&index), Some(&mut opts))?;
+        let mut out = Vec::new();
+        diff.print(git2::DiffFormat::Patch, |_, _, line| {
+            match line.origin() {
+                '+' | '-' | ' ' => out.push(line.origin() as u8),
+                _ => {}
+            }
+            out.extend_from_slice(line.content());
+            true
+        })?;
+        Ok(String::from_utf8_lossy(&out).into_owned())
+    }
+
+    /// Subjects of the newest `n` commits below HEAD (skipping HEAD itself
+    /// when amending), for the AI prompt's style hints.
+    pub fn recent_subjects(&self, n: usize, skip_head: bool) -> Vec<String> {
+        let mut walk = match self.repo.revwalk() {
+            Ok(w) => w,
+            Err(_) => return Vec::new(),
+        };
+        if walk.push_head().is_err() {
+            return Vec::new();
+        }
+        walk.flatten()
+            .skip(usize::from(skip_head))
+            .take(n)
+            .filter_map(|oid| self.repo.find_commit(oid).ok())
+            .filter_map(|c| c.summary().ok().flatten().map(str::to_owned))
+            .collect()
+    }
+
     /// Message of the HEAD commit, for amend.
     pub fn head_message(&self) -> Option<String> {
         self.repo
@@ -1453,6 +1509,29 @@ pub mod testutil {
 mod tests {
     use super::testutil::TempRepo;
     use super::*;
+
+    #[test]
+    fn staged_patch_and_recent_subjects() {
+        let t = TempRepo::new();
+        let repo = Repo::open(&t.dir).unwrap();
+        assert_eq!(repo.staged_patch(false).unwrap(), "");
+        assert!(repo.recent_subjects(5, false).is_empty());
+        t.commit_file("a.txt", "one\n", "First commit");
+        t.commit_file("a.txt", "one\ntwo\n", "Second commit\n\nwith a body");
+        t.write("a.txt", "one\ntwo\nthree\n");
+        t.add("a.txt");
+        let patch = repo.staged_patch(false).unwrap();
+        assert!(patch.starts_with("diff --git a/a.txt b/a.txt\n"), "{patch}");
+        assert!(patch.contains("\n+three\n"));
+        assert!(!patch.contains("\n+two\n"));
+        // Amending compares against the parent, so the last commit's change shows too.
+        let amend = repo.staged_patch(true).unwrap();
+        assert!(amend.contains("\n+two\n") && amend.contains("\n+three\n"), "{amend}");
+        assert_eq!(repo.recent_subjects(5, false), vec!["Second commit", "First commit"]);
+        assert_eq!(repo.recent_subjects(5, true), vec!["First commit"]);
+        assert_eq!(repo.recent_subjects(1, false), vec!["Second commit"]);
+        assert!(repo.config_string("gitgui.ai-command").is_none());
+    }
 
     #[test]
     fn not_a_repo() {

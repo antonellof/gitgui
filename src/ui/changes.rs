@@ -196,6 +196,9 @@ fn worktree(app: &App) -> Element<'_> {
                 keyboard::Key::Character(c) if (mods.control() || mods.command()) && c.as_str() == "y" => {
                     Some(Binding::Custom(Message::CommitRedo))
                 }
+                keyboard::Key::Character(c) if (mods.control() || mods.command()) && c.as_str() == "g" => {
+                    Some(Binding::Custom(Message::SuggestCommit))
+                }
                 _ => Binding::from_key_press(press),
             }
         })
@@ -214,7 +217,12 @@ fn worktree(app: &App) -> Element<'_> {
     ]
     .spacing(8)
     .align_y(Alignment::Center);
+    let can_suggest = !app.ai_running && (!s.staged.is_empty() || app.amend);
     let buttons = row![
+        small_button(
+            if app.ai_running { "thinking..." } else { "AI suggest" },
+            can_suggest.then_some(Message::SuggestCommit)
+        ),
         Space::new().width(Length::Fill),
         small_button("Commit & Push", can_commit.then_some(Message::CommitAndPush)),
         primary_button("Commit", can_commit.then_some(Message::Commit)),

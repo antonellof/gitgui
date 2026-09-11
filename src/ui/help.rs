@@ -32,6 +32,7 @@ pub const KEYS: &[(&str, &str, &str)] = &[
     ("Working tree", "c", "focus the commit message"),
     ("Working tree", "Ctrl+Enter", "commit"),
     ("Working tree", "Ctrl+Shift+Enter", "commit and push"),
+    ("Working tree", "Ctrl+G", "suggest a commit message with the AI tool (gitgui.ai-command, $GITGUI_AI_COMMAND, or the first of claude, codex, gemini, ollama, llm found)"),
     ("Working tree", "Shift+S", "stash"),
     ("Editor", "Ctrl+S", "save"),
     ("Editor", "Escape", "close (asks when unsaved)"),

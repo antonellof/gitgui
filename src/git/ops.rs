@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime};
 use git2::Oid;
 
 use super::actions::{ConflictSide, MergeOutcome, ResetKind};
+use super::ai;
 use super::rebase::{self, TodoAction};
 use super::repo::{DiffOpts, DiffTarget, DiffText, FileStatus, GitError, Repo, RepoSnapshot, DirEntry};
 
@@ -213,6 +214,11 @@ pub enum Command {
     },
     /// Run `git init` in the opened directory.
     InitRepo,
+    /// Ask the configured AI tool for a commit message of the staged
+    /// changes. Runs on its own thread; replies `Suggestion`.
+    SuggestMessage {
+        amend: bool,
+    },
     Quit,
 }
 
@@ -227,6 +233,7 @@ impl Command {
             | Command::ListDir(_)
             | Command::SetDiffOpts(_)
             | Command::Focus(_)
+            | Command::SuggestMessage { .. }
             | Command::Quit => "",
             Command::Stage(_)
             | Command::StageAll
@@ -333,6 +340,8 @@ pub enum Reply {
     Error(String),
     /// Opened path is not inside a git repository yet.
     NoRepo(PathBuf),
+    /// The AI tool answered (or failed) with a commit message.
+    Suggestion(Result<String, String>),
 }
 
 pub struct Worker {
@@ -341,11 +350,14 @@ pub struct Worker {
 
 /// Start the worker. Every reply is handed to `reply`, which the runtime
 /// uses to forward into its own event channel.
-pub fn spawn(mut path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Worker {
+pub fn spawn(mut path: PathBuf, reply: impl Fn(Reply) + Send + Sync + 'static) -> Worker {
     let (tx, rx) = mpsc::channel::<Command>();
     std::thread::Builder::new()
         .name("git".into())
         .spawn(move || {
+            // Shared with the AI thread, which answers after the worker has
+            // moved on.
+            let reply = Arc::new(reply);
             let mut repo: Option<Repo> = match Repo::open(&path) {
                 Ok(r) => Some(r),
                 Err(GitError::NotARepository(_)) => {
@@ -464,6 +476,22 @@ pub fn spawn(mut path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Worke
                         reply(Reply::DirEntries(dir, r));
                     }
                     Ok(Command::Focus(_)) => {}
+                    Ok(Command::SuggestMessage { amend }) if repo.is_some() => {
+                        let r = repo.as_ref().expect("checked");
+                        match suggest_job(r, amend) {
+                            Ok((tool, prompt)) => {
+                                let reply = reply.clone();
+                                let workdir = workdir.clone();
+                                std::thread::Builder::new()
+                                    .name("ai".into())
+                                    .spawn(move || {
+                                        reply(Reply::Suggestion(ai::run(&workdir, &tool.command, &prompt, ai::TIMEOUT)));
+                                    })
+                                    .expect("spawn ai thread");
+                            }
+                            Err(e) => reply(Reply::Suggestion(Err(e))),
+                        }
+                    }
                     Ok(Command::CommitAndPush { message, amend }) if repo.is_some() => {
                         let r = repo.as_mut().expect("checked");
                         let commit_result = write_op(
@@ -484,7 +512,7 @@ pub fn spawn(mut path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Worke
                             reply(Reply::NetStart("push"));
                             let args = push_args(r, false);
                             let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-                            let push_result = run_git_cli(&workdir, &arg_refs, &[], &reply);
+                            let push_result = run_git_cli(&workdir, &arg_refs, &[], &*reply);
                             reply(Reply::Op {
                                 label: "push",
                                 result: push_result,
@@ -501,7 +529,7 @@ pub fn spawn(mut path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Worke
                         reply(Reply::NetStart("publish"));
                         let args = gh_repo_create_args(&name, &description, private);
                         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-                        let result = run_gh_cli(&workdir, &arg_refs, &reply);
+                        let result = run_gh_cli(&workdir, &arg_refs, &*reply);
                         reply(Reply::Op {
                             label: "publish",
                             result,
@@ -516,7 +544,7 @@ pub fn spawn(mut path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Worke
                         reply(Reply::NetStart(label));
                         let (args, envs) = cli_args(r, &cmd);
                         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-                        let result = run_git_cli(&workdir, &arg_refs, &envs, &reply);
+                        let result = run_git_cli(&workdir, &arg_refs, &envs, &*reply);
                         reply(Reply::Op { label, result });
                         send_snapshot(r, limit);
                         (stamp, work_fp) = refresh_tracking(r);
@@ -545,6 +573,36 @@ pub fn spawn(mut path: PathBuf, reply: impl Fn(Reply) + Send + 'static) -> Worke
         })
         .expect("spawn git worker");
     Worker { tx }
+}
+
+/// The AI tool and the prompt for the staged changes. Errors when no tool
+/// is configured or found, or when nothing is staged.
+fn suggest_job(repo: &Repo, amend: bool) -> Result<(ai::Tool, String), String> {
+    let tool = ai::resolve(
+        std::env::var(ai::ENV_COMMAND).ok().as_deref(),
+        repo.config_string(ai::CONFIG_COMMAND).as_deref(),
+    )
+    .ok_or_else(|| {
+        format!(
+            "no AI tool found: install claude, codex, gemini, ollama or llm, or set git config {}",
+            ai::CONFIG_COMMAND
+        )
+    })?;
+    let patch = repo.staged_patch(amend).map_err(|e| e.to_string())?;
+    if patch.trim().is_empty() {
+        return Err("nothing staged".into());
+    }
+    let diff = ai::truncate_diff(&patch, ai::MAX_DIFF);
+    let branch = repo
+        .head_info()
+        .and_then(|h| h.branch_name)
+        .unwrap_or_default();
+    let recent = repo.recent_subjects(5, amend);
+    let template = std::env::var(ai::ENV_PROMPT)
+        .ok()
+        .or_else(|| repo.config_string(ai::CONFIG_PROMPT));
+    let prompt = ai::build_prompt(template.as_deref(), &diff, &branch, &recent);
+    Ok((tool, prompt))
 }
 
 /// `git push` arguments: plain when the branch has an upstream, otherwise
@@ -1395,5 +1453,57 @@ mod tests {
         let private = gh_repo_create_args("user/my-app", "", true);
         assert!(private.contains(&"--private".to_string()));
         assert!(!private.contains(&"--description".to_string()));
+    }
+
+    #[test]
+    fn suggest_runs_the_configured_tool_off_the_worker_thread() {
+        let t = TempRepo::new();
+        t.commit_file("a.txt", "one\n", "First commit");
+        t.write("a.txt", "one\ntwo\n");
+        t.add("a.txt");
+        // The tool echoes the prompt's branch line and the diff's added line:
+        // proves the prompt reached stdin and the answer came back.
+        let mut cfg = t.repo.config().unwrap();
+        cfg.set_str(ai::CONFIG_COMMAND, "grep -e '^Branch:' -e '^+two'").unwrap();
+        drop(cfg);
+        let (tx, rx) = mpsc::channel::<Reply>();
+        let worker = spawn(t.dir.clone(), move |r| {
+            let _ = tx.send(r);
+        });
+        worker.tx.send(Command::SuggestMessage { amend: false }).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut got = None;
+        while std::time::Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(Reply::Suggestion(r)) => {
+                    got = Some(r);
+                    break;
+                }
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(_) => break,
+            }
+        }
+        let msg = got.expect("a suggestion reply").expect("tool ran");
+        assert!(msg.contains("Branch:"), "{msg}");
+        assert!(msg.contains("+two"), "{msg}");
+        // Nothing staged: a clean error, no tool run.
+        let _ = std::process::Command::new("git").args(["reset", "-q", "a.txt"]).current_dir(&t.dir).status();
+        worker.tx.send(Command::SuggestMessage { amend: false }).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut got = None;
+        while std::time::Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(Reply::Suggestion(r)) => {
+                    got = Some(r);
+                    break;
+                }
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(_) => break,
+            }
+        }
+        assert_eq!(got.expect("a reply").unwrap_err(), "nothing staged");
+        worker.tx.send(Command::Quit).unwrap();
     }
 }
