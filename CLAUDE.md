@@ -5,8 +5,6 @@ A pixel-rendered git GUI that runs inside kitty-graphics terminals (Ghostty, cmu
 Reference projects for the idea (not the implementation): zenbu-labs/terminal-browser and zenbu-labs/terminal-code. We reuse their trick (pixels in the terminal via kitty graphics + synthetic input) but skip the browser engine entirely.
 
 Read `docs/SPEC.md` (architecture, UI, git layer, milestones) and `docs/PROTOCOLS.md` (exact escape sequences) before writing code. They are the source of truth. If the spec and this file disagree, the spec wins.
-
-
 ## Stack
 
 - Rust, latest stable, edition 2021
